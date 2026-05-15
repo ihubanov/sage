@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -929,15 +930,31 @@ func (s *Server) handleSearchMemory(w http.ResponseWriter, r *http.Request) {
 // the unified path that fuses FTS5/BM25 and vector cosine results via
 // weighted Reciprocal Rank Fusion. Callers send both the text query and the
 // precomputed embedding so the server can run both indexes in one round trip.
+//
+// v7.1 adds optional Expansions: a list of paraphrase/entity/temporal variants
+// of the primary query. When non-empty the server runs SearchHybrid once per
+// variant (in addition to the primary), then RRFs the variant rankings into
+// one final list. Callers must include both the text and embedding for each
+// expansion so SAGE doesn't need to know which embedder generated the primary.
 type HybridSearchMemoryRequest struct {
-	Query         string    `json:"query"`
-	Embedding     []float32 `json:"embedding"`
-	DomainTag     string    `json:"domain_tag,omitempty"`
-	Provider      string    `json:"provider,omitempty"`
-	MinConfidence float64   `json:"min_confidence,omitempty"`
-	StatusFilter  string    `json:"status_filter,omitempty"`
-	TopK          int       `json:"top_k,omitempty"`
-	Tags          []string  `json:"tags,omitempty"`
+	Query         string             `json:"query"`
+	Embedding     []float32          `json:"embedding"`
+	Expansions    []HybridExpansion  `json:"expansions,omitempty"`
+	DomainTag     string             `json:"domain_tag,omitempty"`
+	Provider      string             `json:"provider,omitempty"`
+	MinConfidence float64            `json:"min_confidence,omitempty"`
+	StatusFilter  string             `json:"status_filter,omitempty"`
+	TopK          int                `json:"top_k,omitempty"`
+	Tags          []string           `json:"tags,omitempty"`
+}
+
+// HybridExpansion carries a single paraphrase/entity/temporal variant of the
+// primary query plus the precomputed embedding for that variant. The caller
+// is responsible for using the same embedder that produced the primary
+// embedding so the vectors live in the same space as the stored memories.
+type HybridExpansion struct {
+	Query     string    `json:"query"`
+	Embedding []float32 `json:"embedding"`
 }
 
 // handleHybridSearchMemory handles POST /v1/memory/hybrid.
@@ -1019,7 +1036,7 @@ func (s *Server) handleHybridSearchMemory(w http.ResponseWriter, r *http.Request
 		opts.SubmittingAgents = allowedAgents
 	}
 
-	records, err := s.store.SearchHybrid(r.Context(), req.Query, req.Embedding, opts)
+	records, err := s.runHybridWithExpansions(r.Context(), req, opts)
 	if err != nil {
 		s.logger.Error().Err(err).Msg("failed to hybrid-search memories")
 		writeProblem(w, http.StatusInternalServerError, "Hybrid search error", err.Error())
@@ -1594,4 +1611,87 @@ func (s *Server) handleTimelineAuth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"buckets": buckets})
+}
+
+// runHybridWithExpansions runs SearchHybrid once for the primary query plus
+// once per expansion variant, then fuses the variant rankings into a single
+// list via RRF across variants. With no expansions the call collapses to a
+// single SearchHybrid invocation (zero overhead vs the v7.0 path).
+func (s *Server) runHybridWithExpansions(ctx context.Context, req HybridSearchMemoryRequest, opts store.QueryOptions) ([]*memory.MemoryRecord, error) {
+	// Primary query always runs first; expansions follow. Each variant gets
+	// the same QueryOptions (domain, RBAC, filters) so the only thing that
+	// varies between calls is the query text + its embedding.
+	type variant struct {
+		query     string
+		embedding []float32
+	}
+	variants := make([]variant, 0, 1+len(req.Expansions))
+	variants = append(variants, variant{query: req.Query, embedding: req.Embedding})
+	for _, e := range req.Expansions {
+		// Skip empties so callers can pass best-effort expansion lists
+		// without us amplifying the no-op into wasted SearchHybrid work.
+		if e.Query == "" && len(e.Embedding) == 0 {
+			continue
+		}
+		variants = append(variants, variant{query: e.Query, embedding: e.Embedding})
+	}
+
+	// Fast path: one variant means the legacy single-call behaviour applies.
+	if len(variants) == 1 {
+		return s.store.SearchHybrid(ctx, variants[0].query, variants[0].embedding, opts)
+	}
+
+	// Multi-variant path: each call gets its own ranked list. We RRF-merge
+	// across variants so a memory that ranks high under several paraphrases
+	// outscores one that only matched a single variant. Keeps the constant
+	// in lockstep with internal/store/hybrid.go's RRF_K so the rank-fusion
+	// shape is consistent end-to-end.
+	const rrfKAcrossVariants = 60
+
+	scores := make(map[string]float64)
+	records := make(map[string]*memory.MemoryRecord)
+
+	for _, v := range variants {
+		got, err := s.store.SearchHybrid(ctx, v.query, v.embedding, opts)
+		if err != nil {
+			// A single variant failing shouldn't drop the whole recall —
+			// the user paid for an expansion, not a fragility tax. Log and
+			// continue with the variants that did succeed.
+			s.logger.Warn().Err(err).Str("variant_query", v.query).Msg("expansion variant SearchHybrid failed; skipping")
+			continue
+		}
+		for rank, rec := range got {
+			scores[rec.MemoryID] += 1.0 / float64(rrfKAcrossVariants+rank+1)
+			if _, ok := records[rec.MemoryID]; !ok {
+				records[rec.MemoryID] = rec
+			}
+		}
+	}
+
+	if len(records) == 0 {
+		return nil, nil
+	}
+
+	type ranked struct {
+		mem   *memory.MemoryRecord
+		score float64
+	}
+	out := make([]ranked, 0, len(records))
+	for id, rec := range records {
+		out = append(out, ranked{mem: rec, score: scores[id]})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].score > out[j].score })
+
+	topK := opts.TopK
+	if topK <= 0 {
+		topK = 10
+	}
+	if topK > len(out) {
+		topK = len(out)
+	}
+	final := make([]*memory.MemoryRecord, topK)
+	for i := 0; i < topK; i++ {
+		final[i] = out[i].mem
+	}
+	return final, nil
 }

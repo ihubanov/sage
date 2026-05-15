@@ -131,6 +131,41 @@ def submit_session(
         return None
 
 
+def generate_expansions(openai_client: OpenAI, question_text: str, n: int) -> list[str]:
+    """Ask an LLM for `n` paraphrase/entity/temporal variants of the question.
+
+    Variants are best-effort: failures or malformed responses return [] so the
+    harness falls back to the single-query recall cleanly. We use a small
+    chat-completion call (cheap) and parse a newline-separated response.
+    """
+    if n <= 0 or not question_text.strip():
+        return []
+    prompt = (
+        "Generate {n} short paraphrase/entity/temporal variants of the question below. "
+        "Output ONLY the variants, one per line, no numbering or commentary. "
+        "Vary phrasing, surface named entities explicitly, and concretise relative "
+        "time references when context permits."
+        "\n\nQuestion: {q}"
+    ).format(n=n, q=question_text)
+    try:
+        resp = openai_client.chat.completions.create(
+            model=os.environ.get("LONGMEMEVAL_EXPANSION_MODEL", "gpt-4o-mini"),
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.4,
+            max_tokens=200,
+        )
+        text = (resp.choices[0].message.content or "").strip()
+    except Exception as exc:
+        print(f"  ! expansion generation failed: {exc}", file=sys.stderr)
+        return []
+    lines: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip().lstrip("-*0123456789.) ").strip()
+        if line and line != question_text:
+            lines.append(line)
+    return lines[:n]
+
+
 def hybrid_recall(
     sage_client: httpx.Client,
     agent: SageAgent,
@@ -138,15 +173,22 @@ def hybrid_recall(
     domain: str,
     question_text: str,
     top_k: int,
+    n_expansions: int = 0,
 ) -> list[dict[str, Any]]:
     q_embedding = embed(openai_client, question_text)
-    body = {
+    body: dict[str, Any] = {
         "query": question_text,
         "embedding": q_embedding,
         "domain_tag": domain,
         "top_k": top_k,
         "status_filter": "committed",
     }
+    if n_expansions > 0:
+        variants = generate_expansions(openai_client, question_text, n_expansions)
+        if variants:
+            body["expansions"] = [
+                {"query": v, "embedding": embed(openai_client, v)} for v in variants
+            ]
     body_bytes = json.dumps(body).encode()
     path = "/v1/memory/hybrid"
     r = sage_client.post(
@@ -195,6 +237,7 @@ def run_question(
     openai_client: OpenAI,
     question: dict[str, Any],
     top_k: int,
+    n_expansions: int = 0,
 ) -> dict[str, Any]:
     qid = question["question_id"]
     qtype = question.get("question_type", "unknown")
@@ -223,7 +266,8 @@ def run_question(
 
     t_query_start = time.time()
     results = hybrid_recall(
-        sage_client, agent, openai_client, domain, question["question"], top_k
+        sage_client, agent, openai_client, domain, question["question"], top_k,
+        n_expansions=n_expansions,
     )
     query_seconds = time.time() - t_query_start
 
@@ -344,6 +388,18 @@ def main() -> int:
         default=0,
         help="sample N questions from each question_type for a balanced cross-section.",
     )
+    parser.add_argument(
+        "--expand",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "generate N paraphrase/entity/temporal variants of each question via "
+            "LLM (gpt-4o-mini by default; override with LONGMEMEVAL_EXPANSION_MODEL) "
+            "and send them as `expansions` to /v1/memory/hybrid. Adds an LLM call "
+            "+ N extra embedding calls per question. 0 (default) = no expansion."
+        ),
+    )
     args = parser.parse_args()
 
     if not os.environ.get("OPENAI_API_KEY"):
@@ -386,7 +442,10 @@ def main() -> int:
     t_total = time.time()
     for i, q in enumerate(questions, start=1):
         try:
-            row = run_question(sage_client, agent, openai_client, q, args.top_k)
+            row = run_question(
+                sage_client, agent, openai_client, q, args.top_k,
+                n_expansions=args.expand,
+            )
         except KeyboardInterrupt:
             print("\ninterrupted — partial results will be written")
             break
@@ -419,6 +478,7 @@ def main() -> int:
         "embed_model": OPENAI_MODEL,
         "rerank_enabled_env": rerank_enabled,
         "rerank_url_env": rerank_url,
+        "expand_n": args.expand,
         "top_k": args.top_k,
         "limit": args.limit,
         "n_total": len(per_q),

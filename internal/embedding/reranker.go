@@ -124,7 +124,7 @@ func (r *HTTPReranker) Rerank(ctx context.Context, query string, texts []string)
 
 	out := make([]RerankResult, 0, len(raw))
 	for _, r := range raw {
-		out = append(out, RerankResult{Index: r.Index, Score: r.Score})
+		out = append(out, RerankResult(r))
 	}
 	return out, nil
 }

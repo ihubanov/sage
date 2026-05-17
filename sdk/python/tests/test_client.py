@@ -90,6 +90,46 @@ def test_query_memories_without_tags_omits_field(client, mock_api, sample_query_
     assert "tags" not in body
 
 
+def test_hybrid_recall(client, mock_api, sample_query_response):
+    mock_api.post("/v1/memory/hybrid").mock(
+        return_value=httpx.Response(200, json=sample_query_response)
+    )
+    result = client.hybrid(query="how does X work", embedding=[0.1] * 768, domain_tag="crypto")
+    assert len(result.results) == 1
+
+
+def test_hybrid_with_expansions(client, mock_api, sample_query_response):
+    import json
+    route = mock_api.post("/v1/memory/hybrid").mock(
+        return_value=httpx.Response(200, json=sample_query_response)
+    )
+    client.hybrid(
+        query="how does X work",
+        embedding=[0.1] * 768,
+        domain_tag="crypto",
+        top_k=5,
+        expansions=[{"query": "X mechanism", "embedding": [0.2] * 768}],
+    )
+    body = json.loads(route.calls.last.request.read())
+    assert body["query"] == "how does X work"
+    assert body["top_k"] == 5
+    assert body["domain_tag"] == "crypto"
+    assert len(body["expansions"]) == 1
+    assert body["expansions"][0]["query"] == "X mechanism"
+
+
+def test_hybrid_omits_optional_fields(client, mock_api, sample_query_response):
+    import json
+    route = mock_api.post("/v1/memory/hybrid").mock(
+        return_value=httpx.Response(200, json=sample_query_response)
+    )
+    client.hybrid(query="ping", embedding=[0.1] * 768)
+    body = json.loads(route.calls.last.request.read())
+    assert "expansions" not in body
+    assert "tags" not in body
+    assert "domain_tag" not in body
+
+
 def test_get_memory(client, mock_api, sample_memory):
     memory_id = sample_memory["memory_id"]
     mock_api.get(f"/v1/memory/{memory_id}").mock(

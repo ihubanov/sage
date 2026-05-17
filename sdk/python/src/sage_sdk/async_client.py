@@ -172,6 +172,42 @@ class AsyncSageClient:
         resp = await self._request("POST", "/v1/memory/query", json=body)
         return MemoryQueryResponse.model_validate(resp.json())
 
+    async def hybrid(
+        self,
+        query: str,
+        embedding: list[float],
+        domain_tag: str | None = None,
+        top_k: int = 10,
+        status_filter: str | None = None,
+        min_confidence: float | None = None,
+        provider: str | None = None,
+        tags: list[str] | None = None,
+        expansions: list[dict[str, Any]] | None = None,
+    ) -> MemoryQueryResponse:
+        """Hybrid recall: fuse BM25/FTS5 keyword and vector cosine results via
+        Reciprocal Rank Fusion in one round trip. See SageClient.hybrid for
+        full semantics; the async variant has the same signature and shape."""
+        body: dict[str, Any] = {
+            "query": query,
+            "embedding": embedding,
+            "top_k": top_k,
+        }
+        if domain_tag is not None:
+            body["domain_tag"] = domain_tag
+        if status_filter is not None:
+            body["status_filter"] = status_filter
+        if min_confidence is not None:
+            body["min_confidence"] = min_confidence
+        if provider is not None:
+            body["provider"] = provider
+        if tags:
+            body["tags"] = tags
+        if expansions:
+            body["expansions"] = expansions
+
+        resp = await self._request("POST", "/v1/memory/hybrid", json=body)
+        return MemoryQueryResponse.model_validate(resp.json())
+
     async def get_memory(self, memory_id: str) -> MemoryRecord:
         """Get a single memory by ID."""
         resp = await self._request("GET", f"/v1/memory/{memory_id}")

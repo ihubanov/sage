@@ -133,7 +133,7 @@ func listSnapshots(dataDir string) ([]snapshotEntry, error) {
 		}
 		return nil, fmt.Errorf("list snapshots: %w", err)
 	}
-	var out []snapshotEntry
+	out := make([]snapshotEntry, 0, len(entries))
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue

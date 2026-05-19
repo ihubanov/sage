@@ -239,7 +239,7 @@ func findAnchorSnapshot(snapshotsDir, rollbackTo string) (string, *snapshotManif
 		name  string
 		mtime time.Time
 	}
-	var candidates []candidate
+	candidates := make([]candidate, 0, len(entries))
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -306,7 +306,7 @@ func findLatestRollbackAnchor(snapshotsDir, excludeVersion string) (string, *sna
 		name  string
 		mtime time.Time
 	}
-	var candidates []candidate
+	candidates := make([]candidate, 0, len(entries))
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue

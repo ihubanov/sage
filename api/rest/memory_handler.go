@@ -126,19 +126,6 @@ type MemoryDetailResponse struct {
 	LinkedMemories  []memory.MemoryLink     `json:"linked_memories,omitempty"`
 }
 
-// CometBFT broadcast_tx_sync response structure.
-type cometBroadcastResponse struct {
-	Result struct {
-		Code int    `json:"code"`
-		Hash string `json:"hash"`
-		Log  string `json:"log"`
-	} `json:"result"`
-	Error *struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-	} `json:"error"`
-}
-
 // CometBFT broadcast_tx_commit response structure.
 // Unlike broadcast_tx_sync, this waits for the block to be finalized,
 // ensuring ABCI Commit has flushed writes before we return.
@@ -1245,40 +1232,9 @@ func (s *Server) handlePreValidate(w http.ResponseWriter, r *http.Request) {
 
 // --- Helpers -----------------------------------------------------------------
 
-// broadcastTx sends a transaction to CometBFT via broadcast_tx_sync RPC.
-func (s *Server) broadcastTx(txBytes []byte) (string, error) {
-	txHex := hex.EncodeToString(txBytes)
-	url := fmt.Sprintf("%s/broadcast_tx_sync?tx=0x%s", s.cometbftRPC, txHex)
-
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil) // #nosec G107 -- internal CometBFT RPC
-	if err != nil {
-		return "", fmt.Errorf("create broadcast request: %w", err)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("broadcast tx: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var result cometBroadcastResponse
-	if err = json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("decode broadcast response: %w", err)
-	}
-
-	if result.Error != nil {
-		return "", fmt.Errorf("broadcast error: %s", result.Error.Message)
-	}
-
-	if result.Result.Code != 0 {
-		return "", fmt.Errorf("tx rejected (code %d): %s", result.Result.Code, result.Result.Log)
-	}
-
-	return result.Result.Hash, nil
-}
-
-// broadcastTxCommit sends a transaction to CometBFT and waits for block finalization.
-// Unlike broadcastTx (sync), this blocks until the block is committed, ensuring
-// ABCI Commit has flushed all pending writes to the offchain store before returning.
+// broadcastTxCommit sends a transaction to CometBFT and waits for block finalization
+// (CheckTx + FinalizeBlock). All REST handlers use this so that consensus-side
+// rejections surface as real HTTP errors rather than 201 + ghost tx_hash.
 func (s *Server) broadcastTxCommit(txBytes []byte) (string, error) {
 	hash, _, err := s.broadcastTxCommitWithHeight(txBytes)
 	return hash, err

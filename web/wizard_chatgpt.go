@@ -912,7 +912,7 @@ func wizardWriteConfig(configPath, tunnelUUID, credPath, hostname string) error 
 	}
 	defer f.Close()
 	return configTemplate.Execute(f, map[string]string{
-		"Version":         "v7.1.1",
+		"Version":         "v7.1.2",
 		"TunnelUUID":      tunnelUUID,
 		"CredentialsFile": credPath,
 		"Hostname":        hostname,

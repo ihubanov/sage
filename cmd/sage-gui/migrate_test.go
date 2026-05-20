@@ -394,19 +394,21 @@ func TestVerifyBackupSize_EmptySourcePasses(t *testing.T) {
 
 // TestVerifyBackupSize_EmptyBackupOfNonEmptySourceRejects: a backup that
 // landed at 0 bytes for a populated source is a clear partial-write or
-// silent-truncation signal — must refuse the wipe.
+// silent-truncation signal — must refuse the rebuild. Error must reassure
+// the operator that the live database is intact.
 func TestVerifyBackupSize_EmptyBackupOfNonEmptySourceRejects(t *testing.T) {
 	err := verifyBackupSize(1<<20, 0, "/tmp/backup.db")
 	if err == nil {
 		t.Fatal("expected reject when backup is empty but source is non-empty")
 	}
-	if !strings.Contains(err.Error(), "empty") {
-		t.Errorf("error must mention 'empty', got: %v", err)
+	if !strings.Contains(err.Error(), "intact") || !strings.Contains(err.Error(), "empty") {
+		t.Errorf("error must lead with reassurance ('intact') and mention the symptom ('empty'), got: %v", err)
 	}
 }
 
 // TestVerifyBackupSize_SuspectShrinkageRejects: a backup that's only ~50%
-// of source size cannot be explained by VACUUM compaction — refuse.
+// of source size cannot be explained by VACUUM compaction — refuse. Error
+// must reassure the operator and suggest a remediation path.
 func TestVerifyBackupSize_SuspectShrinkageRejects(t *testing.T) {
 	srcSize := int64(1 << 20)
 	tooSmall := srcSize / 2
@@ -414,8 +416,11 @@ func TestVerifyBackupSize_SuspectShrinkageRejects(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected reject when backup is %d bytes vs source %d", tooSmall, srcSize)
 	}
-	if !strings.Contains(err.Error(), "suspect") {
-		t.Errorf("error must mention 'suspect', got: %v", err)
+	if !strings.Contains(err.Error(), "intact") {
+		t.Errorf("error must lead with 'intact' reassurance, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "disk space") {
+		t.Errorf("error must hint at remediation ('disk space'), got: %v", err)
 	}
 }
 

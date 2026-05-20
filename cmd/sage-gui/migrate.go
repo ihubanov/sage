@@ -73,12 +73,12 @@ func migrateOnUpgrade(dataDir string) (migrated bool, err error) {
 				return false, stampErr
 			}
 			if lastVersion != version {
-				fmt.Fprintf(os.Stderr, "\n  Upgrading SAGE from %s → %s (chain state preserved — adopting consensus fork %d)\n\n", lastVersion, version, ConsensusForkVersion)
+				fmt.Fprintf(os.Stderr, "\n  SAGE %s → %s · your memories are preserved (no chain rebuild needed)\n\n", lastVersion, version)
 			}
 			return false, stampVersion(versionPath)
 		}
 
-		fmt.Fprintf(os.Stderr, "\n  Upgrading SAGE from %s → %s (pre-v7.5 chain state — one-time migration reset to fork %d, memories preserved)\n", lastVersion, version, ConsensusForkVersion)
+		fmt.Fprintf(os.Stderr, "\n  SAGE %s → %s · one-time chain-index rebuild for an older install. Your memories are safe — they'll be backed up first, then the chain rebuilds itself from them.\n", lastVersion, version)
 		if resetErr := resetChainState(dataDir, badgerPath, cometHome, sqlitePath, lastVersion); resetErr != nil {
 			return false, resetErr
 		}
@@ -88,20 +88,20 @@ func migrateOnUpgrade(dataDir string) (migrated bool, err error) {
 		if stampErr := stampVersion(versionPath); stampErr != nil {
 			return false, stampErr
 		}
-		fmt.Fprintf(os.Stderr, "  Upgrade complete — your memories are safe, chain will rebuild\n\n")
+		fmt.Fprintf(os.Stderr, "  Upgrade complete · your memories are intact at %s · chain will rebuild on first run\n\n", sqlitePath)
 		return true, nil
 	}
 
 	// Same fork — patch/minor upgrade that doesn't touch consensus state.
 	if onDiskFork == ConsensusForkVersion {
 		if lastVersion != version {
-			fmt.Fprintf(os.Stderr, "\n  Upgrading SAGE from %s → %s (chain state preserved — same consensus fork %d)\n\n", lastVersion, version, ConsensusForkVersion)
+			fmt.Fprintf(os.Stderr, "\n  SAGE %s → %s · your memories are preserved (no chain rebuild needed)\n\n", lastVersion, version)
 		}
 		return false, stampVersion(versionPath)
 	}
 
 	// Fork transition — chain state is incompatible. Run the reset.
-	fmt.Fprintf(os.Stderr, "\n  Upgrading SAGE from %s → %s (consensus fork %d → %d — chain state will reset, memories preserved)\n", lastVersion, version, onDiskFork, ConsensusForkVersion)
+	fmt.Fprintf(os.Stderr, "\n  SAGE %s → %s · this release introduces a new chain format. Your memories are safe — they'll be backed up first, then the chain rebuilds itself from them.\n", lastVersion, version)
 	if resetErr := resetChainState(dataDir, badgerPath, cometHome, sqlitePath, lastVersion); resetErr != nil {
 		return false, resetErr
 	}
@@ -113,7 +113,7 @@ func migrateOnUpgrade(dataDir string) (migrated bool, err error) {
 		return false, stampErr
 	}
 
-	fmt.Fprintf(os.Stderr, "  Upgrade complete — your memories are safe, chain will rebuild\n\n")
+	fmt.Fprintf(os.Stderr, "  Upgrade complete · your memories are intact at %s · chain will rebuild on first run\n\n", sqlitePath)
 	return true, nil
 }
 
@@ -134,7 +134,7 @@ func resetChainState(dataDir, badgerPath, cometHome, sqlitePath, lastVersion str
 		vaultBackup := filepath.Join(backupDir, fmt.Sprintf("vault-pre-upgrade-%s-%s.key", lastVersion, ts))
 		if src, readErr := os.ReadFile(vaultKeyPath); readErr == nil {
 			if writeErr := os.WriteFile(vaultBackup, src, 0600); writeErr == nil { //nolint:gosec // trusted local vault backup
-				fmt.Fprintf(os.Stderr, "  Backed up vault key to %s\n", vaultBackup)
+				fmt.Fprintf(os.Stderr, "  Vault key saved to %s\n", vaultBackup)
 			}
 		}
 	}
@@ -187,10 +187,11 @@ func resetChainState(dataDir, badgerPath, cometHome, sqlitePath, lastVersion str
 		if verifyErr := verifyBackupSize(srcInfo.Size(), backupInfo.Size(), backupPath); verifyErr != nil {
 			return verifyErr
 		}
-		fmt.Fprintf(os.Stderr, "  Backed up memories to %s (%d bytes)\n", backupPath, backupInfo.Size())
+		fmt.Fprintf(os.Stderr, "  Memories saved to %s (%d bytes, verified)\n", backupPath, backupInfo.Size())
 	}
 
-	// Step 2: Wipe BadgerDB (on-chain state — will be rebuilt)
+	// Step 2: Rebuild BadgerDB chain index (memories live in SQLite and
+	// are untouched here — Badger only stores derived on-chain registries).
 	if _, statErr := os.Stat(badgerPath); statErr == nil {
 		if removeErr := os.RemoveAll(badgerPath); removeErr != nil {
 			return fmt.Errorf("remove badger: %w", removeErr)
@@ -198,32 +199,34 @@ func resetChainState(dataDir, badgerPath, cometHome, sqlitePath, lastVersion str
 		if mkErr := os.MkdirAll(badgerPath, 0700); mkErr != nil {
 			return fmt.Errorf("recreate badger dir: %w", mkErr)
 		}
-		fmt.Fprintf(os.Stderr, "  Reset on-chain state (BadgerDB)\n")
+		fmt.Fprintf(os.Stderr, "  Rebuilding chain index\n")
 	}
 
-	// Step 3: Wipe CometBFT data (blocks/state — incompatible with new chain).
-	// Keep config (genesis, keys); remove block/state databases and consensus WAL.
+	// Step 3: Rebuild CometBFT consensus log (blocks/votes — memories
+	// live in SQLite and are untouched here). Keep config (genesis, keys);
+	// remove block/state databases and consensus WAL.
 	cometDataDir := filepath.Join(cometHome, "data")
 	if _, statErr := os.Stat(cometDataDir); statErr == nil {
 		for _, dbName := range []string{"blockstore.db", "state.db", "tx_index.db", "evidence.db", "cs.wal"} {
 			dbPath := filepath.Join(cometDataDir, dbName)
 			if removeErr := os.RemoveAll(dbPath); removeErr != nil {
-				fmt.Fprintf(os.Stderr, "  Warning: could not remove %s: %v\n", dbName, removeErr)
+				fmt.Fprintf(os.Stderr, "  Note: could not clear %s: %v (the chain will rebuild from your memories regardless)\n", dbName, removeErr)
 			}
 		}
 		pvStatePath := filepath.Join(cometDataDir, "priv_validator_state.json")
 		pvState := []byte(`{"height":"0","round":0,"step":0}`)
 		if writeErr := os.WriteFile(pvStatePath, pvState, 0600); writeErr != nil {
-			fmt.Fprintf(os.Stderr, "  Warning: could not reset validator state: %v\n", writeErr)
+			fmt.Fprintf(os.Stderr, "  Note: could not reset validator state: %v\n", writeErr)
 		}
-		fmt.Fprintf(os.Stderr, "  Reset blockchain state (CometBFT)\n")
+		fmt.Fprintf(os.Stderr, "  Rebuilding consensus log\n")
 	}
 
-	// Step 4: Clean up low-quality and duplicate memories in SQLite.
+	// Step 4: Tidy noise + duplicate memories in SQLite (status-only
+	// flag — no rows deleted, reversible).
 	if _, statErr := os.Stat(sqlitePath); statErr == nil {
 		cleaned := cleanupNoisyMemories(sqlitePath)
 		if cleaned > 0 {
-			fmt.Fprintf(os.Stderr, "  Cleaned up %d low-quality/duplicate memories\n", cleaned)
+			fmt.Fprintf(os.Stderr, "  Tidied %d duplicate/low-quality memories (marked deprecated, not deleted)\n", cleaned)
 		}
 	}
 
@@ -369,24 +372,27 @@ func stampVersion(path string) error {
 	return os.WriteFile(path, []byte(version+"\n"), 0600)
 }
 
-// verifyBackupSize gates the destructive reset on the SQLite backup
-// surviving as a sane file. Refuses to proceed if the backup is empty or
-// drops below 95% of the source size (VACUUM INTO can legitimately shrink
-// a fragmented DB by a few percent; anything beyond that is a partial-
-// write / disk-full / silent-truncation symptom). Sources of zero bytes
-// pass trivially — there are no memories to lose. Extracted from the
-// reset path so the policy is unit-testable in isolation from the file
-// system operations that produce the sizes.
+// verifyBackupSize gates the destructive chain rebuild on the SQLite
+// backup surviving as a sane file. Refuses to proceed if the backup is
+// empty or drops below 95% of the source size (VACUUM INTO can
+// legitimately shrink a fragmented DB by a few percent; anything beyond
+// that is a partial-write / disk-full / silent-truncation symptom).
+// Sources of zero bytes pass trivially — there are no memories to lose.
+//
+// Error messages are written for an operator who sees them in the
+// dashboard or logs: they lead with the reassurance that the live
+// database is intact, since the abort happens BEFORE any destructive
+// operation. The technical detail follows so the cause is debuggable.
 func verifyBackupSize(srcSize, backupSize int64, backupPath string) error {
 	if srcSize == 0 {
 		return nil
 	}
 	if backupSize == 0 {
-		return fmt.Errorf("backup file is empty at %s — refusing to wipe chain state with no usable backup", backupPath)
+		return fmt.Errorf("upgrade paused as a safety measure — your memories are intact. The pre-upgrade backup file at %s is empty (this should never happen). Aborting before any chain rebuild so nothing destructive runs", backupPath)
 	}
 	minAcceptable := (srcSize * 19) / 20
 	if backupSize < minAcceptable {
-		return fmt.Errorf("backup at %s is %d bytes; source sqlite is %d bytes (need ≥ %d) — refusing to wipe chain state with a suspect backup", backupPath, backupSize, srcSize, minAcceptable)
+		return fmt.Errorf("upgrade paused as a safety measure — your memories are intact. The pre-upgrade backup at %s is only %d bytes vs. the live %d-byte database (need ≥ %d). Aborting before any chain rebuild — please check disk space and retry", backupPath, backupSize, srcSize, minAcceptable)
 	}
 	return nil
 }

@@ -298,4 +298,3 @@ func loadCometConfig(home string) (*config.Config, error) {
 
 	return cfg, nil
 }
-

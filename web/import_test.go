@@ -191,7 +191,7 @@ func TestImport_ParseChatGPTJSON_LongContentTruncated(t *testing.T) {
 	}
 
 	longText := strings.Repeat("A", 300) // each turn is ~310 chars with role prefix
-	numTurns := 20                        // 20 turns x ~310 chars = ~6200 >> 2000
+	numTurns := 20                       // 20 turns x ~310 chars = ~6200 >> 2000
 
 	for i := 0; i < numTurns; i++ {
 		uID := "u" + strings.Repeat("0", i+1)
@@ -766,7 +766,7 @@ func TestImport_ExtractParts_Mixed(t *testing.T) {
 		"Hello",
 		map[string]interface{}{"type": "image"}, // should be skipped
 		"World",
-		"",    // empty strings skipped
+		"", // empty strings skipped
 	}
 
 	result := extractParts(parts)

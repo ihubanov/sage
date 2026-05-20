@@ -155,13 +155,13 @@ func TestValidateCloudflareLoginURL(t *testing.T) {
 	}
 
 	bad := []string{
-		"http://dash.cloudflare.com/argotunnel?abc=1",      // not https
-		"https://evil.example.com/login",                    // not cloudflare
-		"https://cloudflare.com.evil.example.com/login",     // suffix trick
-		"https://user:pass@dash.cloudflare.com/login",       // userinfo
-		"javascript:alert(1)",                               // not http(s)
-		"file:///etc/passwd",                                // file scheme
-		"  ",                                                // empty
+		"http://dash.cloudflare.com/argotunnel?abc=1",   // not https
+		"https://evil.example.com/login",                // not cloudflare
+		"https://cloudflare.com.evil.example.com/login", // suffix trick
+		"https://user:pass@dash.cloudflare.com/login",   // userinfo
+		"javascript:alert(1)",                           // not http(s)
+		"file:///etc/passwd",                            // file scheme
+		"  ",                                            // empty
 	}
 	for _, u := range bad {
 		_, err := validateCloudflareLoginURL(u)

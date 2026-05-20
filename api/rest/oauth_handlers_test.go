@@ -139,9 +139,9 @@ func TestOAuth_DiscoveryDocShape(t *testing.T) {
 func TestOAuth_Authorize_MissingParams_400(t *testing.T) {
 	_, r, _ := newOAuthRouter(t, true, "")
 	cases := []string{
-		"",                                                                    // no params at all
-		"?client_id=chatgpt",                                                  // missing redirect_uri
-		"?client_id=chatgpt&redirect_uri=https://x/cb",                        // missing challenge
+		"",                   // no params at all
+		"?client_id=chatgpt", // missing redirect_uri
+		"?client_id=chatgpt&redirect_uri=https://x/cb",                                                // missing challenge
 		"?client_id=chatgpt&redirect_uri=https://x/cb&code_challenge=abc&code_challenge_method=plain", // bad method
 	}
 	for _, q := range cases {

@@ -180,7 +180,7 @@ func resetChainState(dataDir, badgerPath, cometHome, sqlitePath, lastVersion str
 		if srcStatErr != nil {
 			return fmt.Errorf("stat live sqlite for backup verify: %w", srcStatErr)
 		}
-		backupInfo, backupStatErr := os.Stat(backupPath)
+		backupInfo, backupStatErr := os.Stat(backupPath) //nolint:gosec // backupPath is server-controlled
 		if backupStatErr != nil {
 			return fmt.Errorf("stat backup for verify: %w", backupStatErr)
 		}

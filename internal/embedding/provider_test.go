@@ -74,7 +74,6 @@ func TestOllamaClient_ImplementsProvider(t *testing.T) {
 	var _ Provider = (*Client)(nil)
 }
 
-
 func TestOllamaClient_Dimension(t *testing.T) {
 	c := NewClient("", "")
 	assert.Equal(t, 768, c.Dimension())

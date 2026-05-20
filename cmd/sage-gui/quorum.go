@@ -26,12 +26,12 @@ import (
 // out-of-band (separate channel from the manifest itself). A plaintext CAKey
 // field is no longer accepted; legacy manifests must be regenerated.
 type QuorumManifest struct {
-	ChainID         string              `json:"chain_id"`
-	GenesisTime     string              `json:"genesis_time,omitempty"`      // RFC3339 — set by initiator
-	CACert          string              `json:"ca_cert,omitempty"`           // PEM-encoded CA certificate for TLS
-	CAKeyEncrypted  string              `json:"ca_key_encrypted,omitempty"`  // base64(EncryptCAKey envelope)
-	Validators      []ManifestValidator `json:"validators"`
-	Peers           []QuorumPeer        `json:"peers"`
+	ChainID        string              `json:"chain_id"`
+	GenesisTime    string              `json:"genesis_time,omitempty"`     // RFC3339 — set by initiator
+	CACert         string              `json:"ca_cert,omitempty"`          // PEM-encoded CA certificate for TLS
+	CAKeyEncrypted string              `json:"ca_key_encrypted,omitempty"` // base64(EncryptCAKey envelope)
+	Validators     []ManifestValidator `json:"validators"`
+	Peers          []QuorumPeer        `json:"peers"`
 
 	// LegacyCAKey is read for the sole purpose of detecting and rejecting
 	// pre-encryption manifests. Receiving this field triggers a hard error
@@ -378,7 +378,7 @@ func runQuorumJoin() error {
 	badgerPath := filepath.Join(filepath.Dir(cometHome), "badger")
 	if _, statErr := os.Stat(badgerPath); statErr == nil {
 		fmt.Printf("  Resetting on-chain state (BadgerDB)...\n")
-		os.RemoveAll(badgerPath) //nolint:errcheck
+		os.RemoveAll(badgerPath)      //nolint:errcheck
 		os.MkdirAll(badgerPath, 0700) //nolint:errcheck
 	}
 

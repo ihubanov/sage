@@ -239,8 +239,8 @@ func broadcastUpgradePropose(t *testing.T, rpc, name string, target uint64, dela
 
 	var out struct {
 		Result struct {
-			Hash     string `json:"hash"`
-			CheckTx  struct {
+			Hash    string `json:"hash"`
+			CheckTx struct {
 				Code uint32 `json:"code"`
 				Log  string `json:"log"`
 			} `json:"check_tx"`

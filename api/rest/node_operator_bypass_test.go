@@ -123,7 +123,9 @@ func TestNodeOperator_BypassOnlyMatchesExactID(t *testing.T) {
 	// Caller doesn't match the configured operator id, so the filter still
 	// fires and the caller sees only their own memory.
 	assert.Equal(t, filterBySubmittingAgts, rr.Header().Get(filterHeader))
-	var resp struct{ Total int `json:"total"` }
+	var resp struct {
+		Total int `json:"total"`
+	}
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
 	assert.Equal(t, 1, resp.Total)
 }

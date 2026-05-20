@@ -13,9 +13,9 @@ import (
 
 // Tool defines an MCP tool with its schema and handler.
 type Tool struct {
-	Name        string                                                   `json:"name"`
-	Description string                                                   `json:"description"`
-	InputSchema map[string]any                                           `json:"inputSchema"`
+	Name        string                                                        `json:"name"`
+	Description string                                                        `json:"description"`
+	InputSchema map[string]any                                                `json:"inputSchema"`
 	Handler     func(ctx context.Context, params map[string]any) (any, error) `json:"-"`
 }
 
@@ -177,7 +177,7 @@ func (s *Server) registerTools() map[string]Tool {
 			Handler: s.toolBacklog,
 		},
 		"sage_register": {
-			Name:        "sage_register",
+			Name: "sage_register",
 			Description: "Register this agent on the SAGE chain. Creates an on-chain identity with name and optional bio. " +
 				"This is called automatically on first connection — you rarely need to call it manually. " +
 				"Idempotent: returns existing record if already registered.",
@@ -1190,11 +1190,11 @@ func (s *Server) toolReflect(ctx context.Context, params map[string]any) (any, e
 	}
 
 	return map[string]any{
-		"status":              "reflected",
-		"memories_stored":     stored,
-		"skipped_duplicates":  skipped,
-		"task":                taskSummary,
-		"message":             "Reflection stored. Your future self will thank you.",
+		"status":             "reflected",
+		"memories_stored":    stored,
+		"skipped_duplicates": skipped,
+		"task":               taskSummary,
+		"message":            "Reflection stored. Your future self will thank you.",
 	}, nil
 }
 

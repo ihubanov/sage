@@ -9,10 +9,10 @@ import (
 
 // ValidatorInfo holds metadata about a single validator.
 type ValidatorInfo struct {
-	ID        string             `json:"id"`
-	PublicKey ed25519.PublicKey   `json:"public_key"`
-	Power     int64              `json:"power"`
-	PoEWeight float64            `json:"poe_weight"`
+	ID        string            `json:"id"`
+	PublicKey ed25519.PublicKey `json:"public_key"`
+	Power     int64             `json:"power"`
+	PoEWeight float64           `json:"poe_weight"`
 }
 
 // ValidatorSet manages the current set of validators.

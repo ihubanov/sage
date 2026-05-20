@@ -79,8 +79,8 @@ type PendingMemoriesResponse struct {
 
 // EpochResponse is the JSON body for GET /v1/validator/epoch.
 type EpochResponse struct {
-	EpochNum    int64                  `json:"epoch_num"`
-	BlockHeight int64                  `json:"block_height"`
+	EpochNum    int64                   `json:"epoch_num"`
+	BlockHeight int64                   `json:"block_height"`
 	Scores      []*store.ValidatorScore `json:"scores"`
 }
 
@@ -147,7 +147,8 @@ func (s *Server) handleVoteMemory(w http.ResponseWriter, r *http.Request) {
 	txHash, err := s.broadcastTxCommit(encoded)
 	if err != nil {
 		s.logger.Error().Err(err).Msg("failed to broadcast vote tx")
-		status, publicMsg := broadcastErrorPublic(err); writeProblem(w, status, "Broadcast error", publicMsg)
+		status, publicMsg := broadcastErrorPublic(err)
+		writeProblem(w, status, "Broadcast error", publicMsg)
 		return
 	}
 
@@ -222,7 +223,8 @@ func (s *Server) handleChallengeMemory(w http.ResponseWriter, r *http.Request) {
 	txHash, err := s.broadcastTxCommit(encoded)
 	if err != nil {
 		s.logger.Error().Err(err).Msg("failed to broadcast challenge tx")
-		status, publicMsg := broadcastErrorPublic(err); writeProblem(w, status, "Broadcast error", publicMsg)
+		status, publicMsg := broadcastErrorPublic(err)
+		writeProblem(w, status, "Broadcast error", publicMsg)
 		return
 	}
 
@@ -298,7 +300,8 @@ func (s *Server) handleForgetMemory(w http.ResponseWriter, r *http.Request) {
 	txHash, err := s.broadcastTxCommit(encoded)
 	if err != nil {
 		s.logger.Error().Err(err).Msg("failed to broadcast forget tx")
-		status, publicMsg := broadcastErrorPublic(err); writeProblem(w, status, "Broadcast error", publicMsg)
+		status, publicMsg := broadcastErrorPublic(err)
+		writeProblem(w, status, "Broadcast error", publicMsg)
 		return
 	}
 
@@ -368,7 +371,8 @@ func (s *Server) handleCorroborateMemory(w http.ResponseWriter, r *http.Request)
 	txHash, err := s.broadcastTxCommit(encoded)
 	if err != nil {
 		s.logger.Error().Err(err).Msg("failed to broadcast corroborate tx")
-		status, publicMsg := broadcastErrorPublic(err); writeProblem(w, status, "Broadcast error", publicMsg)
+		status, publicMsg := broadcastErrorPublic(err)
+		writeProblem(w, status, "Broadcast error", publicMsg)
 		return
 	}
 

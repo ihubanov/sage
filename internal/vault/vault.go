@@ -38,16 +38,16 @@ var ErrWrongPassphrase = errors.New("wrong passphrase")
 
 // keyFile is the on-disk format for the encrypted vault key.
 type keyFile struct {
-	Salt          []byte `json:"salt"`           // Argon2id salt
-	EncryptedKey  []byte `json:"encrypted_key"`  // AES-256-GCM encrypted data key
-	Nonce         []byte `json:"nonce"`           // GCM nonce for key encryption
-	VerifyHash    []byte `json:"verify_hash"`     // SHA-256 of decrypted data key (for fast passphrase verification)
+	Salt         []byte `json:"salt"`          // Argon2id salt
+	EncryptedKey []byte `json:"encrypted_key"` // AES-256-GCM encrypted data key
+	Nonce        []byte `json:"nonce"`         // GCM nonce for key encryption
+	VerifyHash   []byte `json:"verify_hash"`   // SHA-256 of decrypted data key (for fast passphrase verification)
 }
 
 // Vault holds the encryption state. When unlocked, it can encrypt/decrypt
 // memory content. When locked, all operations return ErrLocked.
 type Vault struct {
-	gcm    cipher.AEAD
+	gcm     cipher.AEAD
 	dataKey []byte // raw 32-byte data key (only in memory while unlocked)
 }
 

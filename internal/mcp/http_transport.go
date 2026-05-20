@@ -51,7 +51,7 @@ type SSESessionRegistry struct {
 
 type sseSession struct {
 	id      string
-	agentID string // bearer-resolved principal at registration time; "" for stdio/anonymous
+	agentID string      // bearer-resolved principal at registration time; "" for stdio/anonymous
 	out     chan []byte // serialized JSON-RPC payloads, written to the SSE stream
 	done    chan struct{}
 	created time.Time

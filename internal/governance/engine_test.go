@@ -459,7 +459,7 @@ func TestGetProposalVotes(t *testing.T) {
 
 	votes, err := eng.GetProposalVotes(proposalID)
 	require.NoError(t, err)
-	assert.Equal(t, "accept", votes["val-a"])  // auto-vote
+	assert.Equal(t, "accept", votes["val-a"]) // auto-vote
 	assert.Equal(t, "reject", votes["val-b"])
 	assert.Equal(t, "abstain", votes["val-c"])
 	assert.Len(t, votes, 3)

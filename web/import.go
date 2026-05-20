@@ -306,10 +306,10 @@ func (h *DashboardHandler) processImportRecords(w http.ResponseWriter, r *http.R
 // ---- ChatGPT parser ----
 
 type chatGPTConversation struct {
-	Title       string                     `json:"title"`
-	CreateTime  float64                    `json:"create_time"`
-	Mapping     map[string]chatGPTNode     `json:"mapping"`
-	CurrentNode string                     `json:"current_node"`
+	Title       string                 `json:"title"`
+	CreateTime  float64                `json:"create_time"`
+	Mapping     map[string]chatGPTNode `json:"mapping"`
+	CurrentNode string                 `json:"current_node"`
 }
 
 type chatGPTNode struct {
@@ -547,12 +547,12 @@ func formatConversation(title string, turns []conversationTurn) string {
 // ---- Gemini parser ----
 
 type geminiEntry struct {
-	Header       string              `json:"header"`
-	Title        string              `json:"title"`
-	Time         string              `json:"time"`
-	Products     []string            `json:"products"`
-	Subtitles    []geminiSubtitle    `json:"subtitles"`
-	SafeHtmlItem []geminiSafeHTML    `json:"safeHtmlItem"`
+	Header       string           `json:"header"`
+	Title        string           `json:"title"`
+	Time         string           `json:"time"`
+	Products     []string         `json:"products"`
+	Subtitles    []geminiSubtitle `json:"subtitles"`
+	SafeHtmlItem []geminiSafeHTML `json:"safeHtmlItem"`
 }
 
 type geminiSubtitle struct {
@@ -639,10 +639,10 @@ func parseGeminiJSON(data []byte) ([]*memory.MemoryRecord, []string, error) {
 // ---- Claude.ai parser ----
 
 type claudeConversation struct {
-	UUID         string             `json:"uuid"`
-	Name         string             `json:"name"`
-	CreatedAt    string             `json:"created_at"`
-	UpdatedAt    string             `json:"updated_at"`
+	UUID         string              `json:"uuid"`
+	Name         string              `json:"name"`
+	CreatedAt    string              `json:"created_at"`
+	UpdatedAt    string              `json:"updated_at"`
 	ChatMessages []claudeChatMessage `json:"chat_messages"`
 }
 
@@ -1163,8 +1163,8 @@ type grokExport struct {
 
 type grokConvEntry struct {
 	// Real Grok format
-	Conversation *grokConvMeta    `json:"conversation"`
-	Responses    []grokRespEntry  `json:"responses"`
+	Conversation *grokConvMeta   `json:"conversation"`
+	Responses    []grokRespEntry `json:"responses"`
 	// Simplified format (tools/extensions)
 	Title    string           `json:"title"`
 	Messages []map[string]any `json:"messages"`
@@ -1693,4 +1693,3 @@ func makeRecord(content, domain string, confidence float64, createdAt time.Time)
 		Embedding:       make([]float32, 0),
 	}
 }
-

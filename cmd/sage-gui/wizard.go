@@ -313,9 +313,9 @@ func handleCheckOllama(w http.ResponseWriter, r *http.Request) {
 	resp, err := client.Do(ollamaReq)
 	if err != nil {
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"installed":     false,
-			"running":       false,
-			"model_ready":   false,
+			"installed":   false,
+			"running":     false,
+			"model_ready": false,
 		})
 		return
 	}
@@ -399,7 +399,7 @@ func openBrowser(rawURL string) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.Command("open", u.String())           //nolint:noctx // fire-and-forget browser open
+		cmd = exec.Command("open", u.String()) //nolint:noctx // fire-and-forget browser open
 	case "windows":
 		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", u.String()) //nolint:noctx // fire-and-forget browser open
 	default:

@@ -302,8 +302,8 @@ func TestDecodeMalformedUpgradeTx(t *testing.T) {
 	// Also exercise the inner payload decoder directly: a one-byte slice can
 	// never satisfy the first 4-byte length prefix that readBytes expects.
 	tests := []struct {
-		name      string
-		decodeFn  func([]byte) error
+		name     string
+		decodeFn func([]byte) error
 	}{
 		{"upgrade_propose", func(b []byte) error { _, e := decodeUpgradePropose(b); return e }},
 		{"upgrade_cancel", func(b []byte) error { _, e := decodeUpgradeCancel(b); return e }},

@@ -121,7 +121,6 @@ func TestEncodeDecode(t *testing.T) {
 			Nonce:     13,
 			Timestamp: time.Date(2025, 1, 1, 0, 0, 13, 0, time.UTC),
 		}},
-
 	}
 
 	for _, tt := range tests {

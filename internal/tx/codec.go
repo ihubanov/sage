@@ -100,8 +100,8 @@ func DecodeTx(data []byte) (*ParsedTx, error) {
 	}
 
 	offset := 5
-	payload := data[offset : offset+int(payloadLen)]  // #nosec G115 -- payloadLen validated above
-	offset += int(payloadLen)                          // #nosec G115 -- payloadLen validated above
+	payload := data[offset : offset+int(payloadLen)] // #nosec G115 -- payloadLen validated above
+	offset += int(payloadLen)                        // #nosec G115 -- payloadLen validated above
 
 	sig := make([]byte, ed25519.SignatureSize)
 	copy(sig, data[offset:offset+ed25519.SignatureSize])

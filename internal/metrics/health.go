@@ -8,9 +8,9 @@ import (
 
 // HealthChecker tracks the health status of dependencies.
 type HealthChecker struct {
-	postgresOK  atomic.Bool
-	cometbftOK  atomic.Bool
-	Version     string
+	postgresOK atomic.Bool
+	cometbftOK atomic.Bool
+	Version    string
 }
 
 // NewHealthChecker creates a new health checker.

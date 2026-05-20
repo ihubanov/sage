@@ -431,7 +431,6 @@ func runRecover() error {
 	return nil
 }
 
-
 func runBackup() error {
 	cfg, err := LoadConfig()
 	if err != nil {

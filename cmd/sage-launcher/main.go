@@ -18,9 +18,9 @@ import (
 )
 
 const (
-	healthURL  = "http://localhost:8080/health"
-	launchURL  = "http://localhost:8080/ui/launch"
-	pollDelay  = 500 * time.Millisecond
+	healthURL   = "http://localhost:8080/health"
+	launchURL   = "http://localhost:8080/ui/launch"
+	pollDelay   = 500 * time.Millisecond
 	pollTimeout = 30 * time.Second
 )
 
@@ -174,9 +174,9 @@ func openBrowser(url string) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":
-		cmd = exec.Command("cmd", "/c", "start", url)   //nolint:noctx // fire-and-forget browser open
+		cmd = exec.Command("cmd", "/c", "start", url) //nolint:noctx // fire-and-forget browser open
 	case "darwin":
-		cmd = exec.Command("open", url)                //nolint:noctx // fire-and-forget browser open
+		cmd = exec.Command("open", url) //nolint:noctx // fire-and-forget browser open
 	default: // linux, freebsd, etc.
 		cmd = exec.Command("xdg-open", url) //nolint:noctx // fire-and-forget browser open
 	}

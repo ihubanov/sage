@@ -177,8 +177,8 @@ func handleCreatePairingCode(agentStore store.AgentStore, ps *PairingStore) http
 		}
 
 		writeJSONResp(w, http.StatusCreated, map[string]any{
-			"code":       entry.Code,
-			"expires_at": entry.ExpiresAt.Format(time.RFC3339),
+			"code":        entry.Code,
+			"expires_at":  entry.ExpiresAt.Format(time.RFC3339),
 			"ttl_seconds": int(time.Until(entry.ExpiresAt).Seconds()),
 		})
 	}
@@ -259,4 +259,3 @@ func (h *DashboardHandler) RegisterPairingRoutes(r chi.Router) {
 func registerPairingCreateRoute(r chi.Router, agentStore store.AgentStore, ps *PairingStore) {
 	r.Post("/v1/dashboard/network/agents/{id}/pair", handleCreatePairingCode(agentStore, ps))
 }
-

@@ -51,12 +51,12 @@ type MCPTokenIssueRequest struct {
 
 // MCPTokenIssueResponse is what the client sees ONCE and only once.
 type MCPTokenIssueResponse struct {
-	ID        string    `json:"id"`         // public token ID, used for revoke
+	ID        string    `json:"id"` // public token ID, used for revoke
 	Name      string    `json:"name"`
 	AgentID   string    `json:"agent_id"`
-	Token     string    `json:"token"`      // base64url(32 random bytes) — only readable here
+	Token     string    `json:"token"` // base64url(32 random bytes) — only readable here
 	CreatedAt time.Time `json:"created_at"`
-	UseHint   string    `json:"use_hint"`   // human pointer at how to use the token
+	UseHint   string    `json:"use_hint"` // human pointer at how to use the token
 }
 
 // MCPTokenSummary mirrors store.MCPToken but never includes the token value.

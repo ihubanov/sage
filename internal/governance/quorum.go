@@ -37,7 +37,7 @@ func CheckGovQuorum(votes map[string]string, powers map[string]int64) (passed bo
 			acceptPower += p
 		case "reject":
 			rejectPower += p
-		// "abstain" and anything else: counted in total but not accept/reject
+			// "abstain" and anything else: counted in total but not accept/reject
 		}
 	}
 

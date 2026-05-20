@@ -349,13 +349,13 @@ func (h *DashboardHandler) handleUpdateAgent(agentStore store.AgentStore) http.H
 		}
 
 		resp := map[string]any{
-			"agent_id":    existing.AgentID,
-			"name":        existing.Name,
-			"role":        existing.Role,
-			"avatar":      existing.Avatar,
-			"boot_bio":    existing.BootBio,
-			"clearance":   existing.Clearance,
-			"status":      existing.Status,
+			"agent_id":  existing.AgentID,
+			"name":      existing.Name,
+			"role":      existing.Role,
+			"avatar":    existing.Avatar,
+			"boot_bio":  existing.BootBio,
+			"clearance": existing.Clearance,
+			"status":    existing.Status,
 		}
 		if onChainWarning != "" {
 			resp["on_chain_warning"] = onChainWarning

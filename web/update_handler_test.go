@@ -17,15 +17,15 @@ func TestSemverGreater(t *testing.T) {
 	}{
 		{"3.6.0", "3.5.0", true},
 		{"3.5.0", "3.6.0", false},
-		{"3.6.0", "3.6.0", false},  // equal, not greater
-		{"3.10.0", "3.9.0", true},  // 10 > 9 (not string compare)
+		{"3.6.0", "3.6.0", false}, // equal, not greater
+		{"3.10.0", "3.9.0", true}, // 10 > 9 (not string compare)
 		{"4.0.0", "3.99.99", true},
 		{"3.6.1", "3.6.0", true},
 		{"3.6.0", "3.6.1", false},
 		{"1.0.0", "0.99.0", true},
-		{"3.7.0", "3.6.0", true},   // the real scenario: latest > current
-		{"3.5.0", "3.5.0", false},  // same version
-		{"dev", "3.6.0", false},    // dev parses as 0.0.0
+		{"3.7.0", "3.6.0", true},     // the real scenario: latest > current
+		{"3.5.0", "3.5.0", false},    // same version
+		{"dev", "3.6.0", false},      // dev parses as 0.0.0
 		{"3.6.0-rc1", "3.5.0", true}, // pre-release suffix stripped
 	}
 

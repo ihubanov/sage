@@ -55,9 +55,9 @@ func TestFilterObservability_List_FilterApplied(t *testing.T) {
 		"header must announce that the submitting_agents filter was applied")
 
 	var resp struct {
-		Memories []any        `json:"memories"`
-		Total    int          `json:"total"`
-		Filtered *FilterInfo  `json:"filtered"`
+		Memories []any       `json:"memories"`
+		Total    int         `json:"total"`
+		Filtered *FilterInfo `json:"filtered"`
 	}
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
 

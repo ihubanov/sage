@@ -85,43 +85,43 @@ type FilterInfo struct {
 }
 
 const (
-	filterHeader            = "X-SAGE-Filter-Applied"
-	filterBySubmittingAgts  = "rbac_submitting_agents"
-	filterByClassification  = "classification"
+	filterHeader           = "X-SAGE-Filter-Applied"
+	filterBySubmittingAgts = "rbac_submitting_agents"
+	filterByClassification = "classification"
 )
 
 // MemoryResult is a memory record with computed confidence.
 type MemoryResult struct {
-	MemoryID        string       `json:"memory_id"`
-	SubmittingAgent string       `json:"submitting_agent"`
-	Content         string       `json:"content"`
-	ContentHash     string       `json:"content_hash"`
-	MemoryType      string       `json:"memory_type"`
-	DomainTag       string       `json:"domain_tag"`
-	ConfidenceScore float64      `json:"confidence_score"`
-	Classification  int          `json:"classification"`
-	Status          string       `json:"status"`
-	ParentHash      string       `json:"parent_hash,omitempty"`
-	TaskStatus      string       `json:"task_status,omitempty"`
-	CreatedAt       time.Time    `json:"created_at"`
-	CommittedAt     *time.Time   `json:"committed_at,omitempty"`
+	MemoryID        string     `json:"memory_id"`
+	SubmittingAgent string     `json:"submitting_agent"`
+	Content         string     `json:"content"`
+	ContentHash     string     `json:"content_hash"`
+	MemoryType      string     `json:"memory_type"`
+	DomainTag       string     `json:"domain_tag"`
+	ConfidenceScore float64    `json:"confidence_score"`
+	Classification  int        `json:"classification"`
+	Status          string     `json:"status"`
+	ParentHash      string     `json:"parent_hash,omitempty"`
+	TaskStatus      string     `json:"task_status,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	CommittedAt     *time.Time `json:"committed_at,omitempty"`
 }
 
 // MemoryDetailResponse is a memory record with votes and corroborations.
 type MemoryDetailResponse struct {
-	MemoryID        string                `json:"memory_id"`
-	SubmittingAgent string                `json:"submitting_agent"`
-	Content         string                `json:"content"`
-	ContentHash     string                `json:"content_hash"`
-	MemoryType      string                `json:"memory_type"`
-	DomainTag       string                `json:"domain_tag"`
-	ConfidenceScore float64               `json:"confidence_score"`
-	Classification  int                   `json:"classification"`
-	Status          string                `json:"status"`
-	ParentHash      string                `json:"parent_hash,omitempty"`
-	TaskStatus      string                `json:"task_status,omitempty"`
-	CreatedAt       time.Time             `json:"created_at"`
-	CommittedAt     *time.Time            `json:"committed_at,omitempty"`
+	MemoryID        string                  `json:"memory_id"`
+	SubmittingAgent string                  `json:"submitting_agent"`
+	Content         string                  `json:"content"`
+	ContentHash     string                  `json:"content_hash"`
+	MemoryType      string                  `json:"memory_type"`
+	DomainTag       string                  `json:"domain_tag"`
+	ConfidenceScore float64                 `json:"confidence_score"`
+	Classification  int                     `json:"classification"`
+	Status          string                  `json:"status"`
+	ParentHash      string                  `json:"parent_hash,omitempty"`
+	TaskStatus      string                  `json:"task_status,omitempty"`
+	CreatedAt       time.Time               `json:"created_at"`
+	CommittedAt     *time.Time              `json:"committed_at,omitempty"`
 	Votes           []*store.ValidationVote `json:"votes,omitempty"`
 	Corroborations  []*store.Corroboration  `json:"corroborations,omitempty"`
 	LinkedMemories  []memory.MemoryLink     `json:"linked_memories,omitempty"`
@@ -407,8 +407,8 @@ func (s *Server) handleSubmitMemory(w http.ResponseWriter, r *http.Request) {
 	classification := req.Classification
 
 	submitTx := &tx.ParsedTx{
-		Type:  tx.TxTypeMemorySubmit,
-		Nonce: uint64(time.Now().UnixNano()), // #nosec G115 -- nonce from timestamp
+		Type:      tx.TxTypeMemorySubmit,
+		Nonce:     uint64(time.Now().UnixNano()), // #nosec G115 -- nonce from timestamp
 		Timestamp: time.Now(),
 		MemorySubmit: &tx.MemorySubmit{
 			MemoryID:        memoryID,
@@ -460,7 +460,8 @@ func (s *Server) handleSubmitMemory(w http.ResponseWriter, r *http.Request) {
 	txHash, err := s.broadcastTxCommit(encoded)
 	if err != nil {
 		s.logger.Error().Err(err).Msg("failed to broadcast submit tx")
-		status, publicMsg := broadcastErrorPublic(err); writeProblem(w, status, "Broadcast error", publicMsg)
+		status, publicMsg := broadcastErrorPublic(err)
+		writeProblem(w, status, "Broadcast error", publicMsg)
 		return
 	}
 
@@ -925,15 +926,15 @@ func (s *Server) handleSearchMemory(w http.ResponseWriter, r *http.Request) {
 // one final list. Callers must include both the text and embedding for each
 // expansion so SAGE doesn't need to know which embedder generated the primary.
 type HybridSearchMemoryRequest struct {
-	Query         string             `json:"query"`
-	Embedding     []float32          `json:"embedding"`
-	Expansions    []HybridExpansion  `json:"expansions,omitempty"`
-	DomainTag     string             `json:"domain_tag,omitempty"`
-	Provider      string             `json:"provider,omitempty"`
-	MinConfidence float64            `json:"min_confidence,omitempty"`
-	StatusFilter  string             `json:"status_filter,omitempty"`
-	TopK          int                `json:"top_k,omitempty"`
-	Tags          []string           `json:"tags,omitempty"`
+	Query         string            `json:"query"`
+	Embedding     []float32         `json:"embedding"`
+	Expansions    []HybridExpansion `json:"expansions,omitempty"`
+	DomainTag     string            `json:"domain_tag,omitempty"`
+	Provider      string            `json:"provider,omitempty"`
+	MinConfidence float64           `json:"min_confidence,omitempty"`
+	StatusFilter  string            `json:"status_filter,omitempty"`
+	TopK          int               `json:"top_k,omitempty"`
+	Tags          []string          `json:"tags,omitempty"`
 }
 
 // HybridExpansion carries a single paraphrase/entity/temporal variant of the
@@ -1348,7 +1349,6 @@ func memoryTypeToTx(mt string) tx.MemoryType {
 		return tx.MemoryTypeFact
 	}
 }
-
 
 // handleUpdateTaskStatus handles PUT /v1/memory/{memory_id}/task-status.
 func (s *Server) handleUpdateTaskStatus(w http.ResponseWriter, r *http.Request) {

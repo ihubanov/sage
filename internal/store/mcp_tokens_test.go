@@ -134,4 +134,3 @@ func TestMCPTokens_LookupBumpsLastUsed(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.False(t, rows[0].LastUsedAt.IsZero(), "last_used_at should be set after lookup")
 }
-

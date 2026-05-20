@@ -700,12 +700,12 @@ func seedSQLAgent(t *testing.T, app *SageApp, agentID, name, role string, cleara
 // for the "SQL has admin / chain doesn't" divergence found by LevelUp on prod.
 //
 // Sequence:
-//   1. SQL mirror has admin agent (operator-blessed via GUI / startup seed).
-//   2. The fire-and-forget chain register tx silently dropped — BadgerDB has
-//      no record for that pubkey.
-//   3. Admin's bridge calls set_agent_permission against a chain-registered
-//      target. Pre-fix: code 67 "sender agent X not registered". Post-fix:
-//      ABCI auto-registers from SQL and proceeds.
+//  1. SQL mirror has admin agent (operator-blessed via GUI / startup seed).
+//  2. The fire-and-forget chain register tx silently dropped — BadgerDB has
+//     no record for that pubkey.
+//  3. Admin's bridge calls set_agent_permission against a chain-registered
+//     target. Pre-fix: code 67 "sender agent X not registered". Post-fix:
+//     ABCI auto-registers from SQL and proceeds.
 func TestProcessAgentSetPermission_BootstrapAdminFromSQL(t *testing.T) {
 	app := setupTestApp(t)
 	target := newAgentKey(t)

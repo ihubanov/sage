@@ -104,7 +104,8 @@ func (s *Server) handleAgentRegister(w http.ResponseWriter, r *http.Request) {
 	txHash, height, err := s.broadcastTxCommitWithHeight(encoded)
 	if err != nil {
 		s.logger.Error().Err(err).Msg("failed to broadcast agent register tx")
-		status, publicMsg := broadcastErrorPublic(err); writeProblem(w, status, "Broadcast error", publicMsg)
+		status, publicMsg := broadcastErrorPublic(err)
+		writeProblem(w, status, "Broadcast error", publicMsg)
 		return
 	}
 
@@ -356,7 +357,8 @@ func (s *Server) handleAgentSetPermission(w http.ResponseWriter, r *http.Request
 	txHash, err := s.broadcastTxCommit(encoded)
 	if err != nil {
 		s.logger.Error().Err(err).Msg("failed to broadcast agent set permission tx")
-		status, publicMsg := broadcastErrorPublic(err); writeProblem(w, status, "Broadcast error", publicMsg)
+		status, publicMsg := broadcastErrorPublic(err)
+		writeProblem(w, status, "Broadcast error", publicMsg)
 		return
 	}
 

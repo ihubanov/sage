@@ -117,7 +117,6 @@ func TestPairingStoreCleanup(t *testing.T) {
 	ps.mu.RUnlock()
 }
 
-
 func TestHandleCreatePairingCode(t *testing.T) {
 	h, s := newTestHandler(t)
 	ps := NewPairingStore()

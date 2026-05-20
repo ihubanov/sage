@@ -238,9 +238,9 @@ func runServe() (rerr error) {
 		}
 		cometCfg.P2P.ListenAddress = p2pAddr
 		cometCfg.P2P.PersistentPeers = joinPeers(cfg.Quorum.Peers)
-		cometCfg.P2P.AddrBookStrict = false   // Allow LAN addresses
-		cometCfg.P2P.AllowDuplicateIP = true   // Multiple nodes on same network
-		cometCfg.P2P.PexReactor = false        // Use persistent peers only
+		cometCfg.P2P.AddrBookStrict = false  // Allow LAN addresses
+		cometCfg.P2P.AllowDuplicateIP = true // Multiple nodes on same network
+		cometCfg.P2P.PexReactor = false      // Use persistent peers only
 		logger.Info().
 			Str("p2p_addr", p2pAddr).
 			Int("peers", len(cfg.Quorum.Peers)).
@@ -1144,7 +1144,7 @@ func runStatus() error {
 
 	ctx := context.Background()
 	healthReq, _ := http.NewRequestWithContext(ctx, "GET", baseURL+"/health", nil) //nolint:gosec // baseURL is from config, not user input
-	resp, err := http.DefaultClient.Do(healthReq) //nolint:gosec // internal health check
+	resp, err := http.DefaultClient.Do(healthReq)                                  //nolint:gosec // internal health check
 	if err != nil {
 		return fmt.Errorf("SAGE is not running: %w", err)
 	}
@@ -1161,7 +1161,7 @@ func runStatus() error {
 
 	// Try to get stats
 	statsReq, _ := http.NewRequestWithContext(ctx, "GET", baseURL+"/v1/dashboard/stats", nil) //nolint:gosec // baseURL from config
-	statsResp, err := http.DefaultClient.Do(statsReq)                                       //nolint:gosec // internal API call
+	statsResp, err := http.DefaultClient.Do(statsReq)                                         //nolint:gosec // internal API call
 	if err == nil {
 		defer func() { _ = statsResp.Body.Close() }()
 		var stats map[string]any

@@ -6,24 +6,24 @@ import "time"
 type TxType uint8
 
 const (
-	TxTypeMemorySubmit      TxType = 1
-	TxTypeMemoryVote        TxType = 2
-	TxTypeMemoryChallenge   TxType = 3
-	TxTypeMemoryCorroborate TxType = 4
-	TxTypeAccessRequest     TxType = 5
-	TxTypeAccessGrant       TxType = 6
-	TxTypeAccessRevoke      TxType = 7
-	TxTypeAccessQuery       TxType = 8
-	TxTypeDomainRegister    TxType = 9
-	TxTypeOrgRegister       TxType = 10
-	TxTypeOrgAddMember      TxType = 11
-	TxTypeOrgRemoveMember   TxType = 12
-	TxTypeOrgSetClearance   TxType = 13
-	TxTypeFederationPropose TxType = 14
-	TxTypeFederationApprove TxType = 15
-	TxTypeFederationRevoke  TxType = 16
-	TxTypeDeptRegister      TxType = 17
-	TxTypeDeptAddMember     TxType = 18
+	TxTypeMemorySubmit       TxType = 1
+	TxTypeMemoryVote         TxType = 2
+	TxTypeMemoryChallenge    TxType = 3
+	TxTypeMemoryCorroborate  TxType = 4
+	TxTypeAccessRequest      TxType = 5
+	TxTypeAccessGrant        TxType = 6
+	TxTypeAccessRevoke       TxType = 7
+	TxTypeAccessQuery        TxType = 8
+	TxTypeDomainRegister     TxType = 9
+	TxTypeOrgRegister        TxType = 10
+	TxTypeOrgAddMember       TxType = 11
+	TxTypeOrgRemoveMember    TxType = 12
+	TxTypeOrgSetClearance    TxType = 13
+	TxTypeFederationPropose  TxType = 14
+	TxTypeFederationApprove  TxType = 15
+	TxTypeFederationRevoke   TxType = 16
+	TxTypeDeptRegister       TxType = 17
+	TxTypeDeptAddMember      TxType = 18
 	TxTypeDeptRemoveMember   TxType = 19
 	TxTypeAgentRegister      TxType = 20
 	TxTypeAgentUpdate        TxType = 21
@@ -344,7 +344,7 @@ type ParsedTx struct {
 	DeptAddMember      *DeptAddMember
 	DeptRemoveMember   *DeptRemoveMember
 	AgentRegister      *AgentRegister
-	AgentUpdateTx      *AgentUpdate        // Named AgentUpdateTx to avoid collision with existing method names
+	AgentUpdateTx      *AgentUpdate // Named AgentUpdateTx to avoid collision with existing method names
 	AgentSetPermission *AgentSetPermission
 	MemoryReassign     *MemoryReassign
 	GovPropose         *GovPropose
@@ -362,9 +362,9 @@ type ParsedTx struct {
 	// The agent signed SHA256(requestBody) + bigEndian(AgentTimestamp) [+ nonce] with their key.
 	// ABCI re-verifies this signature to establish the authenticated agent identity
 	// independently of the REST layer.
-	AgentPubKey   []byte // Agent Ed25519 public key (32 bytes)
-	AgentSig      []byte // Agent Ed25519 signature (64 bytes)
+	AgentPubKey    []byte // Agent Ed25519 public key (32 bytes)
+	AgentSig       []byte // Agent Ed25519 signature (64 bytes)
 	AgentTimestamp int64  // Unix seconds timestamp used in signing
-	AgentBodyHash []byte // SHA256 of original request body (32 bytes)
-	AgentNonce    []byte // Optional nonce used in signing (variable length, 0 if legacy)
+	AgentBodyHash  []byte // SHA256 of original request body (32 bytes)
+	AgentNonce     []byte // Optional nonce used in signing (variable length, 0 if legacy)
 }

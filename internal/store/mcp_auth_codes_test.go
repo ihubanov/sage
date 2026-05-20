@@ -124,8 +124,8 @@ func TestAuthCode_Issue_RequiredFields(t *testing.T) {
 	s := newAuthCodeStore(t)
 	ctx := context.Background()
 	cases := []struct {
-		name                                                                          string
-		code, tokenID, challenge, redirect, bearer                                    string
+		name                                       string
+		code, tokenID, challenge, redirect, bearer string
 	}{
 		{"empty code", "", "tok", "ch", "https://x/cb", "b"},
 		{"empty token_id", "c", "", "ch", "https://x/cb", "b"},

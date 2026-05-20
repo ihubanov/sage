@@ -977,4 +977,3 @@ func oauthCORSMiddleware(h http.HandlerFunc) http.HandlerFunc {
 func oauthPreflightHandler(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
-

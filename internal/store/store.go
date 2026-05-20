@@ -67,12 +67,12 @@ type EpochScore struct {
 
 // QueryOptions defines parameters for similarity queries.
 type QueryOptions struct {
-	DomainTag       string   `json:"domain_tag,omitempty"`
-	Provider        string   `json:"provider,omitempty"`
-	MinConfidence   float64  `json:"min_confidence,omitempty"`
-	StatusFilter    string   `json:"status_filter,omitempty"`
-	TopK            int      `json:"top_k"`
-	Cursor          string   `json:"cursor,omitempty"`
+	DomainTag        string   `json:"domain_tag,omitempty"`
+	Provider         string   `json:"provider,omitempty"`
+	MinConfidence    float64  `json:"min_confidence,omitempty"`
+	StatusFilter     string   `json:"status_filter,omitempty"`
+	TopK             int      `json:"top_k"`
+	Cursor           string   `json:"cursor,omitempty"`
 	SubmittingAgents []string `json:"submitting_agents,omitempty"` // RBAC: restrict to these agent IDs
 	Tags             []string `json:"tags,omitempty"`              // any-match filter on user-defined tags (SQLite-only)
 }
@@ -176,14 +176,14 @@ type AccessGrantEntry struct {
 
 // AccessRequestEntry represents a pending access request.
 type AccessRequestEntry struct {
-	RequestID      string     `json:"request_id"`
-	RequesterID    string     `json:"requester_id"`
-	TargetDomain   string     `json:"target_domain"`
-	Justification  string     `json:"justification,omitempty"`
-	Status         string     `json:"status"`
-	CreatedHeight  int64      `json:"created_height"`
-	ResolvedHeight *int64     `json:"resolved_height,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
+	RequestID      string    `json:"request_id"`
+	RequesterID    string    `json:"requester_id"`
+	TargetDomain   string    `json:"target_domain"`
+	Justification  string    `json:"justification,omitempty"`
+	Status         string    `json:"status"`
+	CreatedHeight  int64     `json:"created_height"`
+	ResolvedHeight *int64    `json:"resolved_height,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // AccessLogEntry represents an audit log entry for domain access.
@@ -311,9 +311,9 @@ type AgentEntry struct {
 	LastSeen        *time.Time `json:"last_seen,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
 	RemovedAt       *time.Time `json:"removed_at,omitempty"`
-	OnChainHeight   int64      `json:"on_chain_height,omitempty"`  // Block height where registered (0 = legacy)
-	VisibleAgents   string     `json:"visible_agents,omitempty"`   // JSON array of agent IDs ("*" = all)
-	Provider        string     `json:"provider,omitempty"`         // "claude-code", "chatgpt", etc.
+	OnChainHeight   int64      `json:"on_chain_height,omitempty"` // Block height where registered (0 = legacy)
+	VisibleAgents   string     `json:"visible_agents,omitempty"`  // JSON array of agent IDs ("*" = all)
+	Provider        string     `json:"provider,omitempty"`        // "claude-code", "chatgpt", etc.
 	MemoryCount     int        `json:"memory_count,omitempty"`
 	ClaimToken      string     `json:"claim_token,omitempty"`      // One-time token for CLI agent install
 	ClaimExpiresAt  *time.Time `json:"claim_expires_at,omitempty"` // When the claim token expires

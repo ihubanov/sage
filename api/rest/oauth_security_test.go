@@ -17,11 +17,11 @@ import (
 func TestOAuth_Register_RejectsBadRedirects(t *testing.T) {
 	_, r, _ := newOAuthRouter(t, true, "")
 	cases := []map[string]any{
-		{"redirect_uris": []string{}},                                    // empty
-		{"redirect_uris": []string{"http://chat.openai.com/cb"}},         // http
-		{"redirect_uris": []string{"https://user:pass@chat.openai/cb"}},  // userinfo
-		{"redirect_uris": []string{"https://chat.openai.com/cb#x"}},      // fragment
-		{"redirect_uris": []string{"not-a-url"}},                         // not absolute
+		{"redirect_uris": []string{}},                                   // empty
+		{"redirect_uris": []string{"http://chat.openai.com/cb"}},        // http
+		{"redirect_uris": []string{"https://user:pass@chat.openai/cb"}}, // userinfo
+		{"redirect_uris": []string{"https://chat.openai.com/cb#x"}},     // fragment
+		{"redirect_uris": []string{"not-a-url"}},                        // not absolute
 	}
 	for _, body := range cases {
 		buf, _ := json.Marshal(body)

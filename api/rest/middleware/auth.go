@@ -55,7 +55,7 @@ func (rc *replayCache) check(key string) bool {
 type contextKey string
 
 const (
-	agentIDKey  contextKey = "agent_id"
+	agentIDKey   contextKey = "agent_id"
 	agentAuthKey contextKey = "agent_auth" // Raw agent auth proof for on-chain embedding
 )
 

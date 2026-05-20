@@ -35,17 +35,17 @@ type Server struct {
 	cometbftRPC string
 	store       store.MemoryStore
 	scoreStore  store.ValidatorScoreStore
-	badgerStore *store.BadgerStore       // On-chain state for access control
-	accessStore store.AccessStore        // PostgreSQL access control queries
-	orgStore    store.OrgStore           // Organization and federation queries
-	agentStore  store.AgentStore        // Network agent registry (domain access enforcement)
+	badgerStore *store.BadgerStore // On-chain state for access control
+	accessStore store.AccessStore  // PostgreSQL access control queries
+	orgStore    store.OrgStore     // Organization and federation queries
+	agentStore  store.AgentStore   // Network agent registry (domain access enforcement)
 	health      *metrics.HealthChecker
 	logger      zerolog.Logger
 	httpServer  *http.Server
-	signingKey  ed25519.PrivateKey      // Node-level key for signing on-chain txs
-	embedder    embedding.Provider       // Embedding provider (Ollama or hash)
-	OnEvent     EventCallback           // Optional: called when notable events occur
-	suppCache   SuppCacheWriter         // Bridges off-chain data (embeddings) to ABCI for consensus-first writes
+	signingKey  ed25519.PrivateKey // Node-level key for signing on-chain txs
+	embedder    embedding.Provider // Embedding provider (Ollama or hash)
+	OnEvent     EventCallback      // Optional: called when notable events occur
+	suppCache   SuppCacheWriter    // Bridges off-chain data (embeddings) to ABCI for consensus-first writes
 
 	// nodeOperatorID is the hex-encoded ed25519 public key of the local
 	// node operator (~/.sage/agent.key). When a request's X-Agent-ID
@@ -218,7 +218,7 @@ func (s *Server) setupRouter() chi.Router {
 		// Memory endpoints
 		r.Post("/v1/memory/submit", s.handleSubmitMemory)
 		r.Post("/v1/memory/query", s.handleQueryMemory)
-			r.Post("/v1/memory/search", s.handleSearchMemory)
+		r.Post("/v1/memory/search", s.handleSearchMemory)
 		r.Post("/v1/memory/hybrid", s.handleHybridSearchMemory)
 		r.Get("/v1/memory/{memory_id}", s.handleGetMemory)
 		r.Post("/v1/memory/{memory_id}/vote", s.handleVoteMemory)
@@ -247,7 +247,7 @@ func (s *Server) setupRouter() chi.Router {
 
 		// Embedding endpoints (local Ollama, no cloud)
 		r.Post("/v1/embed", s.handleEmbed)
-			r.Get("/v1/embed/info", s.handleEmbedInfo)
+		r.Get("/v1/embed/info", s.handleEmbedInfo)
 
 		// Access control endpoints
 		r.Post("/v1/access/request", s.handleAccessRequest)

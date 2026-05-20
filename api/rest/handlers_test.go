@@ -889,7 +889,7 @@ func (m *mockAgentStore) ListAgents(_ context.Context) ([]*store.AgentEntry, err
 func (m *mockAgentStore) CreateAgent(_ context.Context, _ *store.AgentEntry) error { return nil }
 func (m *mockAgentStore) UpdateAgent(_ context.Context, _ *store.AgentEntry) error { return nil }
 func (m *mockAgentStore) RemoveAgent(_ context.Context, _ string) error            { return nil }
-func (m *mockAgentStore) UpdateAgentStatus(_ context.Context, _, _ string) error    { return nil }
+func (m *mockAgentStore) UpdateAgentStatus(_ context.Context, _, _ string) error   { return nil }
 func (m *mockAgentStore) UpdateAgentLastSeen(_ context.Context, _ string, _ time.Time) error {
 	return nil
 }
@@ -899,7 +899,7 @@ func (m *mockAgentStore) BackfillFirstSeen(_ context.Context, _ string, _ time.T
 func (m *mockAgentStore) AcquireRedeployLock(_ context.Context, _, _ string, _ time.Duration) error {
 	return nil
 }
-func (m *mockAgentStore) ReleaseRedeployLock(_ context.Context) error                  { return nil }
+func (m *mockAgentStore) ReleaseRedeployLock(_ context.Context) error { return nil }
 func (m *mockAgentStore) GetRedeployLock(_ context.Context) (*store.RedeploymentLock, error) {
 	return nil, nil
 }

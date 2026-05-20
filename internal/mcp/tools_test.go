@@ -331,7 +331,7 @@ func TestSageTurn_RecallOnly(t *testing.T) {
 	assert.Equal(t, "what do I know about SAGE architecture", m["topic"])
 	recalled := m["recalled"].([]map[string]any)
 	assert.Len(t, recalled, 1) // mock returns 1 result
-	assert.Nil(t, m["stored"])  // no observation = nothing stored
+	assert.Nil(t, m["stored"]) // no observation = nothing stored
 }
 
 func TestSageTurn_MissingTopic(t *testing.T) {

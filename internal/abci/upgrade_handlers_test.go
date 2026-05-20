@@ -386,4 +386,3 @@ func TestProcessTx_RoutesUpgradeTypes(t *testing.T) {
 		assert.Equal(t, uint32(0), result.Code, "log: %s", result.Log)
 	})
 }
-

@@ -1,9 +1,9 @@
 package poe
 
 const (
-	ewmaEta        = 0.9  // Decay factor
-	coldStartPrior = 0.5  // A_prior for new validators
-	coldStartKMin  = 10   // Minimum observations for full weight
+	ewmaEta        = 0.9 // Decay factor
+	coldStartPrior = 0.5 // A_prior for new validators
+	coldStartKMin  = 10  // Minimum observations for full weight
 )
 
 // EWMATracker tracks exponentially weighted moving average accuracy.

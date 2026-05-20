@@ -21,9 +21,9 @@ import (
 // tempdir. The script behavior is controlled by env vars set on the
 // supervisor's spawn. Supported modes:
 //
-//   exit0          : exit 0 immediately (healthy-exit path).
-//   crash          : exit 1 immediately (crash-loop test).
-//   halt           : write HALT sentinel JSON to $HALT_PATH, exit 1.
+//	exit0          : exit 0 immediately (healthy-exit path).
+//	crash          : exit 1 immediately (crash-loop test).
+//	halt           : write HALT sentinel JSON to $HALT_PATH, exit 1.
 //
 // We use a shell script rather than a compiled Go helper to keep
 // the test fast and to avoid invoking `go test -c` recursively.
@@ -85,10 +85,10 @@ func (s *stubExecer) wasCalled() bool { return atomic.LoadInt32(&s.called) == 1 
 // recordingRestorer captures the (snapshotDir, dataDir) pair so
 // tests can assert the launcher resolved the right snapshot.
 type recordingRestorer struct {
-	called       int32
-	snapshotDir  string
-	dataDir      string
-	returnErr    error
+	called      int32
+	snapshotDir string
+	dataDir     string
+	returnErr   error
 }
 
 func (r *recordingRestorer) Restore(snapshotDir, dataDir string) error {

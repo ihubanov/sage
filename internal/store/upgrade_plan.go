@@ -41,7 +41,7 @@ type AppliedUpgradeRecord struct {
 // failures.
 var ErrNoUpgradePlan = errors.New("no pending upgrade plan")
 
-func upgradePlanKey() []byte         { return []byte("upgrade:plan") }
+func upgradePlanKey() []byte            { return []byte("upgrade:plan") }
 func upgradeAppliedKey(n string) []byte { return []byte("upgrade:applied:" + n) }
 
 // SetUpgradePlan persists rec as the single pending plan. Overwrites

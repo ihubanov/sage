@@ -34,8 +34,8 @@ func TestCometBFTSecretConnection(t *testing.T) {
 	var result struct {
 		Result struct {
 			Listening bool   `json:"listening"`
-			NPeers   string `json:"n_peers"`
-			Peers    []struct {
+			NPeers    string `json:"n_peers"`
+			Peers     []struct {
 				NodeInfo struct {
 					ID      string `json:"id"`
 					Moniker string `json:"moniker"`

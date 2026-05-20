@@ -123,7 +123,8 @@ func (s *Server) handleGovPropose(w http.ResponseWriter, r *http.Request) {
 	txHash, err := s.broadcastTxCommit(encoded)
 	if err != nil {
 		s.logger.Error().Err(err).Msg("failed to broadcast gov propose tx")
-		status, publicMsg := broadcastErrorPublic(err); writeProblem(w, status, "Broadcast error", publicMsg)
+		status, publicMsg := broadcastErrorPublic(err)
+		writeProblem(w, status, "Broadcast error", publicMsg)
 		return
 	}
 
@@ -191,7 +192,8 @@ func (s *Server) handleGovVote(w http.ResponseWriter, r *http.Request) {
 	txHash, err := s.broadcastTxCommit(encoded)
 	if err != nil {
 		s.logger.Error().Err(err).Msg("failed to broadcast gov vote tx")
-		status, publicMsg := broadcastErrorPublic(err); writeProblem(w, status, "Broadcast error", publicMsg)
+		status, publicMsg := broadcastErrorPublic(err)
+		writeProblem(w, status, "Broadcast error", publicMsg)
 		return
 	}
 
@@ -251,7 +253,8 @@ func (s *Server) handleGovCancel(w http.ResponseWriter, r *http.Request) {
 	txHash, err := s.broadcastTxCommit(encoded)
 	if err != nil {
 		s.logger.Error().Err(err).Msg("failed to broadcast gov cancel tx")
-		status, publicMsg := broadcastErrorPublic(err); writeProblem(w, status, "Broadcast error", publicMsg)
+		status, publicMsg := broadcastErrorPublic(err)
+		writeProblem(w, status, "Broadcast error", publicMsg)
 		return
 	}
 

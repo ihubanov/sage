@@ -33,13 +33,13 @@ type sqlQuerier interface {
 
 // SQLiteStore implements MemoryStore, ValidatorScoreStore, AccessStore, and OrgStore using SQLite.
 type SQLiteStore struct {
-	conn              sqlQuerier   // either *sql.DB or *sql.Tx
-	db                *sql.DB      // nil for tx-scoped stores
-	dbPath            string
-	vault             *vault.Vault // nil = no encryption
-	vaultExpected     bool         // true = encryption should be active; reject writes if vault nil
-	decryptWarnOnce   sync.Once    // gates the one-time decryption failure warning
-	writeMu           sync.Mutex   // serializes ALL writes to prevent SQLITE_BUSY
+	conn            sqlQuerier // either *sql.DB or *sql.Tx
+	db              *sql.DB    // nil for tx-scoped stores
+	dbPath          string
+	vault           *vault.Vault // nil = no encryption
+	vaultExpected   bool         // true = encryption should be active; reject writes if vault nil
+	decryptWarnOnce sync.Once    // gates the one-time decryption failure warning
+	writeMu         sync.Mutex   // serializes ALL writes to prevent SQLITE_BUSY
 
 	// Optional cross-encoder reranker; nil = skip the rerank pass and return
 	// the RRF-sorted candidates directly. Wired at server startup via
@@ -3572,18 +3572,18 @@ func (s *SQLiteStore) PurgePipelines(ctx context.Context, olderThan time.Time) (
 
 // GovProposal represents a governance proposal in SQLite.
 type GovProposal struct {
-	ProposalID    string  `json:"proposal_id"`
-	Operation     string  `json:"operation"`
-	TargetAgentID string  `json:"target_agent_id"`
-	TargetPubkey  string  `json:"target_pubkey,omitempty"`
-	TargetPower   int64   `json:"target_power,omitempty"`
-	ProposerID    string  `json:"proposer_id"`
-	Status        string  `json:"status"`
-	CreatedHeight int64   `json:"created_height"`
-	ExpiryHeight  int64   `json:"expiry_height"`
-	ExecutedHeight *int64  `json:"executed_height,omitempty"`
-	Reason        string  `json:"reason,omitempty"`
-	CreatedAt     string  `json:"created_at,omitempty"`
+	ProposalID     string `json:"proposal_id"`
+	Operation      string `json:"operation"`
+	TargetAgentID  string `json:"target_agent_id"`
+	TargetPubkey   string `json:"target_pubkey,omitempty"`
+	TargetPower    int64  `json:"target_power,omitempty"`
+	ProposerID     string `json:"proposer_id"`
+	Status         string `json:"status"`
+	CreatedHeight  int64  `json:"created_height"`
+	ExpiryHeight   int64  `json:"expiry_height"`
+	ExecutedHeight *int64 `json:"executed_height,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	CreatedAt      string `json:"created_at,omitempty"`
 }
 
 // GovVote represents a governance vote in SQLite.

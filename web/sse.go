@@ -15,12 +15,12 @@ type EventType string
 const maxClients = 50
 
 const (
-	EventRemember  EventType = "remember"
-	EventRecall    EventType = "recall"
-	EventForget    EventType = "forget"
-	EventVote      EventType = "vote"
-	EventConsensus EventType = "consensus"
-	EventAgent     EventType = "agent"
+	EventRemember   EventType = "remember"
+	EventRecall     EventType = "recall"
+	EventForget     EventType = "forget"
+	EventVote       EventType = "vote"
+	EventConsensus  EventType = "consensus"
+	EventAgent      EventType = "agent"
 	EventImport     EventType = "import"
 	EventUpdate     EventType = "update"
 	EventGovernance EventType = "governance"

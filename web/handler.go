@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"net"
@@ -16,7 +17,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -64,19 +64,19 @@ type embedderProvider interface {
 
 // DashboardHandler serves the CEREBRUM dashboard UI and its API endpoints.
 type DashboardHandler struct {
-	store     store.MemoryStore
-	prefStore PreferencesStore
-	embedder  Embedder
-	SSE       *SSEBroadcaster
-	Version   string
-	ExecPath  string // path to sage-gui binary, used by /v1/mcp-config
+	store       store.MemoryStore
+	prefStore   PreferencesStore
+	embedder    Embedder
+	SSE         *SSEBroadcaster
+	Version     string
+	ExecPath    string // path to sage-gui binary, used by /v1/mcp-config
 	Encrypted   atomic.Bool
 	VaultLocked atomic.Bool // true when encryption is enabled but vault hasn't been unlocked yet
 
 	// Auth — only active when Encrypted is true.
-	VaultKeyPath   string
-	sessions       sync.Map // token -> expiry time
-	loginAttempts  sync.Map // IP -> []time.Time
+	VaultKeyPath  string
+	sessions      sync.Map // token -> expiry time
+	loginAttempts sync.Map // IP -> []time.Time
 
 	// SaveEncryptionConfig persists encryption enabled/disabled state to config.yaml.
 	SaveEncryptionConfig func(enabled bool) error
@@ -93,7 +93,7 @@ type DashboardHandler struct {
 	// CometBFT consensus — when set, agent create/update operations are also
 	// broadcast as on-chain transactions through CometBFT consensus.
 	CometBFTRPC string
-	SigningKey   ed25519.PrivateKey
+	SigningKey  ed25519.PrivateKey
 
 	// BadgerStore — when set, on-chain RBAC is enforced on dashboard endpoints
 	// when requests include X-Agent-ID headers (i.e. MCP agent requests).
@@ -259,140 +259,140 @@ func (h *DashboardHandler) RegisterRoutes(r chi.Router) {
 			// Redeploy guard — returns 503 for write endpoints during active redeployment.
 			r.Use(redeployGuard(h.Redeployer))
 
-		r.Get("/v1/dashboard/memory/list", h.handleListMemories)
-		r.Get("/v1/dashboard/export", h.handleExport)
-		r.Get("/v1/dashboard/memory/timeline", h.handleTimeline)
-		r.Get("/v1/dashboard/memory/graph", h.handleGraph)
-		r.Get("/v1/dashboard/stats", h.handleStats)
-		r.Delete("/v1/dashboard/memory/{id}", h.handleDeleteMemory)
-		r.Patch("/v1/dashboard/memory/{id}", h.handleUpdateMemory)
-		r.Post("/v1/dashboard/memory/bulk", h.handleBulkUpdateMemories)
-		r.Get("/v1/dashboard/events", h.SSE.ServeHTTP)
-		r.Post("/v1/dashboard/import", h.handleImportUpload)
-		r.Post("/v1/dashboard/import/preview", h.handleImportPreview)
-		r.Post("/v1/dashboard/import/confirm", h.handleImportConfirm)
+			r.Get("/v1/dashboard/memory/list", h.handleListMemories)
+			r.Get("/v1/dashboard/export", h.handleExport)
+			r.Get("/v1/dashboard/memory/timeline", h.handleTimeline)
+			r.Get("/v1/dashboard/memory/graph", h.handleGraph)
+			r.Get("/v1/dashboard/stats", h.handleStats)
+			r.Delete("/v1/dashboard/memory/{id}", h.handleDeleteMemory)
+			r.Patch("/v1/dashboard/memory/{id}", h.handleUpdateMemory)
+			r.Post("/v1/dashboard/memory/bulk", h.handleBulkUpdateMemories)
+			r.Get("/v1/dashboard/events", h.SSE.ServeHTTP)
+			r.Post("/v1/dashboard/import", h.handleImportUpload)
+			r.Post("/v1/dashboard/import/preview", h.handleImportPreview)
+			r.Post("/v1/dashboard/import/confirm", h.handleImportConfirm)
 
-		// Recall settings (k-value, confidence threshold)
-		r.Get("/v1/dashboard/settings/recall", h.handleGetRecallSettings)
-		r.Post("/v1/dashboard/settings/recall", h.handleSaveRecallSettings)
-		r.Get("/v1/dashboard/settings/cleanup", h.handleGetCleanupSettings)
-		r.Post("/v1/dashboard/settings/cleanup", h.handleSaveCleanupSettings)
-		r.Post("/v1/dashboard/cleanup/run", h.handleRunCleanup)
-		r.Get("/v1/dashboard/settings/boot-instructions", h.handleGetBootInstructions)
-		r.Post("/v1/dashboard/settings/boot-instructions", h.handleSaveBootInstructions)
-		r.Get("/v1/dashboard/settings/memory-mode", h.handleGetMemoryMode)
-		r.Post("/v1/dashboard/settings/memory-mode", h.handleSaveMemoryMode)
+			// Recall settings (k-value, confidence threshold)
+			r.Get("/v1/dashboard/settings/recall", h.handleGetRecallSettings)
+			r.Post("/v1/dashboard/settings/recall", h.handleSaveRecallSettings)
+			r.Get("/v1/dashboard/settings/cleanup", h.handleGetCleanupSettings)
+			r.Post("/v1/dashboard/settings/cleanup", h.handleSaveCleanupSettings)
+			r.Post("/v1/dashboard/cleanup/run", h.handleRunCleanup)
+			r.Get("/v1/dashboard/settings/boot-instructions", h.handleGetBootInstructions)
+			r.Post("/v1/dashboard/settings/boot-instructions", h.handleSaveBootInstructions)
+			r.Get("/v1/dashboard/settings/memory-mode", h.handleGetMemoryMode)
+			r.Post("/v1/dashboard/settings/memory-mode", h.handleSaveMemoryMode)
 
-		// Task backlog
-		r.Get("/v1/dashboard/tasks", h.handleGetTasks)
-		r.Post("/v1/dashboard/tasks", h.handleCreateTaskDashboard)
-		r.Put("/v1/dashboard/tasks/{id}/status", h.handleUpdateTaskStatusDashboard)
+			// Task backlog
+			r.Get("/v1/dashboard/tasks", h.handleGetTasks)
+			r.Post("/v1/dashboard/tasks", h.handleCreateTaskDashboard)
+			r.Put("/v1/dashboard/tasks/{id}/status", h.handleUpdateTaskStatusDashboard)
 
-		// Tags
-		r.Get("/v1/dashboard/tags", h.handleListTags)
-		r.Get("/v1/dashboard/memory/{id}/tags", h.handleGetMemoryTags)
-		r.Put("/v1/dashboard/memory/{id}/tags", h.handleSetMemoryTags)
+			// Tags
+			r.Get("/v1/dashboard/tags", h.handleListTags)
+			r.Get("/v1/dashboard/memory/{id}/tags", h.handleGetMemoryTags)
+			r.Put("/v1/dashboard/memory/{id}/tags", h.handleSetMemoryTags)
 
-		// Auto-start (open at login)
-		r.Get("/v1/dashboard/settings/autostart", h.handleGetAutostart)
-		r.Post("/v1/dashboard/settings/autostart", h.handleSetAutostart)
+			// Auto-start (open at login)
+			r.Get("/v1/dashboard/settings/autostart", h.handleGetAutostart)
+			r.Post("/v1/dashboard/settings/autostart", h.handleSetAutostart)
 
-		// Software Update
-		r.Get("/v1/dashboard/settings/update/check", h.handleCheckUpdate)
-		r.Post("/v1/dashboard/settings/update/apply", h.handleApplyUpdate)
-		r.Post("/v1/dashboard/settings/update/restart", h.handleRestart)
+			// Software Update
+			r.Get("/v1/dashboard/settings/update/check", h.handleCheckUpdate)
+			r.Post("/v1/dashboard/settings/update/apply", h.handleApplyUpdate)
+			r.Post("/v1/dashboard/settings/update/restart", h.handleRestart)
 
-		// Synaptic Ledger (encryption vault) management
-		r.Get("/v1/dashboard/settings/ledger", h.handleGetLedgerStatus)
-		r.Post("/v1/dashboard/settings/ledger/enable", h.handleEnableLedger)
-		r.Post("/v1/dashboard/settings/ledger/change-passphrase", h.handleChangePassphrase)
-		r.Post("/v1/dashboard/settings/ledger/disable", h.handleDisableLedger)
+			// Synaptic Ledger (encryption vault) management
+			r.Get("/v1/dashboard/settings/ledger", h.handleGetLedgerStatus)
+			r.Post("/v1/dashboard/settings/ledger/enable", h.handleEnableLedger)
+			r.Post("/v1/dashboard/settings/ledger/change-passphrase", h.handleChangePassphrase)
+			r.Post("/v1/dashboard/settings/ledger/disable", h.handleDisableLedger)
 
-		// Pre-validate endpoint — dry-run the 4 app validators
-		r.Post("/v1/memory/pre-validate", h.handlePreValidate)
+			// Pre-validate endpoint — dry-run the 4 app validators
+			r.Post("/v1/memory/pre-validate", h.handlePreValidate)
 
-		// Pipeline — agent-to-agent message bus
-		r.Get("/v1/dashboard/pipeline", h.handlePipelineList)
-		r.Get("/v1/dashboard/pipeline/stats", h.handlePipelineStats)
+			// Pipeline — agent-to-agent message bus
+			r.Get("/v1/dashboard/pipeline", h.handlePipelineList)
+			r.Get("/v1/dashboard/pipeline/stats", h.handlePipelineStats)
 
-		// Network agent management routes
-		h.RegisterNetworkRoutes(r)
+			// Network agent management routes
+			h.RegisterNetworkRoutes(r)
 
-		// Governance routes
-		h.RegisterGovernanceRoutes(r)
+			// Governance routes
+			h.RegisterGovernanceRoutes(r)
 
-		// ChatGPT setup wizard (v6.7.3) — orchestrates cloudflared install,
-		// login, tunnel create, DNS routing, autostart, and token mint so
-		// non-power-users can wire SAGE up to ChatGPT's MCP connector
-		// without touching a terminal. Local-first orchestration only —
-		// no SAGE-hosted relay, the user owns the tunnel end-to-end.
-		// wizardSecurityGate adds a strict same-origin check on top of
-		// the parent authMiddleware so cross-origin browser tabs cannot
-		// drive subprocess execution.
-		r.Group(func(r chi.Router) {
-			r.Use(h.wizardSecurityGate)
-			h.RegisterChatGPTWizardRoutes(r)
+			// ChatGPT setup wizard (v6.7.3) — orchestrates cloudflared install,
+			// login, tunnel create, DNS routing, autostart, and token mint so
+			// non-power-users can wire SAGE up to ChatGPT's MCP connector
+			// without touching a terminal. Local-first orchestration only —
+			// no SAGE-hosted relay, the user owns the tunnel end-to-end.
+			// wizardSecurityGate adds a strict same-origin check on top of
+			// the parent authMiddleware so cross-origin browser tabs cannot
+			// drive subprocess execution.
+			r.Group(func(r chi.Router) {
+				r.Use(h.wizardSecurityGate)
+				h.RegisterChatGPTWizardRoutes(r)
+			})
 		})
-	})
 
-	// Launch endpoint — redirects to CEREBRUM dashboard.
-	// The dock/tray app opens this URL; simple redirect avoids popup-blocker issues on macOS Tahoe+.
-	r.Get("/ui/launch", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/ui/", http.StatusFound)
-	})
+		// Launch endpoint — redirects to CEREBRUM dashboard.
+		// The dock/tray app opens this URL; simple redirect avoids popup-blocker issues on macOS Tahoe+.
+		r.Get("/ui/launch", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/ui/", http.StatusFound)
+		})
 
-	// SPA — serve static files, fallback to index.html
-	staticFS, _ := fs.Sub(StaticFS, "static")
-	fileServer := http.FileServer(http.FS(staticFS))
+		// SPA — serve static files, fallback to index.html
+		staticFS, _ := fs.Sub(StaticFS, "static")
+		fileServer := http.FileServer(http.FS(staticFS))
 
-	r.Get("/ui/*", func(w http.ResponseWriter, r *http.Request) {
-		// Strip /ui prefix
-		path := strings.TrimPrefix(r.URL.Path, "/ui")
-		if path == "" || path == "/" {
-			path = "/index.html"
-		}
+		r.Get("/ui/*", func(w http.ResponseWriter, r *http.Request) {
+			// Strip /ui prefix
+			path := strings.TrimPrefix(r.URL.Path, "/ui")
+			if path == "" || path == "/" {
+				path = "/index.html"
+			}
 
-		// Try to serve the file directly
-		f, err := staticFS.(fs.ReadFileFS).ReadFile(strings.TrimPrefix(path, "/")) //nolint:errcheck
-		if err != nil {
-			// Fallback to index.html for SPA routing
-			r.URL.Path = "/index.html"
-			fileServer.ServeHTTP(w, r)
-			return
-		}
+			// Try to serve the file directly
+			f, err := staticFS.(fs.ReadFileFS).ReadFile(strings.TrimPrefix(path, "/")) //nolint:errcheck
+			if err != nil {
+				// Fallback to index.html for SPA routing
+				r.URL.Path = "/index.html"
+				fileServer.ServeHTTP(w, r)
+				return
+			}
 
-		// Set content type
-		switch {
-		case strings.HasSuffix(path, ".html"):
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		case strings.HasSuffix(path, ".css"):
-			w.Header().Set("Content-Type", "text/css; charset=utf-8")
-		case strings.HasSuffix(path, ".js"):
-			w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
-		case strings.HasSuffix(path, ".json"):
-			w.Header().Set("Content-Type", "application/json")
-		case strings.HasSuffix(path, ".svg"):
-			w.Header().Set("Content-Type", "image/svg+xml")
-		case strings.HasSuffix(path, ".png"):
-			w.Header().Set("Content-Type", "image/png")
-		case strings.HasSuffix(path, ".ico"):
-			w.Header().Set("Content-Type", "image/x-icon")
-		}
+			// Set content type
+			switch {
+			case strings.HasSuffix(path, ".html"):
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			case strings.HasSuffix(path, ".css"):
+				w.Header().Set("Content-Type", "text/css; charset=utf-8")
+			case strings.HasSuffix(path, ".js"):
+				w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+			case strings.HasSuffix(path, ".json"):
+				w.Header().Set("Content-Type", "application/json")
+			case strings.HasSuffix(path, ".svg"):
+				w.Header().Set("Content-Type", "image/svg+xml")
+			case strings.HasSuffix(path, ".png"):
+				w.Header().Set("Content-Type", "image/png")
+			case strings.HasSuffix(path, ".ico"):
+				w.Header().Set("Content-Type", "image/x-icon")
+			}
 
-		// Don't let Cloudflare or browsers cache the SPA assets — they ship
-		// with each release and any CDN cache (default max-age=14400) makes
-		// users miss bug fixes for hours after a deploy. The files are tiny;
-		// always-fresh is the right tradeoff.
-		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-		w.Header().Set("Pragma", "no-cache")
-		w.Header().Set("Expires", "0")
+			// Don't let Cloudflare or browsers cache the SPA assets — they ship
+			// with each release and any CDN cache (default max-age=14400) makes
+			// users miss bug fixes for hours after a deploy. The files are tiny;
+			// always-fresh is the right tradeoff.
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			w.Header().Set("Pragma", "no-cache")
+			w.Header().Set("Expires", "0")
 
-		w.Write(f) //nolint:errcheck,gosec // static embedded file, not user input
-	})
+			w.Write(f) //nolint:errcheck,gosec // static embedded file, not user input
+		})
 
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/ui/", http.StatusFound)
-	})
+		r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/ui/", http.StatusFound)
+		})
 	}) // end securityHeaders group
 }
 
@@ -1569,8 +1569,8 @@ func (h *DashboardHandler) handleGetCleanupSettings(w http.ResponseWriter, r *ht
 
 	// Also include last run info
 	resp := map[string]any{
-		"config":     cfg,
-		"last_run":   prefs["cleanup_last_run"],
+		"config":      cfg,
+		"last_run":    prefs["cleanup_last_run"],
 		"last_result": prefs["cleanup_last_result"],
 	}
 

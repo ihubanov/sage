@@ -11,11 +11,11 @@ import (
 // CleanupConfig holds settings for memory auto-cleanup.
 type CleanupConfig struct {
 	Enabled                bool    `json:"enabled"`
-	ObservationTTLDays     int     `json:"observation_ttl_days"`      // TTL for observation-type memories
-	SessionTTLDays         int     `json:"session_ttl_days"`          // TTL for session-context observations
-	StaleThreshold         float64 `json:"stale_threshold"`           // Confidence below this = stale
-	AutoChallengeConflicts bool    `json:"auto_challenge_conflicts"`  // Auto-challenge contradicting facts
-	CleanupIntervalHours   int     `json:"cleanup_interval_hours"`    // How often to run cleanup
+	ObservationTTLDays     int     `json:"observation_ttl_days"`     // TTL for observation-type memories
+	SessionTTLDays         int     `json:"session_ttl_days"`         // TTL for session-context observations
+	StaleThreshold         float64 `json:"stale_threshold"`          // Confidence below this = stale
+	AutoChallengeConflicts bool    `json:"auto_challenge_conflicts"` // Auto-challenge contradicting facts
+	CleanupIntervalHours   int     `json:"cleanup_interval_hours"`   // How often to run cleanup
 }
 
 // DefaultCleanupConfig returns sensible defaults (disabled by default).
@@ -76,11 +76,11 @@ type CleanupStore interface {
 
 // CleanupResult holds the result of a cleanup run.
 type CleanupResult struct {
-	Checked      int      `json:"checked"`
-	Deprecated   int      `json:"deprecated"`
+	Checked       int      `json:"checked"`
+	Deprecated    int      `json:"deprecated"`
 	DeprecatedIDs []string `json:"deprecated_ids,omitempty"`
-	DryRun       bool     `json:"dry_run"`
-	Reason       string   `json:"reason,omitempty"`
+	DryRun        bool     `json:"dry_run"`
+	Reason        string   `json:"reason,omitempty"`
 }
 
 // RunCleanup executes the memory cleanup logic.

@@ -26,8 +26,8 @@ func TestDeptRBAC(t *testing.T) {
 	requireNetwork(t)
 
 	// --- Setup: Create 5 agents ---
-	adminA := newTestAgent(t)   // OrgA admin
-	adminB := newTestAgent(t)   // OrgB admin
+	adminA := newTestAgent(t)    // OrgA admin
+	adminB := newTestAgent(t)    // OrgB admin
 	engAgentA := newTestAgent(t) // OrgA Engineering member
 	engAgentB := newTestAgent(t) // OrgB Engineering member
 	resAgentB := newTestAgent(t) // OrgB Research member
@@ -389,4 +389,3 @@ func doRequest(t *testing.T, req *http.Request) (map[string]interface{}, int) {
 	}
 	return result, resp.StatusCode
 }
-

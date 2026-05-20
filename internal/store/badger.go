@@ -273,8 +273,8 @@ func validatorStatsKey(validatorID string) []byte {
 
 // ValidatorStats holds per-validator vote counters stored on-chain.
 type ValidatorStats struct {
-	TotalVotes  uint64
-	AcceptVotes uint64
+	TotalVotes      uint64
+	AcceptVotes     uint64
 	LastBlockHeight uint64
 }
 
@@ -1130,11 +1130,11 @@ func (s *BadgerStore) ListOrgsByName(name string) ([]OrgEntry, error) {
 				return getErr
 			}
 			var (
-				orgName    string
-				orgDesc    string
-				orgAdmin   string
-				orgHeight  int64
-				decodeErr  error
+				orgName   string
+				orgDesc   string
+				orgAdmin  string
+				orgHeight int64
+				decodeErr error
 			)
 			err := item.Value(func(val []byte) error {
 				var offset int
@@ -1291,9 +1291,9 @@ func (s *BadgerStore) GetAgentOrg(agentID string) (orgID string, err error) {
 
 // SetFederation stores a federation entry in BadgerDB.
 // Encoding: proposerOrg (length-prefixed) + targetOrg (length-prefixed) + maxClearance (1 byte)
-//   + expiresAt (8 bytes) + requiresApproval (1 byte) + status (length-prefixed)
-//   + allowedDomains count (4 bytes) + each domain (length-prefixed)
-//   + allowedDepts count (4 bytes) + each dept (length-prefixed).
+//   - expiresAt (8 bytes) + requiresApproval (1 byte) + status (length-prefixed)
+//   - allowedDomains count (4 bytes) + each domain (length-prefixed)
+//   - allowedDepts count (4 bytes) + each dept (length-prefixed).
 func (s *BadgerStore) SetFederation(fedID string, proposerOrg, targetOrg string, allowedDomains []string, maxClearance uint8, expiresAt int64, requiresApproval bool, status string, allowedDepts ...[]string) error {
 	return s.db.Update(func(txn *badger.Txn) error {
 		var depts []string

@@ -15,15 +15,15 @@ import (
 type Phase string
 
 const (
-	PhaseLockAcquired     Phase = "LOCK_ACQUIRED"
-	PhaseBackupCreated    Phase = "BACKUP_CREATED"
-	PhaseChainStopped     Phase = "CHAIN_STOPPED"
-	PhaseGenesisGenerated Phase = "GENESIS_GENERATED"
-	PhaseChainStateWiped  Phase = "CHAIN_STATE_WIPED"
-	PhaseChainRestarted   Phase = "CHAIN_RESTARTED"
+	PhaseLockAcquired      Phase = "LOCK_ACQUIRED"
+	PhaseBackupCreated     Phase = "BACKUP_CREATED"
+	PhaseChainStopped      Phase = "CHAIN_STOPPED"
+	PhaseGenesisGenerated  Phase = "GENESIS_GENERATED"
+	PhaseChainStateWiped   Phase = "CHAIN_STATE_WIPED"
+	PhaseChainRestarted    Phase = "CHAIN_RESTARTED"
 	PhaseConsensusVerified Phase = "CONSENSUS_VERIFIED"
-	PhaseRBACConfigured   Phase = "RBAC_CONFIGURED"
-	PhaseCompleted        Phase = "COMPLETED"
+	PhaseRBACConfigured    Phase = "RBAC_CONFIGURED"
+	PhaseCompleted         Phase = "COMPLETED"
 )
 
 // PhaseStatus represents the status of a phase.

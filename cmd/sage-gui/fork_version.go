@@ -54,3 +54,19 @@ func readForkVersion(path string) int {
 func stampForkVersion(path string, fork int) error {
 	return os.WriteFile(path, []byte(fmt.Sprintf("%d\n", fork)), 0600)
 }
+
+// isLegacyForkOneVersion reports whether lastVersion was produced by a
+// pre-gate binary whose chain state is already fork=1 compatible. The gate
+// shipped in v7.5.5; v7.5.0..v7.5.4 binaries produced the same encoding,
+// so adopting fork=1 without a reset is safe for them. Anything older
+// (v6.x, v7.0..v7.4) used a different fork lineage and MUST run the
+// destructive reset before adopting fork=1, otherwise the new binary
+// reads incompatible Badger/CometBFT state.
+//
+// Accepts both "v7.5.0" and bare "7.5.0" forms and tolerates post-tag
+// suffixes ("v7.5.4-1-gabc"). Empty input returns false (caller handles
+// fresh-install separately).
+func isLegacyForkOneVersion(lastVersion string) bool {
+	v := strings.TrimPrefix(lastVersion, "v")
+	return strings.HasPrefix(v, "7.5.")
+}

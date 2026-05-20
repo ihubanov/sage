@@ -56,16 +56,40 @@ func migrateOnUpgrade(dataDir string) (migrated bool, err error) {
 	}
 
 	// Legacy install (version.txt exists but no fork-version.txt) — predates
-	// the gate. Adopt the current fork without resetting. The upgrade that
-	// introduces the gate itself must not produce a spurious reset.
+	// the gate. Two sub-paths:
+	//
+	//   (a) lastVersion is a pre-gate v7.5.x release (v7.5.0..v7.5.4). Same
+	//       fork lineage as the current binary — adopt fork=1 without
+	//       resetting. The upgrade that introduces the gate itself must
+	//       not produce a spurious reset.
+	//
+	//   (b) lastVersion is older (v6.x, v7.0..v7.4). Different fork lineage —
+	//       chain state encoding is incompatible with the current binary.
+	//       Run the destructive reset before stamping fork=1, otherwise the
+	//       new binary tries to read incompatible Badger/CometBFT state.
 	if onDiskFork == 0 {
+		if isLegacyForkOneVersion(lastVersion) {
+			if stampErr := stampForkVersion(forkPath, ConsensusForkVersion); stampErr != nil {
+				return false, stampErr
+			}
+			if lastVersion != version {
+				fmt.Fprintf(os.Stderr, "\n  Upgrading SAGE from %s → %s (chain state preserved — adopting consensus fork %d)\n\n", lastVersion, version, ConsensusForkVersion)
+			}
+			return false, stampVersion(versionPath)
+		}
+
+		fmt.Fprintf(os.Stderr, "\n  Upgrading SAGE from %s → %s (pre-v7.5 chain state — one-time migration reset to fork %d, memories preserved)\n", lastVersion, version, ConsensusForkVersion)
+		if resetErr := resetChainState(dataDir, badgerPath, cometHome, sqlitePath, lastVersion); resetErr != nil {
+			return false, resetErr
+		}
 		if stampErr := stampForkVersion(forkPath, ConsensusForkVersion); stampErr != nil {
 			return false, stampErr
 		}
-		if lastVersion != version {
-			fmt.Fprintf(os.Stderr, "\n  Upgrading SAGE from %s → %s (chain state preserved — adopting consensus fork %d)\n\n", lastVersion, version, ConsensusForkVersion)
+		if stampErr := stampVersion(versionPath); stampErr != nil {
+			return false, stampErr
 		}
-		return false, stampVersion(versionPath)
+		fmt.Fprintf(os.Stderr, "  Upgrade complete — your memories are safe, chain will rebuild\n\n")
+		return true, nil
 	}
 
 	// Same fork — patch/minor upgrade that doesn't touch consensus state.

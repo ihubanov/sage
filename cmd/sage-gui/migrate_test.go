@@ -127,6 +127,93 @@ func TestMigrateOnUpgrade_VersionChangedSameFork_PreservesState(t *testing.T) {
 	}
 }
 
+// TestMigrateOnUpgrade_PreV75_LegacyInstall_RunsReset: a v6.x / v7.0–v7.4
+// install jumping straight to v7.5.6+ has chain state from an incompatible
+// fork lineage. The legacy branch must run the destructive reset before
+// stamping fork=1, otherwise the new binary tries to read old-schema
+// Badger/CometBFT data. Regression guard for the v7.5.5 → v7.5.6 fix where
+// the original legacy adoption was version-blind and unsafe for pre-v7.5.
+func TestMigrateOnUpgrade_PreV75_LegacyInstall_RunsReset(t *testing.T) {
+	for _, fromVersion := range []string{"v6.8.0", "v7.1.2", "v7.4.5", "7.3.0"} {
+		fromVersion := fromVersion
+		t.Run(fromVersion, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			origHome := os.Getenv("SAGE_HOME")
+			os.Setenv("SAGE_HOME", tmpDir)
+			defer os.Setenv("SAGE_HOME", origHome)
+
+			dataDir := filepath.Join(tmpDir, "data")
+			badgerDir := filepath.Join(dataDir, "badger")
+			cometDir := filepath.Join(dataDir, "cometbft", "data")
+			sqlitePath := filepath.Join(dataDir, "sage.db")
+
+			os.MkdirAll(badgerDir, 0700)
+			os.MkdirAll(cometDir, 0700)
+			os.WriteFile(sqlitePath, []byte("fake-sqlite-data"), 0600)
+			os.WriteFile(filepath.Join(badgerDir, "000001.vlog"), []byte("badger"), 0600)
+			os.MkdirAll(filepath.Join(cometDir, "blockstore.db"), 0700)
+			os.MkdirAll(filepath.Join(cometDir, "state.db"), 0700)
+			os.WriteFile(filepath.Join(cometDir, "priv_validator_state.json"), []byte(`{"height":"100"}`), 0600)
+
+			os.WriteFile(filepath.Join(tmpDir, versionFile), []byte(fromVersion+"\n"), 0600)
+
+			oldVersion := version
+			version = "v7.5.6"
+			defer func() { version = oldVersion }()
+
+			migrated, err := migrateOnUpgrade(dataDir)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !migrated {
+				t.Fatalf("pre-v7.5 install (%s) must trigger reset — chain state encoding is incompatible", fromVersion)
+			}
+
+			if entries, _ := os.ReadDir(badgerDir); len(entries) != 0 {
+				t.Errorf("badger dir must be empty after reset, has %d entries", len(entries))
+			}
+			if _, err := os.Stat(filepath.Join(cometDir, "blockstore.db")); !os.IsNotExist(err) {
+				t.Error("blockstore.db must be removed")
+			}
+
+			if sqlData, _ := os.ReadFile(sqlitePath); string(sqlData) != "fake-sqlite-data" {
+				t.Error("SQLite must survive the reset (only Badger + CometBFT wipe)")
+			}
+
+			if got := readForkVersion(filepath.Join(tmpDir, forkVersionFile)); got != ConsensusForkVersion {
+				t.Errorf("fork-version = %d, want %d after reset", got, ConsensusForkVersion)
+			}
+		})
+	}
+}
+
+// TestIsLegacyForkOneVersion checks the version classifier directly.
+func TestIsLegacyForkOneVersion(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"v7.5.0", true},
+		{"v7.5.4", true},
+		{"v7.5.4-1-gabc123", true},
+		{"7.5.0", true},
+		{"7.5.2", true},
+		{"v7.4.9", false},
+		{"v7.0.0", false},
+		{"v6.8.0", false},
+		{"v8.0.0", false},
+		{"v7.50.0", false},
+		{"v75.0.0", false},
+		{"", false},
+		{"dev", false},
+	}
+	for _, c := range cases {
+		if got := isLegacyForkOneVersion(c.in); got != c.want {
+			t.Errorf("isLegacyForkOneVersion(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
 // TestMigrateOnUpgrade_LegacyInstall_AdoptsCurrentFork: an install that
 // predates the gate (has version.txt but no fork-version.txt) must adopt
 // the current ConsensusForkVersion on first boot WITHOUT resetting state.

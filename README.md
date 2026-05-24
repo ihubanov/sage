@@ -65,10 +65,6 @@ Agent profile completeness. `GET /v1/agent/me` was the only endpoint where the r
 - **OpenAPI schema realigned.** The `AgentProfile` schema retired the legacy `registered_at: string date-time` field (handler never returned it; a test guard explicitly rejected the key) and now declares `on_chain_height: integer (int64)` — the canonical name already used everywhere else in the response envelope. SDK consumers should pin `sage-agent-sdk>=7.7.0` to get the type-correct Pydantic model.
 - **No behaviour change for grants, votes, or memory writes.** This release is REST-layer plumbing — no consensus rules touched, no chain migration needed.
 
-### v7.7.1 — retag for Apple notarization credential refresh
-
-The macOS DMG jobs in v7.6.2 and v7.7.0 Release workflows failed at `xcrun notarytool` with HTTP 401 "invalid credentials" — the app-specific password in the repo's `APPLE_PASSWORD` secret had been invalidated by an upstream Apple ID security event. v7.7.1 is a pure retag (no behaviour or version-detectable change) to trigger a fresh DMG build under the rotated credential.
-
 ## What's New in v7.6
 
 Direct-write hooks across Claude Code and Codex. Sessions boot SAGE without depending on the agent to remember `sage_inception` on its own — the local SAGE node is queried directly by lifecycle hooks, recent committed memories land as initial context, and a session-lifecycle observation is written on exit. One unified install path for both agents.

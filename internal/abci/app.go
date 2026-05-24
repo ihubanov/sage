@@ -1189,10 +1189,107 @@ func (app *SageApp) processAccessGrant(parsedTx *tx.ParsedTx, height int64, bloc
 		return &abcitypes.ExecTxResult{Code: 33, Log: fmt.Sprintf("agent identity verification failed: %v", err)}
 	}
 
-	// Authorization: granter must own the domain or be ancestor domain owner
-	isOwner, err := app.badgerStore.IsDomainOwnerOrAncestor(grant.Domain, granterID)
-	if err != nil || !isOwner {
-		return &abcitypes.ExecTxResult{Code: 34, Log: fmt.Sprintf("access denied: %s is not owner of domain %s", granterID[:16], grant.Domain)}
+	// Authorization: granter must own the domain or be ancestor domain owner.
+	// Fork-gated: post-v8.0 relaxes this to mirror processMemorySubmit's
+	// auto-register pattern — if the target domain is genuinely unowned
+	// (no leaf owner AND no ancestor owner) and not a shared domain, the
+	// granter auto-claims ownership and the grant proceeds. Shared domains
+	// (general/self/meta/sage-*) are explicitly non-ownable and reject
+	// with the distinct Code 50 so callers can tell the two failures
+	// apart. Pre-fork blocks replay byte-identical to v7.1.1.
+	if app.postV8Fork(height) {
+		isOwner, _ := app.badgerStore.IsDomainOwnerOrAncestor(grant.Domain, granterID)
+		if !isOwner {
+			// Empty-domain guard: must not auto-register the empty string
+			// (which would otherwise be flagged as "not shared, no
+			// ancestors" and silently captured). Treat as invariant
+			// failure with the existing missing-payload code.
+			if grant.Domain == "" {
+				return &abcitypes.ExecTxResult{Code: 33, Log: "missing grant domain"}
+			}
+			// Distinguish "no owner anywhere" from "owned by someone
+			// else": only the former is eligible for auto-claim.
+			// IsDomainOwnerOrAncestor returns false in both cases.
+			leafOwner, _ := app.badgerStore.GetDomainOwner(grant.Domain)
+			anyAncestorOwned := false
+			segs := strings.Split(grant.Domain, ".")
+			for i := len(segs) - 1; i >= 1 && !anyAncestorOwned; i-- {
+				ancestor := strings.Join(segs[:i], ".")
+				if owner, _ := app.badgerStore.GetDomainOwner(ancestor); owner != "" {
+					anyAncestorOwned = true
+				}
+			}
+			if leafOwner != "" || anyAncestorOwned {
+				return &abcitypes.ExecTxResult{Code: 34, Log: fmt.Sprintf("access denied: %s is not owner of domain %s", granterID[:16], grant.Domain)}
+			}
+			// Unowned. Shared domains are never auto-registered —
+			// granting on them is a category error, reject explicitly.
+			if isSharedDomain(grant.Domain) {
+				return &abcitypes.ExecTxResult{Code: 50, Log: fmt.Sprintf("shared domain not ownable: %s", grant.Domain)}
+			}
+			// Auto-register the granter as owner of this unowned,
+			// non-shared domain. Mirrors processMemorySubmit's
+			// auto-register branch exactly — same pendingWrites shape,
+			// same idempotent owner self-grant.
+			regErr := app.badgerStore.RegisterDomain(grant.Domain, granterID, "", height)
+			if regErr != nil && !errors.Is(regErr, store.ErrDomainAlreadyRegistered) {
+				app.logger.Error().Err(regErr).Str("domain", grant.Domain).Msg("auto-register on grant failed")
+				return &abcitypes.ExecTxResult{Code: 34, Log: "auto-register failed"}
+			}
+			if errors.Is(regErr, store.ErrDomainAlreadyRegistered) {
+				// Same-block race: another tx registered the domain
+				// between our GetDomainOwner check and the RegisterDomain
+				// check-and-set. processMemorySubmit can swallow this
+				// because submits don't depend on the writer owning the
+				// domain — the next-block access check covers it. Grants
+				// DO depend on ownership, so we must re-check and reject
+				// the loser. No pendingWrites are appended on the loser
+				// path, mirroring TestAutoRegisterRaceLoss_NoSpuriousMirrorWrites.
+				if owner, _ := app.badgerStore.GetDomainOwner(grant.Domain); owner != granterID {
+					return &abcitypes.ExecTxResult{Code: 34, Log: fmt.Sprintf("access denied: %s lost auto-register race for domain %s", granterID[:16], grant.Domain)}
+				}
+			} else {
+				// First-write success. Mirror the auto-register to the
+				// off-chain accessStore so the mirror stays in sync from
+				// the moment the domain is created (v7.5.4 invariant).
+				app.logger.Info().Str("domain", grant.Domain).Str("owner", granterID[:16]).Msg("auto-registered domain on first access grant")
+				app.pendingWrites = append(app.pendingWrites, pendingWrite{
+					writeType: "domain_register",
+					data: &store.DomainEntry{
+						DomainName:    grant.Domain,
+						OwnerAgentID:  granterID,
+						CreatedHeight: height,
+						CreatedAt:     blockTime,
+					},
+				})
+				// Owner self-grant (level 2). Idempotent — if the grantee
+				// below happens to be the granter itself, the outer
+				// SetAccessGrant call is a no-op overwrite at the same
+				// level. Mirrors processMemorySubmit.
+				if grantErr := app.badgerStore.SetAccessGrant(grant.Domain, granterID, 2, 0, granterID); grantErr != nil {
+					app.logger.Error().Err(grantErr).Str("domain", grant.Domain).Msg("failed to auto-grant owner access on grant path")
+				} else {
+					app.pendingWrites = append(app.pendingWrites, pendingWrite{
+						writeType: "access_grant",
+						data: &store.AccessGrantEntry{
+							Domain:        grant.Domain,
+							GranteeID:     granterID,
+							GranterID:     granterID,
+							Level:         2,
+							CreatedHeight: height,
+							CreatedAt:     blockTime,
+						},
+					})
+				}
+			}
+			// Fall through to level validation + the grantee's SetAccessGrant below.
+		}
+	} else {
+		// Pre-fork (v7.1.1-byte-identical): strict ownership check.
+		isOwner, err := app.badgerStore.IsDomainOwnerOrAncestor(grant.Domain, granterID)
+		if err != nil || !isOwner {
+			return &abcitypes.ExecTxResult{Code: 34, Log: fmt.Sprintf("access denied: %s is not owner of domain %s", granterID[:16], grant.Domain)}
+		}
 	}
 
 	// Validate level

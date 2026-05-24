@@ -356,6 +356,11 @@ func encodePayload(tx *ParsedTx) ([]byte, error) {
 			return nil, fmt.Errorf("UpgradeRevert is nil for upgrade revert tx")
 		}
 		return encodeUpgradeRevert(tx.UpgradeRevert), nil
+	case TxTypeDomainReassign:
+		if tx.DomainReassign == nil {
+			return nil, fmt.Errorf("DomainReassign is nil for domain reassign tx")
+		}
+		return encodeDomainReassign(tx.DomainReassign), nil
 	default:
 		return nil, ErrUnknownTxType
 	}
@@ -565,6 +570,13 @@ func decodePayload(tx *ParsedTx, data []byte) error {
 			return err
 		}
 		tx.UpgradeRevert = u
+		return nil
+	case TxTypeDomainReassign:
+		d, err := decodeDomainReassign(data)
+		if err != nil {
+			return err
+		}
+		tx.DomainReassign = d
 		return nil
 	default:
 		return ErrUnknownTxType
@@ -1749,6 +1761,20 @@ func decodeMemoryReassign(data []byte) (*MemoryReassign, error) {
 }
 
 // --- GovPropose ---
+//
+// Wire format:
+//   operation(1) + targetID + targetPubKey + targetPower(8) +
+//   expiryBlocks(8) + reason [+ payload]
+//
+// Payload is a v8.0-additive trailing field. Legacy encoders (pre-v8.0) emit
+// no payload; legacy bytes decode cleanly because the decoder treats payload
+// as optional (mirrors FederationPropose.AllowedDepts). Post-v8.0 encoders
+// always emit appendBytes(payload) — empty payload encodes as a 4-byte zero
+// length prefix, which legacy decoders never see (the payload is appended
+// AFTER the legacy fields and the legacy decoder stops after Reason).
+//
+// This keeps pre/post-fork codec byte-identical for legacy ops AND
+// round-trippable post-fork without a version byte.
 
 func encodeGovPropose(g *GovPropose) []byte {
 	var buf []byte
@@ -1758,6 +1784,13 @@ func encodeGovPropose(g *GovPropose) []byte {
 	buf = appendInt64(buf, g.TargetPower)
 	buf = appendInt64(buf, g.ExpiryBlocks)
 	buf = appendBytes(buf, []byte(g.Reason))
+	// v8.0: trailing optional Payload. Encode only when non-empty so the
+	// legacy bytes-on-the-wire form is byte-identical for ops that don't
+	// carry a payload (validator add/remove/update_power). This keeps
+	// pre-fork replay AppHash-stable.
+	if len(g.Payload) > 0 {
+		buf = appendBytes(buf, g.Payload)
+	}
 	return buf
 }
 
@@ -1794,11 +1827,23 @@ func decodeGovPropose(data []byte) (*GovPropose, error) {
 		return nil, err
 	}
 
-	b, _, err = readBytes(data, off)
+	b, off, err = readBytes(data, off)
 	if err != nil {
 		return nil, err
 	}
 	g.Reason = string(b)
+
+	// v8.0: trailing optional Payload. Backward compatible — empty if absent.
+	// Future peers writing a payload post-fork can be decoded by pre-fork
+	// nodes during replay (codec round-trips); only EXECUTION short-circuits
+	// pre-fork.
+	if off < len(data) {
+		b, _, err = readBytes(data, off)
+		if err != nil {
+			return nil, err
+		}
+		g.Payload = b
+	}
 
 	return g, nil
 }
@@ -1996,4 +2041,57 @@ func decodeUpgradeRevert(data []byte) (*UpgradeRevert, error) {
 	u.ProposerID = string(b)
 
 	return u, nil
+}
+
+// --- DomainReassign (v8.0) ---
+//
+// Wire format: Domain + NewOwnerID + ParentDomain + ProposalID + OpenToShared(1)
+// All strings are length-prefixed via appendBytes. The bool is a single 0/1 byte.
+
+func encodeDomainReassign(d *DomainReassign) []byte {
+	var buf []byte
+	buf = appendBytes(buf, []byte(d.Domain))
+	buf = appendBytes(buf, []byte(d.NewOwnerID))
+	buf = appendBytes(buf, []byte(d.ParentDomain))
+	buf = appendBytes(buf, []byte(d.ProposalID))
+	buf = append(buf, boolToByte(d.OpenToShared))
+	return buf
+}
+
+func decodeDomainReassign(data []byte) (*DomainReassign, error) {
+	d := &DomainReassign{}
+	var err error
+	var b []byte
+	off := 0
+
+	b, off, err = readBytes(data, off)
+	if err != nil {
+		return nil, err
+	}
+	d.Domain = string(b)
+
+	b, off, err = readBytes(data, off)
+	if err != nil {
+		return nil, err
+	}
+	d.NewOwnerID = string(b)
+
+	b, off, err = readBytes(data, off)
+	if err != nil {
+		return nil, err
+	}
+	d.ParentDomain = string(b)
+
+	b, off, err = readBytes(data, off)
+	if err != nil {
+		return nil, err
+	}
+	d.ProposalID = string(b)
+
+	if off >= len(data) {
+		return nil, ErrInvalidTxData
+	}
+	d.OpenToShared = byteToBool(data[off])
+
+	return d, nil
 }

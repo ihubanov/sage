@@ -513,6 +513,14 @@ func (app *SageApp) CheckTx(_ context.Context, req *abcitypes.RequestCheckTx) (*
 		return &abcitypes.ResponseCheckTx{Code: 4, Log: fmt.Sprintf("nonce too low: got %d, expected > %d", parsedTx.Nonce, currentNonce)}, nil
 	}
 
+	// v8.0: reject post-fork tx types pre-fork so they never even hit the
+	// mempool. Symmetric with the execution-side Code 10 returned by
+	// processDomainReassign — keeps the wire surface honest and avoids
+	// burning mempool slots on txs that can't execute yet.
+	if parsedTx.Type == tx.TxTypeDomainReassign && !app.postV8Fork(app.state.Height) {
+		return &abcitypes.ResponseCheckTx{Code: 10, Log: "unknown tx type"}, nil
+	}
+
 	return &abcitypes.ResponseCheckTx{Code: 0}, nil
 }
 
@@ -703,6 +711,8 @@ func (app *SageApp) processTx(parsedTx *tx.ParsedTx, height int64, blockTime tim
 		return app.processUpgradeCancel(parsedTx, height, blockTime)
 	case tx.TxTypeUpgradeRevert:
 		return app.processUpgradeRevert(parsedTx, height, blockTime)
+	case tx.TxTypeDomainReassign:
+		return app.processDomainReassign(parsedTx, height, blockTime)
 	default:
 		return &abcitypes.ExecTxResult{Code: 10, Log: "unknown tx type"}
 	}
@@ -758,12 +768,42 @@ var sharedDomainPrefixes = []string{
 	"sage-",
 }
 
-func isSharedDomain(name string) bool {
+// isSharedDomainStatic encodes the compile-time shared-domain rules (the
+// explicit set + sage-* prefix). Pre-fork it's the entire decision; post-fork
+// it's the first leg of the hybrid check used by SageApp.isSharedDomain.
+//
+// Kept as a package-level function (not a method) so it can be unit-tested
+// independently of a live SageApp instance and so the pre-fork code path
+// stays byte-identical to v7.1.1.
+func isSharedDomainStatic(name string) bool {
 	if _, ok := sharedDomains[name]; ok {
 		return true
 	}
 	for _, p := range sharedDomainPrefixes {
 		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// isSharedDomain is the v8.0 hybrid shared-domain predicate. Pre-fork it
+// behaves exactly like the static rule set (so replay of pre-fork blocks is
+// byte-identical to v7.1.1). Post-fork it additionally honours the on-chain
+// shared_domain:<name> sentinel that TxTypeDomainReassign writes when
+// OpenToShared=true — letting governance promote a domain to shared without
+// shipping a binary release.
+//
+// height is the BLOCK height of the tx currently being processed; the
+// caller passes it through so the gate stays deterministic across replicas
+// (no implicit reads of mutable app state).
+func (app *SageApp) isSharedDomain(name string, height int64) bool {
+	if isSharedDomainStatic(name) {
+		return true
+	}
+	if app.postV8Fork(height) {
+		v, _ := app.badgerStore.GetState("shared_domain:" + name)
+		if len(v) > 0 {
 			return true
 		}
 	}
@@ -786,7 +826,7 @@ func (app *SageApp) processMemorySubmit(parsedTx *tx.ParsedTx, height int64, blo
 	// If the domain doesn't exist, auto-register it with the submitting agent as owner.
 	// Reserved shared domains (e.g. "general", "self") are writable by any authenticated agent
 	// and are never auto-registered — they are conventional catch-alls without single-owner semantics.
-	if submit.DomainTag != "" && !isSharedDomain(submit.DomainTag) {
+	if submit.DomainTag != "" && !app.isSharedDomain(submit.DomainTag, height) {
 		domainOwner, domainErr := app.badgerStore.GetDomainOwner(submit.DomainTag)
 		if domainErr == nil && domainOwner != "" {
 			// Domain is owned — check write access (level 2).
@@ -2937,6 +2977,7 @@ func (app *SageApp) processGovPropose(parsedTx *tx.ParsedTx, height int64, _ tim
 	proposalID, propErr := app.govEngine.Propose(
 		proposerID, op, gp.TargetID, gp.TargetPubKey,
 		gp.TargetPower, gp.ExpiryBlocks, gp.Reason, height,
+		gp.Payload,
 	)
 	if propErr != nil {
 		return &abcitypes.ExecTxResult{Code: 73, Log: "governance propose failed: " + propErr.Error()}
@@ -3226,6 +3267,168 @@ func (app *SageApp) processUpgradeRevert(parsedTx *tx.ParsedTx, height int64, _ 
 		Msg("upgrade revert received (pre-fork stub — no state mutation)")
 
 	return &abcitypes.ExecTxResult{Code: 0, Log: "upgrade tx accepted (pre-fork stub — no state mutation)"}
+}
+
+// ---------------------------------------------------------------------------
+// v8.0: TxTypeDomainReassign — governance-gated domain ownership recovery
+// ---------------------------------------------------------------------------
+//
+// Recovery primitive for domains that have been owner-captured (e.g. by a
+// rogue first-writer after a chain reset). Authorized via a previously
+// executed GovOpDomainReassign proposal that required a 3/4 supermajority
+// (see governance.ThresholdFor). Reuses BadgerStore.TransferDomain — the
+// proposal+supermajority+admin gate is the long-missing authorized caller
+// referenced at TransferDomain's docstring.
+//
+// Error code allocation 80–88. 50 is reserved for Fix 2 (shared-domain
+// grant rejection); 47–49 are upgrade-machinery codes.
+//
+// processDomainReassign is fork-gated. Pre-fork it returns Code 10
+// ("unknown tx type") — symmetric with CheckTx's pre-fork gate, so the
+// pre-fork replay AppHash is byte-identical to v7.1.1 (no state mutation,
+// no nonce burn since FinalizeBlock only burns nonce on Code 0).
+
+func (app *SageApp) processDomainReassign(parsedTx *tx.ParsedTx, height int64, blockTime time.Time) *abcitypes.ExecTxResult {
+	if !app.postV8Fork(height) {
+		return &abcitypes.ExecTxResult{Code: 10, Log: "unknown tx type"}
+	}
+	req := parsedTx.DomainReassign
+	if req == nil {
+		return &abcitypes.ExecTxResult{Code: 80, Log: "missing DomainReassign payload"}
+	}
+
+	// Verify agent identity on-chain via embedded Ed25519 proof.
+	senderID, err := verifyAgentIdentity(parsedTx)
+	if err != nil {
+		return &abcitypes.ExecTxResult{Code: 33, Log: fmt.Sprintf("agent identity verification failed: %v", err)}
+	}
+
+	// Submitter must be a chain admin — this is the recovery primitive
+	// gate. Defence in depth alongside the governance supermajority: the
+	// proposal already required 3/4 of validators to accept, but we keep
+	// the admin requirement on the execution tx so a non-admin can't race
+	// in with an executed proposal ID after the proposer goes offline.
+	agent, getErr := app.badgerStore.GetRegisteredAgent(senderID)
+	if getErr != nil {
+		return &abcitypes.ExecTxResult{Code: 80, Log: "domain reassign: sender not registered: " + getErr.Error()}
+	}
+	if agent.Role != "admin" {
+		return &abcitypes.ExecTxResult{Code: 80, Log: "domain reassign: only admin agents can execute reassignment"}
+	}
+
+	// Load and validate the linked proposal.
+	prop, err := app.govEngine.LoadProposal(req.ProposalID)
+	if err != nil || prop == nil {
+		return &abcitypes.ExecTxResult{Code: 81, Log: fmt.Sprintf("proposal not found: %s", req.ProposalID)}
+	}
+	if prop.Status != governance.StatusExecuted {
+		return &abcitypes.ExecTxResult{Code: 82, Log: fmt.Sprintf("proposal not executed (status=%s)", prop.Status)}
+	}
+	if prop.Operation != governance.OpDomainReassign {
+		return &abcitypes.ExecTxResult{Code: 82, Log: fmt.Sprintf("wrong operation type: got %d, want %d (OpDomainReassign)", prop.Operation, governance.OpDomainReassign)}
+	}
+
+	// Body match — the executing tx must reproduce the proposal's payload
+	// exactly. Prevents an admin from substituting a different reassign
+	// target after the supermajority has approved a specific one.
+	var payload tx.DomainReassign
+	if jsonErr := json.Unmarshal(prop.Payload, &payload); jsonErr != nil {
+		return &abcitypes.ExecTxResult{Code: 83, Log: fmt.Sprintf("proposal payload decode: %v", jsonErr)}
+	}
+	if payload.Domain != req.Domain || payload.NewOwnerID != req.NewOwnerID || payload.OpenToShared != req.OpenToShared {
+		return &abcitypes.ExecTxResult{Code: 83, Log: "proposal body mismatch (domain/new_owner/open_to_shared)"}
+	}
+
+	// Consumed-once check: a proposal authorizes exactly one execution.
+	consumedKey := "gov:proposal:" + req.ProposalID + ":consumed"
+	consumed, _ := app.badgerStore.GetState(consumedKey)
+	if len(consumed) > 0 {
+		return &abcitypes.ExecTxResult{Code: 84, Log: "proposal already consumed"}
+	}
+
+	// TTL — proposals stay executable for 2× the default expiry window.
+	// After that the admin must re-propose, so stale recovery decisions
+	// don't sit on the shelf indefinitely.
+	if height > prop.CreatedHeight+2*governance.DefaultExpiryBlocks {
+		return &abcitypes.ExecTxResult{Code: 85, Log: fmt.Sprintf(
+			"proposal stale: created=%d, current=%d, ttl=%d blocks",
+			prop.CreatedHeight, height, 2*governance.DefaultExpiryBlocks)}
+	}
+
+	// Existence + parent consistency.
+	existingOwner, existingParent, _, domErr := app.badgerStore.GetDomainOwnerAndMeta(req.Domain)
+	if domErr != nil {
+		return &abcitypes.ExecTxResult{Code: 86, Log: fmt.Sprintf("domain not found: %s", req.Domain)}
+	}
+	if req.ParentDomain != "" && req.ParentDomain != existingParent {
+		return &abcitypes.ExecTxResult{Code: 87, Log: fmt.Sprintf(
+			"parent mismatch: tx=%q, existing=%q", req.ParentDomain, existingParent)}
+	}
+	parent := req.ParentDomain
+	if parent == "" {
+		parent = existingParent
+	}
+
+	// Execute the transfer — chain-authoritative.
+	if transferErr := app.badgerStore.TransferDomain(req.Domain, req.NewOwnerID, parent, height); transferErr != nil {
+		return &abcitypes.ExecTxResult{Code: 88, Log: fmt.Sprintf("transfer failed: %v", transferErr)}
+	}
+
+	// Invalidate ALL grants on the domain — the previous owner's
+	// chain-of-trust does not survive the reassignment. The new owner
+	// must re-grant explicitly.
+	purged, purgeErr := app.badgerStore.DeleteGrantsByDomain(req.Domain)
+	if purgeErr != nil {
+		app.logger.Error().Err(purgeErr).Str("domain", req.Domain).Msg("failed to purge grants on domain reassignment")
+		// Continue — chain ownership has already flipped; the purge is
+		// best-effort cleanup. A future reassign or revoke can complete
+		// the cleanup; we don't roll back the transfer.
+	}
+
+	// Optionally promote the domain to shared via the on-chain sentinel.
+	// post-fork isSharedDomain reads this key and treats the domain as
+	// catch-all-writable.
+	if req.OpenToShared {
+		if shErr := app.badgerStore.SetSharedDomain(req.Domain); shErr != nil {
+			app.logger.Error().Err(shErr).Str("domain", req.Domain).Msg("failed to set shared_domain sentinel")
+		}
+	}
+
+	// Mark proposal consumed — one-shot semantics.
+	if cErr := app.badgerStore.SetState(consumedKey, []byte{1}); cErr != nil {
+		app.logger.Error().Err(cErr).Str("proposal_id", req.ProposalID).Msg("failed to mark proposal consumed")
+	}
+
+	// Mirror the new ownership to the offchain store. The chain is
+	// authoritative for owner reads (see v7.5.3); the mirror is advisory
+	// for ops/analytics. InsertDomain is ON CONFLICT DO NOTHING in SQLite
+	// today, so the mirror's owner column will lag — that's acceptable
+	// for v8.0; a follow-up commit can add an UpsertDomain path if
+	// dashboards need eventual consistency.
+	app.pendingWrites = append(app.pendingWrites, pendingWrite{
+		writeType: "domain_register",
+		data: &store.DomainEntry{
+			DomainName:    req.Domain,
+			OwnerAgentID:  req.NewOwnerID,
+			ParentDomain:  parent,
+			CreatedHeight: height,
+			CreatedAt:     blockTime,
+		},
+	})
+
+	app.logger.Info().
+		Str("domain", req.Domain).
+		Str("previous_owner", existingOwner).
+		Str("new_owner", req.NewOwnerID[:16]).
+		Str("proposal_id", req.ProposalID).
+		Bool("open_to_shared", req.OpenToShared).
+		Int("purged_grants", purged).
+		Int64("height", height).
+		Msg("domain reassigned via governance")
+
+	return &abcitypes.ExecTxResult{Code: 0, Log: fmt.Sprintf(
+		"domain reassigned: %s -> %s (purged %d grants, open_to_shared=%t)",
+		req.Domain, req.NewOwnerID, purged, req.OpenToShared)}
 }
 
 // applyGovernanceProposal applies an executed governance proposal to the validator set

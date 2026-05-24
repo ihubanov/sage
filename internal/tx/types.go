@@ -40,6 +40,10 @@ const (
 	TxTypeUpgradePropose TxType = 27
 	TxTypeUpgradeCancel  TxType = 28
 	TxTypeUpgradeRevert  TxType = 29
+	// v8.0: governance-gated domain ownership recovery + dynamic shared-domain
+	// promotion. Linked to an accepted gov_propose via ProposalID. Reuses the
+	// existing BadgerStore.TransferDomain primitive.
+	TxTypeDomainReassign TxType = 30
 )
 
 // GovProposalOp identifies the governance operation being proposed.
@@ -49,6 +53,10 @@ const (
 	GovOpAddValidator    GovProposalOp = 1
 	GovOpRemoveValidator GovProposalOp = 2
 	GovOpUpdatePower     GovProposalOp = 3
+	// v8.0: domain ownership reassignment, quorum-gated by a 3/4
+	// supermajority. The execution tx (TxTypeDomainReassign) references
+	// the accepted proposal by ID and consumes it once.
+	GovOpDomainReassign GovProposalOp = 4
 )
 
 // VoteDecision represents a validator's vote on a proposed memory.
@@ -268,6 +276,25 @@ type GovPropose struct {
 	TargetPower  int64  // power for add/update (0 for remove)
 	ExpiryBlocks int64  // 0 = default
 	Reason       string // human-readable justification
+	// Payload (added v8.0) carries an operation-specific JSON body. Empty for
+	// legacy ops (1/2/3 — validator-set changes infer parameters from the
+	// existing scalar fields). For OpDomainReassign (4), Payload is the
+	// JSON-encoded DomainReassign body: {Domain, NewOwnerID, ParentDomain,
+	// OpenToShared}. The decoder treats the trailing length-prefix as
+	// optional so legacy bytes (no Payload) still round-trip cleanly.
+	Payload []byte
+}
+
+// DomainReassign reassigns the owner of an existing domain. Authorized via
+// a previously accepted (and executed) GovOpDomainReassign proposal; the
+// ProposalID links the tx to the on-chain decision record. Optionally
+// promotes the domain to shared via the on-chain shared_domain:<name> key.
+type DomainReassign struct {
+	Domain       string // target of TransferDomain.name
+	NewOwnerID   string // TransferDomain.newOwnerID (hex agent ID)
+	ParentDomain string // TransferDomain.parentDomain; must match existing parent or be empty
+	ProposalID   string // hex(32), links to the accepted gov_propose
+	OpenToShared bool   // also write shared_domain:<name>
 }
 
 // GovVote records a validator's vote on a governance proposal.
@@ -353,6 +380,7 @@ type ParsedTx struct {
 	UpgradePropose     *UpgradePropose
 	UpgradeCancel      *UpgradeCancel
 	UpgradeRevert      *UpgradeRevert
+	DomainReassign     *DomainReassign
 	Signature          []byte // Node validator Ed25519 signature (64 bytes)
 	PublicKey          []byte // Node validator Ed25519 public key (32 bytes)
 	Nonce              uint64

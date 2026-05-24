@@ -538,6 +538,56 @@ func (s *BadgerStore) DeleteAccessGrant(domain, agentID string) error {
 	})
 }
 
+// DeleteGrantsByDomain removes every access grant on a single domain and
+// returns the number of grants deleted. Used by the v8.0
+// TxTypeDomainReassign handler to invalidate any inherited access whenever
+// ownership is transferred — the previous owner's chain-of-trust should not
+// survive the reassignment.
+//
+// Two-pass within a single read-then-write transaction pair: the first pass
+// collects keys under a View() iterator (PrefetchValues=false, prefix-bound),
+// the second deletes them in a single Update(). Iteration uses BadgerDB's
+// lexicographic ordering on the "grant:<domain>:" prefix, which is the same
+// layout grantKey writes — see grantKey at the top of the federation
+// access-control block.
+func (s *BadgerStore) DeleteGrantsByDomain(domain string) (int, error) {
+	var keys [][]byte
+	prefix := []byte("grant:" + domain + ":")
+	err := s.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = false
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			keys = append(keys, append([]byte{}, it.Item().Key()...))
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	err = s.db.Update(func(txn *badger.Txn) error {
+		for _, k := range keys {
+			if dErr := txn.Delete(k); dErr != nil {
+				return dErr
+			}
+		}
+		return nil
+	})
+	return len(keys), err
+}
+
+// SetSharedDomain marks a domain as shared by writing the on-chain
+// shared_domain:<name> sentinel key. Used by the v8.0 TxTypeDomainReassign
+// handler when OpenToShared=true, so subsequent grant/submit code paths
+// (via SageApp.isSharedDomain) see the domain as shared post-fork.
+//
+// Thin wrapper around SetState — kept as a named method to keep the call
+// site at the ABCI layer readable and to centralize the key naming.
+func (s *BadgerStore) SetSharedDomain(name string) error {
+	return s.SetState("shared_domain:"+name, []byte{1})
+}
+
 // HasAccess checks if an agent has the required access level on a domain.
 // Uses blockTime for deterministic expiry checks (not time.Now()).
 func (s *BadgerStore) HasAccess(domain, agentID string, requiredLevel uint8, blockTime time.Time) (bool, error) {

@@ -22,6 +22,11 @@ const (
 	OpAddValidator    ProposalOp = 1
 	OpRemoveValidator ProposalOp = 2
 	OpUpdatePower     ProposalOp = 3
+	// OpDomainReassign (v8.0) is the governance op authorizing a
+	// TxTypeDomainReassign execution. Requires a 3/4 supermajority (see
+	// ThresholdFor) — stricter than the default 2/3 used for validator-set
+	// changes, because ownership reassignment is a recovery primitive.
+	OpDomainReassign ProposalOp = 4
 )
 
 // ProposalStatus represents the current state of a governance proposal.
@@ -47,4 +52,9 @@ type ProposalState struct {
 	CreatedHeight int64          `json:"created_height"`
 	ExpiryHeight  int64          `json:"expiry_height"`
 	Reason        string         `json:"reason"`
+	// Payload (v8.0) carries the operation-specific body for non-validator
+	// ops. For OpDomainReassign it's the JSON-encoded DomainReassign body.
+	// Empty/omitted for legacy ops (1/2/3). Stored verbatim by Propose so
+	// the executing DomainReassign tx can verify body-vs-proposal parity.
+	Payload []byte `json:"payload,omitempty"`
 }

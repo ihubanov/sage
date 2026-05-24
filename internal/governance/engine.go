@@ -47,7 +47,11 @@ func ComputeProposalID(proposerID string, height int64, op ProposalOp, targetID 
 }
 
 // Propose creates a new governance proposal.
-func (e *Engine) Propose(proposerID string, op ProposalOp, targetID string, targetPubKey []byte, targetPower int64, expiryBlocks int64, reason string, height int64) (string, error) {
+//
+// Payload is the operation-specific JSON body (added v8.0). It is stored
+// verbatim on the proposal record so the executing tx (e.g. DomainReassign)
+// can verify body-vs-proposal parity. Pass nil for legacy validator-set ops.
+func (e *Engine) Propose(proposerID string, op ProposalOp, targetID string, targetPubKey []byte, targetPower int64, expiryBlocks int64, reason string, height int64, payload []byte) (string, error) {
 	// Check no active proposal exists.
 	active, err := e.store.GetState("gov:active")
 	if err != nil {
@@ -93,6 +97,12 @@ func (e *Engine) Propose(proposerID string, op ProposalOp, targetID string, targ
 		if _, exists := e.validators.GetValidator(targetID); !exists {
 			return "", fmt.Errorf("target validator %s does not exist", targetID)
 		}
+	case OpDomainReassign:
+		// Payload is required — the domain/owner identity is carried in the
+		// JSON body, not in the scalar TargetID/TargetPower fields.
+		if len(payload) == 0 {
+			return "", fmt.Errorf("op_domain_reassign requires a non-empty payload")
+		}
 	}
 
 	// Validate expiry range.
@@ -121,6 +131,7 @@ func (e *Engine) Propose(proposerID string, op ProposalOp, targetID string, targ
 		CreatedHeight: height,
 		ExpiryHeight:  height + expiryBlocks,
 		Reason:        reason,
+		Payload:       payload,
 	}
 
 	data, err := json.Marshal(proposal)
@@ -172,7 +183,7 @@ func (e *Engine) Vote(proposalID string, voterID string, decision string, height
 	}
 
 	// Load proposal to check expiry.
-	proposal, err := e.loadProposal(proposalID)
+	proposal, err := e.LoadProposal(proposalID)
 	if err != nil {
 		return err
 	}
@@ -217,7 +228,7 @@ func (e *Engine) Cancel(proposalID string, cancellerID string, height int64) err
 		return fmt.Errorf("proposal %s is not the active proposal", proposalID)
 	}
 
-	proposal, err := e.loadProposal(proposalID)
+	proposal, err := e.LoadProposal(proposalID)
 	if err != nil {
 		return err
 	}
@@ -263,7 +274,7 @@ func (e *Engine) ProcessBlock(height int64) (*ProposalState, error) {
 	}
 
 	proposalID := string(active)
-	proposal, err := e.loadProposal(proposalID)
+	proposal, err := e.LoadProposal(proposalID)
 	if err != nil {
 		return nil, err
 	}
@@ -307,8 +318,9 @@ func (e *Engine) ProcessBlock(height int64) (*ProposalState, error) {
 	// Get all validator powers.
 	powers := e.validators.GetAll()
 
-	// Check quorum.
-	passed, rejected, _, _, _ := CheckGovQuorum(votes, powers)
+	// Check quorum. Op-aware so OpDomainReassign uses 3/4 supermajority
+	// while validator-set ops keep the historical 2/3.
+	passed, rejected, _, _, _ := CheckGovQuorumOp(votes, powers, proposal.Operation)
 
 	if passed {
 		proposal.Status = StatusExecuted
@@ -345,7 +357,7 @@ func (e *Engine) GetActiveProposal() (*ProposalState, error) {
 	if active == nil {
 		return nil, nil
 	}
-	return e.loadProposal(string(active))
+	return e.LoadProposal(string(active))
 }
 
 // GetProposalVotes returns all votes for a given proposal.
@@ -371,8 +383,10 @@ func (e *Engine) GetProposalVotes(proposalID string) (map[string]string, error) 
 	return votes, nil
 }
 
-// loadProposal reads and unmarshals a proposal from the store.
-func (e *Engine) loadProposal(proposalID string) (*ProposalState, error) {
+// LoadProposal reads and unmarshals a proposal from the store. Exported so
+// the ABCI layer can verify a TxTypeDomainReassign references an accepted
+// proposal of the correct shape (operation, payload, status, freshness).
+func (e *Engine) LoadProposal(proposalID string) (*ProposalState, error) {
 	data, err := e.store.GetState("gov:proposal:" + proposalID)
 	if err != nil {
 		return nil, fmt.Errorf("load proposal %s: %w", proposalID, err)

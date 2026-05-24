@@ -99,7 +99,7 @@ func TestFullProposalLifecycle(t *testing.T) {
 	})
 
 	// Propose: val-a proposes adding a new validator.
-	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pubkey"), 5, 0, "add new validator", 100)
+	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pubkey"), 5, 0, "add new validator", 100, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, proposalID)
 
@@ -133,7 +133,7 @@ func TestSingleNodeAutoApprove(t *testing.T) {
 	})
 
 	// Propose: sole validator proposes adding a new validator.
-	_, err := eng.Propose("sole-val", OpAddValidator, "new-val", []byte("pk"), 3, 0, "bootstrap network", 50)
+	_, err := eng.Propose("sole-val", OpAddValidator, "new-val", []byte("pk"), 3, 0, "bootstrap network", 50, nil)
 	require.NoError(t, err)
 
 	// ProcessBlock: single validator, so MinVotingBlocks is skipped.
@@ -152,7 +152,7 @@ func TestProposalExpiry(t *testing.T) {
 	})
 
 	// Propose with default expiry (100 blocks).
-	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 5, 0, "test expiry", 100)
+	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 5, 0, "test expiry", 100, nil)
 	require.NoError(t, err)
 
 	// Advance past expiry: 100 + 100 = 200, so height 201 should expire.
@@ -178,7 +178,7 @@ func TestProposalRejection(t *testing.T) {
 		"val-c": 10,
 	})
 
-	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 5, 0, "test rejection", 100)
+	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 5, 0, "test rejection", 100, nil)
 	require.NoError(t, err)
 
 	// val-b and val-c reject: rejectPower=20, 20*3=60 > 30 => rejected.
@@ -203,7 +203,7 @@ func TestProposerCooldown(t *testing.T) {
 	})
 
 	// First proposal succeeds.
-	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 5, 0, "first", 100)
+	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 5, 0, "first", 100, nil)
 	require.NoError(t, err)
 
 	// Execute it so we can try another.
@@ -213,12 +213,12 @@ func TestProposerCooldown(t *testing.T) {
 	require.NotNil(t, executed)
 
 	// Second proposal within cooldown (100 + 50 = 150). Height 140 < 150.
-	_, err = eng.Propose("val-a", OpAddValidator, "another-val", []byte("pk2"), 5, 0, "too soon", 140)
+	_, err = eng.Propose("val-a", OpAddValidator, "another-val", []byte("pk2"), 5, 0, "too soon", 140, nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "cooldown")
 
 	// After cooldown expires: height 150 >= 100 + 50.
-	_, err = eng.Propose("val-a", OpAddValidator, "another-val", []byte("pk2"), 5, 0, "after cooldown", 150)
+	_, err = eng.Propose("val-a", OpAddValidator, "another-val", []byte("pk2"), 5, 0, "after cooldown", 150, nil)
 	require.NoError(t, err)
 }
 
@@ -231,12 +231,12 @@ func TestPowerConstraint(t *testing.T) {
 
 	// Total power = 30. New validator power must satisfy: targetPower*3 <= 30.
 	// Power 11: 11*3=33 > 30 => rejected.
-	_, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 11, 0, "too much power", 100)
+	_, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 11, 0, "too much power", 100, nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeds 1/3")
 
 	// Power 10: 10*3=30 <= 30 => allowed.
-	_, err = eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 10, 0, "just right", 100)
+	_, err = eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 10, 0, "just right", 100, nil)
 	require.NoError(t, err)
 }
 
@@ -247,7 +247,7 @@ func TestMinValidatorsConstraint(t *testing.T) {
 	})
 
 	// With only 2 validators, removal should be rejected.
-	_, err := eng.Propose("val-a", OpRemoveValidator, "val-b", nil, 0, 0, "remove one of two", 100)
+	_, err := eng.Propose("val-a", OpRemoveValidator, "val-b", nil, 0, 0, "remove one of two", 100, nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "minimum 2 validators")
 }
@@ -259,7 +259,7 @@ func TestDuplicateVoteRejected(t *testing.T) {
 		"val-c": 10,
 	})
 
-	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 5, 0, "test dup", 100)
+	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 5, 0, "test dup", 100, nil)
 	require.NoError(t, err)
 
 	// val-a already auto-voted. Voting again should fail.
@@ -281,7 +281,7 @@ func TestNonValidatorVoteRejected(t *testing.T) {
 		"val-c": 10,
 	})
 
-	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 5, 0, "test non-val", 100)
+	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 5, 0, "test non-val", 100, nil)
 	require.NoError(t, err)
 
 	err = eng.Vote(proposalID, "outsider", "accept", 105)
@@ -296,7 +296,7 @@ func TestCancelByProposer(t *testing.T) {
 		"val-c": 10,
 	})
 
-	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 5, 0, "to cancel", 100)
+	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 5, 0, "to cancel", 100, nil)
 	require.NoError(t, err)
 
 	// Cancel by proposer.
@@ -315,7 +315,7 @@ func TestCancelByNonProposerRejected(t *testing.T) {
 		"val-c": 10,
 	})
 
-	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 5, 0, "no cancel", 100)
+	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 5, 0, "no cancel", 100, nil)
 	require.NoError(t, err)
 
 	err = eng.Cancel(proposalID, "val-b", 105)
@@ -345,7 +345,7 @@ func TestMinVotingBlocksEnforcement(t *testing.T) {
 		"val-c": 10,
 	})
 
-	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 5, 0, "test min blocks", 100)
+	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 5, 0, "test min blocks", 100, nil)
 	require.NoError(t, err)
 
 	// val-b votes accept immediately — now 2/3 have voted accept.
@@ -375,11 +375,11 @@ func TestActiveProposalBlocksNewProposal(t *testing.T) {
 		"val-c": 10,
 	})
 
-	_, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 5, 0, "first", 100)
+	_, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 5, 0, "first", 100, nil)
 	require.NoError(t, err)
 
 	// val-b tries to propose while val-a's proposal is active.
-	_, err = eng.Propose("val-b", OpAddValidator, "another", []byte("pk2"), 5, 0, "blocked", 101)
+	_, err = eng.Propose("val-b", OpAddValidator, "another", []byte("pk2"), 5, 0, "blocked", 101, nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "active proposal already exists")
 }
@@ -390,12 +390,12 @@ func TestExpiryBounds(t *testing.T) {
 	})
 
 	// Below minimum.
-	_, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 3, MinExpiryBlocks-1, "too short", 100)
+	_, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 3, MinExpiryBlocks-1, "too short", 100, nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "below minimum")
 
 	// Above maximum.
-	_, err = eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 3, MaxExpiryBlocks+1, "too long", 100)
+	_, err = eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 3, MaxExpiryBlocks+1, "too long", 100, nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeds maximum")
 }
@@ -407,7 +407,7 @@ func TestVoteOnExpiredProposal(t *testing.T) {
 		"val-c": 10,
 	})
 
-	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 5, 10, "short expiry", 100)
+	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 5, 10, "short expiry", 100, nil)
 	require.NoError(t, err)
 
 	// Try to vote after expiry (100 + 10 = 110).
@@ -422,7 +422,7 @@ func TestVoteOnWrongProposal(t *testing.T) {
 		"val-b": 10,
 	})
 
-	_, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 3, 0, "active", 100)
+	_, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 3, 0, "active", 100, nil)
 	require.NoError(t, err)
 
 	err = eng.Vote("nonexistent-id", "val-b", "accept", 105)
@@ -436,7 +436,7 @@ func TestInvalidVoteDecision(t *testing.T) {
 		"val-b": 10,
 	})
 
-	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 3, 0, "test", 100)
+	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 3, 0, "test", 100, nil)
 	require.NoError(t, err)
 
 	err = eng.Vote(proposalID, "val-b", "maybe", 105)
@@ -451,7 +451,7 @@ func TestGetProposalVotes(t *testing.T) {
 		"val-c": 10,
 	})
 
-	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 5, 0, "test votes", 100)
+	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 5, 0, "test votes", 100, nil)
 	require.NoError(t, err)
 
 	require.NoError(t, eng.Vote(proposalID, "val-b", "reject", 105))
@@ -490,7 +490,7 @@ func TestUpdatePowerOperation(t *testing.T) {
 	})
 
 	// UpdatePower on existing validator should succeed.
-	proposalID, err := eng.Propose("val-a", OpUpdatePower, "val-b", nil, 20, 0, "boost val-b", 100)
+	proposalID, err := eng.Propose("val-a", OpUpdatePower, "val-b", nil, 20, 0, "boost val-b", 100, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, proposalID)
 
@@ -501,7 +501,7 @@ func TestUpdatePowerOperation(t *testing.T) {
 	require.NoError(t, err)
 
 	// Wait for cooldown.
-	_, err = eng.Propose("val-a", OpUpdatePower, "nonexistent", nil, 20, 0, "bad target", 200)
+	_, err = eng.Propose("val-a", OpUpdatePower, "nonexistent", nil, 20, 0, "bad target", 200, nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "does not exist")
 }
@@ -513,19 +513,19 @@ func TestCancelSetsCooldown(t *testing.T) {
 		"val-c": 10,
 	})
 
-	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 5, 0, "to cancel", 100)
+	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 5, 0, "to cancel", 100, nil)
 	require.NoError(t, err)
 
 	// Cancel at height 110.
 	require.NoError(t, eng.Cancel(proposalID, "val-a", 110))
 
 	// Try to propose again within cooldown (110 + 50 = 160). Height 150 < 160.
-	_, err = eng.Propose("val-a", OpAddValidator, "new-val2", []byte("pk2"), 5, 0, "too soon", 150)
+	_, err = eng.Propose("val-a", OpAddValidator, "new-val2", []byte("pk2"), 5, 0, "too soon", 150, nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "cooldown")
 
 	// After cooldown: height 160 >= 110 + 50.
-	_, err = eng.Propose("val-a", OpAddValidator, "new-val2", []byte("pk2"), 5, 0, "ok now", 160)
+	_, err = eng.Propose("val-a", OpAddValidator, "new-val2", []byte("pk2"), 5, 0, "ok now", 160, nil)
 	require.NoError(t, err)
 }
 
@@ -536,7 +536,7 @@ func TestProcessBlock_MultipleBlocks_EventualExecution(t *testing.T) {
 		"val-c": 10,
 	})
 
-	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 5, 0, "gradual", 100)
+	proposalID, err := eng.Propose("val-a", OpAddValidator, "new-val", []byte("pk"), 5, 0, "gradual", 100, nil)
 	require.NoError(t, err)
 
 	// Process several blocks — no quorum yet (only val-a auto-voted).

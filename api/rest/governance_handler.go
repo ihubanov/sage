@@ -1,6 +1,7 @@
 package rest
 
 import (
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -12,6 +13,12 @@ import (
 // --- Request / Response types ------------------------------------------------
 
 // GovProposeRequest is the JSON body for POST /v1/governance/propose.
+//
+// Payload (added v8.0) is an optional base64-encoded blob carrying operation-
+// specific data. For OpDomainReassign it's the JSON-encoded DomainReassign
+// body {domain, new_owner_id, parent_domain, open_to_shared} that the
+// executing TxTypeDomainReassign tx must reproduce byte-for-byte. Legacy
+// validator-set ops (add/remove/update_power) leave Payload empty.
 type GovProposeRequest struct {
 	Operation    string `json:"operation"`
 	TargetID     string `json:"target_id"`
@@ -19,6 +26,7 @@ type GovProposeRequest struct {
 	TargetPower  int64  `json:"target_power,omitempty"`
 	ExpiryBlocks int64  `json:"expiry_blocks,omitempty"`
 	Reason       string `json:"reason"`
+	Payload      string `json:"payload,omitempty"`
 }
 
 // GovProposeResponse is the JSON body for a successful proposal.
@@ -89,6 +97,19 @@ func (s *Server) handleGovPropose(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// v8.0: optional base64-encoded payload carries operation-specific data
+	// (e.g. JSON DomainReassign body for OpDomainReassign). The raw bytes are
+	// stored verbatim on the proposal record so the executing tx can verify
+	// body-vs-proposal parity. Legacy ops leave this empty.
+	var payloadBytes []byte
+	if req.Payload != "" {
+		payloadBytes, err = base64.StdEncoding.DecodeString(req.Payload)
+		if err != nil {
+			writeProblem(w, http.StatusBadRequest, "Invalid payload", "payload must be valid base64.")
+			return
+		}
+	}
+
 	proposeTx := &tx.ParsedTx{
 		Type:      tx.TxTypeGovPropose,
 		Nonce:     uint64(time.Now().UnixNano()), // #nosec G115 -- nonce from timestamp
@@ -100,6 +121,7 @@ func (s *Server) handleGovPropose(w http.ResponseWriter, r *http.Request) {
 			TargetPower:  req.TargetPower,
 			ExpiryBlocks: req.ExpiryBlocks,
 			Reason:       req.Reason,
+			Payload:      payloadBytes,
 		},
 	}
 
@@ -281,7 +303,9 @@ func parseGovOp(s string) (tx.GovProposalOp, error) {
 		return tx.GovOpRemoveValidator, nil
 	case "update_power":
 		return tx.GovOpUpdatePower, nil
+	case "domain_reassign":
+		return tx.GovOpDomainReassign, nil
 	default:
-		return 0, fmt.Errorf("operation must be one of: add_validator, remove_validator, update_power")
+		return 0, fmt.Errorf("operation must be one of: add_validator, remove_validator, update_power, domain_reassign")
 	}
 }

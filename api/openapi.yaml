@@ -566,6 +566,122 @@ components:
         next_cursor:
           type: string
 
+    # -- Governance ----------------------------------------------------------
+    GovProposeRequest:
+      type: object
+      required:
+        - operation
+        - target_id
+        - reason
+      properties:
+        operation:
+          type: string
+          enum:
+            - add_validator
+            - remove_validator
+            - update_power
+            - domain_reassign
+          description: >-
+            Governance operation. `domain_reassign` (v8.0) is the
+            access-control recovery primitive — it carries the target
+            DomainReassign body via the `payload` field rather than the
+            scalar target_* fields.
+        target_id:
+          type: string
+          description: >-
+            Hex-encoded validator pubkey for validator-set ops; reused as
+            the proposal-keying identifier for `domain_reassign` (typically
+            the dotted-path domain name).
+        target_pubkey:
+          type: string
+          description: Hex-encoded Ed25519 public key (required for add_validator).
+        target_power:
+          type: integer
+          format: int64
+          description: Validator power for add/update ops; ignored for domain_reassign.
+        expiry_blocks:
+          type: integer
+          format: int64
+          description: Proposal expiry in blocks (0 = chain default).
+        reason:
+          type: string
+          description: Human-readable justification.
+        payload:
+          type: string
+          description: >-
+            Base64-encoded operation-specific payload (v8.0). For
+            `domain_reassign`, the JSON-encoded body
+            `{domain, new_owner_id, parent_domain, open_to_shared}` that
+            the subsequent TxTypeDomainReassign execution tx must reproduce
+            byte-for-byte. Empty for legacy validator-set ops.
+
+    GovProposeResponse:
+      type: object
+      required:
+        - proposal_id
+        - tx_hash
+        - status
+      properties:
+        proposal_id:
+          type: string
+          description: Deterministic on-chain proposal identifier.
+        tx_hash:
+          type: string
+          description: CometBFT transaction hash.
+        status:
+          type: string
+          example: voting
+
+    # -- Domain reassign (v8.0) ---------------------------------------------
+    DomainReassignRequest:
+      type: object
+      required:
+        - domain
+        - new_owner_id
+        - proposal_id
+      properties:
+        domain:
+          type: string
+          description: Dotted-path domain name to reassign.
+        new_owner_id:
+          type: string
+          description: Hex(64) Ed25519 agent ID of the new owner.
+        parent_domain:
+          type: string
+          description: >-
+            Optional. Must match the existing parent or be left empty to
+            preserve. Mismatched parents are rejected during FinalizeBlock.
+        proposal_id:
+          type: string
+          description: >-
+            Hex-encoded ID of the previously accepted gov_propose
+            (`domain_reassign`) record. The execution tx is a no-op unless
+            this proposal exists, has executed, and hasn't been consumed.
+        open_to_shared:
+          type: boolean
+          default: false
+          description: >-
+            When true, also writes the on-chain `shared_domain:<name>`
+            sentinel so post-fork access checks treat the domain as
+            catch-all-writable.
+
+    DomainReassignResponse:
+      type: object
+      required:
+        - tx_hash
+        - purged_grants
+      properties:
+        tx_hash:
+          type: string
+          description: CometBFT transaction hash of the executed reassignment.
+        purged_grants:
+          type: integer
+          description: >-
+            Number of grant entries cleared when the domain ownership
+            flipped. The previous owner's chain-of-trust does not survive
+            the reassign — operators audit this count to confirm the blast
+            radius of recovery.
+
     HealthResponse:
       type: object
       required:
@@ -633,6 +749,16 @@ components:
             $ref: "#/components/schemas/ProblemDetails"
     Unauthorized:
       description: Missing or invalid authentication headers.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetails"
+    Forbidden:
+      description: >-
+        Caller authenticated but lacks authorisation, or the request was
+        rejected during on-chain finalisation (e.g. quorum-gated tx without
+        an executed proposal). The `detail` field carries the upstream
+        rejection reason.
       content:
         application/problem+json:
           schema:
@@ -1091,5 +1217,72 @@ paths:
                       $ref: "#/components/schemas/RegisteredAgent"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # -- Governance (v8.0 payload-aware) ----------------------------------------
+  /v1/governance/propose:
+    post:
+      operationId: proposeGovernance
+      summary: Submit a governance proposal (validator-set ops or v8.0 domain_reassign).
+      tags:
+        - Governance
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GovProposeRequest"
+      responses:
+        "200":
+          description: Proposal submitted, voting open.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GovProposeResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # -- Domain reassign (v8.0) ----------------------------------------------
+  /v1/domain/reassign:
+    post:
+      operationId: reassignDomain
+      summary: >-
+        Execute a domain ownership reassignment authorised by a previously
+        accepted governance proposal (v8.0 access-control recovery primitive).
+      description: >-
+        Quorum-gated recovery wrapper around BadgerStore.TransferDomain.
+        Pre-requisites: a `gov_propose` of operation `domain_reassign` with
+        the matching payload was accepted by a 3/4 validator supermajority
+        and is in status `executed`. Submitting this tx burns the proposal
+        (single-use) and purges all grants on the target domain. Caller must
+        be a chain admin; ABCI re-verifies admin role on-chain.
+      tags:
+        - Domain
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DomainReassignRequest"
+      responses:
+        "200":
+          description: Reassignment executed; previous grants purged.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DomainReassignResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "500":
           $ref: "#/components/responses/InternalError"

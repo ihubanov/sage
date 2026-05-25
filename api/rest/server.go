@@ -282,6 +282,7 @@ func (s *Server) setupRouter() chi.Router {
 		r.Post("/v1/access/revoke", s.handleAccessRevoke)
 		r.Get("/v1/access/grants/{agent_id}", s.handleListGrants)
 		r.Post("/v1/domain/register", s.handleDomainRegister)
+		r.Post("/v1/domain/reassign", s.handleDomainReassign)
 		r.Get("/v1/domain/{name}", s.handleGetDomain)
 
 		// Organization endpoints

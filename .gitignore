@@ -113,6 +113,8 @@ docs/*
 !docs/brain-dashboard.png
 !docs/sage-brain.svg
 !docs/privacy.html
+# Agent-facing code reference (public)
+!docs/reference/
 
 # Node.js (Playwright e2e tests)
 node_modules/

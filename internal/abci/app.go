@@ -268,12 +268,24 @@ type SageApp struct {
 	// v8 plan activates. Pre-fork blocks replay byte-identical to v7.1.1
 	// because every fork-gated handler reads this field deterministically.
 	v8AppliedHeight int64
+
+	// v8_2AppliedHeight is the block at which the v8.2 PoE-weighted
+	// quorum fork activated. Same semantics as v8AppliedHeight: zero
+	// means pre-fork (Phase-1 equal-weight quorum, byte-identical to
+	// v8.1.2); non-zero means quorum after this height consults the
+	// persisted poew:<id> weights via postV8_2Fork's strict-greater-than
+	// gate.
+	v8_2AppliedHeight int64
 }
 
 // v8UpgradeName is the canonical name for the v8.0 activation record. The
 // v7.5 watchdog names upgrade plans "app-v<TargetAppVersion>" so the lookup
 // must match. Centralised here to keep the fork-gate accessors honest.
 const v8UpgradeName = "app-v2"
+
+// v8_2UpgradeName is the canonical name for the v8.2 activation record.
+// Same naming discipline as v8UpgradeName: "app-v<TargetAppVersion>".
+const v8_2UpgradeName = "app-v3"
 
 // postV8Fork is the consensus-side fork-gate predicate. Use it inside
 // processTx and other height-aware paths. Strict greater-than mirrors
@@ -318,6 +330,51 @@ func recordV8Branch(postFork bool) {
 		branch = "post"
 	}
 	metrics.ForkBranchTotal.WithLabelValues("v8", branch).Inc()
+}
+
+// postV8_2Fork is the consensus-side fork-gate predicate for the v8.2
+// PoE-weighted quorum activation. Strict greater-than mirrors postV8Fork
+// (and CometBFT's "applied at H+1" semantic): the activation block H_act
+// itself still runs the pre-fork branch so the only AppHash delta at
+// H_act is the MarkUpgradeApplied write. Quorum decisions on H > H_act
+// consult the persisted poew:<id> weights (with bootstrap fallback for
+// validators whose entry is missing).
+func (app *SageApp) postV8_2Fork(height int64) bool {
+	return app.v8_2AppliedHeight > 0 && height > app.v8_2AppliedHeight
+}
+
+// IsPostV8_2Fork is the off-consensus accessor reserved for any future
+// REST surface that wants to query the live fork state. Reads the cached
+// AppState.Height, advisory only — never use this in the consensus path.
+func (app *SageApp) IsPostV8_2Fork() bool {
+	return app.v8_2AppliedHeight > 0 && app.state != nil && app.state.Height > app.v8_2AppliedHeight
+}
+
+// refreshV8_2Fork populates v8_2AppliedHeight from the persisted upgrade
+// audit trail. Called on boot (so a node restarting on a post-fork chain
+// picks up the gate without waiting for activation) and after the
+// activation block in FinalizeBlock.
+func (app *SageApp) refreshV8_2Fork() {
+	rec, err := app.badgerStore.GetAppliedUpgrade(v8_2UpgradeName)
+	if err != nil {
+		app.logger.Warn().Err(err).Str("name", v8_2UpgradeName).Msg("read v8.2 applied-upgrade record")
+		return
+	}
+	if rec == nil {
+		return
+	}
+	app.v8_2AppliedHeight = rec.AppliedHeight
+}
+
+// recordV8_2Branch is the v8.2 sibling of recordV8Branch. Same metric
+// name (sage_fork_branch_total) with fork="v8.2" so dashboards can plot
+// the two activations side by side.
+func recordV8_2Branch(postFork bool) {
+	branch := "pre"
+	if postFork {
+		branch = "post"
+	}
+	metrics.ForkBranchTotal.WithLabelValues("v8.2", branch).Inc()
 }
 
 // defaultFlushMaxRetries caps Commit's SQLITE_BUSY retry loop. At 30 tries
@@ -365,6 +422,7 @@ func NewSageApp(badgerPath string, postgresURL string, logger zerolog.Logger) (*
 		flushMaxRetries: defaultFlushMaxRetries,
 	}
 	app.refreshV8Fork()
+	app.refreshV8_2Fork()
 
 	// Reload persisted validators from BadgerDB (survives restart)
 	persistedVals, err := bs.LoadValidators()
@@ -409,6 +467,7 @@ func NewSageAppWithStores(bs *store.BadgerStore, offchain store.OffchainStore, l
 		flushMaxRetries: defaultFlushMaxRetries,
 	}
 	app.refreshV8Fork()
+	app.refreshV8_2Fork()
 
 	persistedVals, err := bs.LoadValidators()
 	if err != nil {
@@ -632,6 +691,9 @@ func (app *SageApp) FinalizeBlock(_ context.Context, req *abcitypes.RequestFinal
 		}
 		if plan.Name == v8UpgradeName {
 			app.v8AppliedHeight = req.Height
+		}
+		if plan.Name == v8_2UpgradeName {
+			app.v8_2AppliedHeight = req.Height
 		}
 		app.logger.Info().
 			Str("name", plan.Name).

@@ -599,18 +599,17 @@ func (h *DashboardHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	token := generateToken()
 	h.sessions.Store(token, time.Now().Add(sessionTTL))
 
-	http.SetCookie(w, &http.Cookie{
+	// gosec G124 wants a literal `Secure: true`; we set it based on
+	// r.TLS != nil because SAGE-Personal legitimately serves over plain
+	// HTTP on localhost when launched from the app icon (forcing Secure
+	// there would silently break login). Production deployments terminate
+	// TLS in front of sage-gui and r.TLS is populated automatically.
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124 — Secure derived from r.TLS, see comment above
 		Name:     sessionCookieName,
 		Value:    token,
 		Path:     "/",
 		MaxAge:   int(sessionTTL.Seconds()),
 		HttpOnly: true,
-		// Secure is set when the request arrived over TLS. SAGE-Personal
-		// can legitimately serve over plain HTTP on localhost (e.g. when
-		// launched from the app icon and bound to 127.0.0.1:8080), where
-		// forcing Secure would silently break login. Production
-		// deployments terminate TLS in front of sage-gui and r.TLS is
-		// populated by the chi server when behind a TLS-enabled listener.
 		Secure:   r.TLS != nil,
 		SameSite: http.SameSiteStrictMode,
 	})
@@ -632,8 +631,8 @@ func (h *DashboardHandler) handleLock(w http.ResponseWriter, r *http.Request) {
 
 	// Clear the cookie. Mirror the Secure attribute logic from
 	// handleUnlock — only mark Secure when the request is over TLS so
-	// localhost HTTP isn't broken.
-	http.SetCookie(w, &http.Cookie{
+	// localhost HTTP isn't broken. Same gosec G124 suppression rationale.
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124 — Secure derived from r.TLS, see handleUnlock
 		Name:     sessionCookieName,
 		Value:    "",
 		Path:     "/",

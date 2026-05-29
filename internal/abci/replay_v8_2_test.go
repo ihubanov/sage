@@ -50,7 +50,7 @@ func freshReplayApp(t *testing.T) (*SageApp, string) {
 			ID:    vid,
 			Power: 1,
 		}))
-		require.NoError(t, app.badgerStore.IncrementVoteStats(vid, true, 90))
+		require.NoError(t, app.badgerStore.IncrementVoteStats(vid, true, 90, false))
 	}
 	return app, badgerDir
 }

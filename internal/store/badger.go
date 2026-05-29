@@ -12,6 +12,8 @@ import (
 	"time"
 
 	badger "github.com/dgraph-io/badger/v4"
+
+	"github.com/l33tdawg/sage/internal/poe"
 )
 
 // ErrDomainAlreadyRegistered is returned by RegisterDomain when the domain
@@ -268,35 +270,89 @@ func validatorStatsKey(validatorID string) []byte {
 }
 
 // ValidatorStats holds per-validator vote counters stored on-chain.
+//
+// The first three fields are the v8.2-and-earlier 24-byte record. v8.3
+// (app-v4) appends the four PoE-signal fields, growing the record to 56
+// bytes the first time a validator's stats are written post-fork:
+//   - EWMAWeightedSum / EWMAWeightDenom / EWMACount are the three fields of
+//     poe.EWMATracker, accumulating the validator's verdict-correctness
+//     (did its vote match the final committed verdict) at quorum-resolution
+//     time. EWMACount counts terminal-verdict participations, which is NOT
+//     TotalVotes (votes cast, incl. on never-resolved memories).
+//   - CorrCount is the lifetime count of verdict matches (corroboration).
 type ValidatorStats struct {
 	TotalVotes      uint64
 	AcceptVotes     uint64
 	LastBlockHeight uint64
+
+	// v8.3 fields — zero on legacy 24-byte records (which read as Phase-1
+	// values: EWMA cold-start 0.5, corroboration 0).
+	EWMAWeightedSum float64
+	EWMAWeightDenom float64
+	EWMACount       uint64
+	CorrCount       uint64
 }
 
-// encodeValidatorStats encodes stats to bytes (24 bytes: 3 x uint64).
-func encodeValidatorStats(s *ValidatorStats) []byte {
-	buf := make([]byte, 24)
+const (
+	// validatorStatsLenLegacy is the v8.2-and-earlier record: 3 x uint64.
+	validatorStatsLenLegacy = 24
+	// validatorStatsLenV83 is the v8.3 record: legacy + EWMAWeightedSum,
+	// EWMAWeightDenom (IEEE-754 float64), EWMACount, CorrCount (uint64).
+	validatorStatsLenV83 = 56
+)
+
+// encodeValidatorStats encodes stats. v83=false writes the legacy 24-byte
+// layout byte-identical to v8.2.x; v83=true appends the four PoE-signal
+// fields for a 56-byte record. The flag is threaded from the abci layer
+// (postV8_3Fork) so pre-fork blocks replay byte-identical.
+func encodeValidatorStats(s *ValidatorStats, v83 bool) []byte {
+	n := validatorStatsLenLegacy
+	if v83 {
+		n = validatorStatsLenV83
+	}
+	buf := make([]byte, n)
 	binary.BigEndian.PutUint64(buf[0:8], s.TotalVotes)
 	binary.BigEndian.PutUint64(buf[8:16], s.AcceptVotes)
 	binary.BigEndian.PutUint64(buf[16:24], s.LastBlockHeight)
+	if v83 {
+		binary.BigEndian.PutUint64(buf[24:32], math.Float64bits(s.EWMAWeightedSum))
+		binary.BigEndian.PutUint64(buf[32:40], math.Float64bits(s.EWMAWeightDenom))
+		binary.BigEndian.PutUint64(buf[40:48], s.EWMACount)
+		binary.BigEndian.PutUint64(buf[48:56], s.CorrCount)
+	}
 	return buf
 }
 
-// decodeValidatorStats decodes stats from bytes.
+// decodeValidatorStats decodes either a 24-byte legacy record (the four v8.3
+// fields default to zero) or a 56-byte v8.3 record. Length-dispatch keeps old
+// chains' records readable post-upgrade and lets mixed-length records coexist
+// during the transition epoch.
 func decodeValidatorStats(data []byte) (*ValidatorStats, error) {
-	if len(data) != 24 {
-		return nil, fmt.Errorf("invalid validator stats: expected 24 bytes, got %d", len(data))
+	if len(data) != validatorStatsLenLegacy && len(data) != validatorStatsLenV83 {
+		return nil, fmt.Errorf("invalid validator stats: expected %d or %d bytes, got %d",
+			validatorStatsLenLegacy, validatorStatsLenV83, len(data))
 	}
-	return &ValidatorStats{
+	s := &ValidatorStats{
 		TotalVotes:      binary.BigEndian.Uint64(data[0:8]),
 		AcceptVotes:     binary.BigEndian.Uint64(data[8:16]),
 		LastBlockHeight: binary.BigEndian.Uint64(data[16:24]),
-	}, nil
+	}
+	if len(data) == validatorStatsLenV83 {
+		s.EWMAWeightedSum = math.Float64frombits(binary.BigEndian.Uint64(data[24:32]))
+		s.EWMAWeightDenom = math.Float64frombits(binary.BigEndian.Uint64(data[32:40]))
+		s.EWMACount = binary.BigEndian.Uint64(data[40:48])
+		s.CorrCount = binary.BigEndian.Uint64(data[48:56])
+	}
+	return s, nil
 }
 
-// IncrementVoteStats increments a validator's vote counters on-chain.
-func (s *BadgerStore) IncrementVoteStats(validatorID string, accepted bool, blockHeight uint64) error {
+// IncrementVoteStats increments a validator's vote counters on-chain. v83
+// selects the record encoding: pre-fork (false) writes 24 bytes byte-identical
+// to v8.2.x; post-fork (true) writes the 56-byte v8.3 record, preserving any
+// EWMA/corroboration fields already set by UpdateVerdictStats (read-modify-write
+// decodes whatever length is present and re-encodes at the requested length —
+// a lazy per-validator migration from 24 → 56 bytes on the first post-fork vote).
+func (s *BadgerStore) IncrementVoteStats(validatorID string, accepted bool, blockHeight uint64, v83 bool) error {
 	return s.db.Update(func(txn *badger.Txn) error {
 		stats := &ValidatorStats{}
 
@@ -324,7 +380,73 @@ func (s *BadgerStore) IncrementVoteStats(validatorID string, accepted bool, bloc
 		}
 		stats.LastBlockHeight = blockHeight
 
-		return txn.Set(validatorStatsKey(validatorID), encodeValidatorStats(stats))
+		return txn.Set(validatorStatsKey(validatorID), encodeValidatorStats(stats, v83))
+	})
+}
+
+// UpdateVerdictStats credits per-validator PoE signals when a memory reaches a
+// terminal verdict. For each validator in matches, match=true means its vote
+// agreed with the final committed verdict. Both signals derive from this one
+// event:
+//   - Accuracy: feed match (1.0/0.0) into the verdict-correctness EWMA via
+//     poe.EWMATracker.Update — the single source of truth for the η-decay
+//     recurrence (inlining the constant would risk a silent consensus split).
+//   - Corroboration: increment CorrCount on a match.
+//
+// Always writes the 56-byte v8.3 record — this is only ever called post-fork
+// (the abci caller gates on postV8_3Fork). Validator IDs are sorted before
+// iterating (belt-and-braces; BadgerDB's commit log is order-independent at the
+// key-set level, but sorting keeps the write sequence deterministic regardless).
+// The whole batch runs in one db.Update so a mid-batch error leaves no record
+// changed (atomicity). LastBlockHeight is intentionally NOT touched here — it
+// records vote time (set by IncrementVoteStats), not verdict-resolution time.
+func (s *BadgerStore) UpdateVerdictStats(matches map[string]bool) error {
+	ids := make([]string, 0, len(matches))
+	for id := range matches {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	return s.db.Update(func(txn *badger.Txn) error {
+		for _, id := range ids {
+			stats := &ValidatorStats{}
+			item, getErr := txn.Get(validatorStatsKey(id))
+			if getErr == nil {
+				valErr := item.Value(func(val []byte) error {
+					existing, decErr := decodeValidatorStats(val)
+					if decErr != nil {
+						return decErr
+					}
+					stats = existing
+					return nil
+				})
+				if valErr != nil {
+					return valErr
+				}
+			} else if getErr != badger.ErrKeyNotFound {
+				return getErr
+			}
+
+			tracker := &poe.EWMATracker{
+				WeightedSum: stats.EWMAWeightedSum,
+				WeightDenom: stats.EWMAWeightDenom,
+				Count:       int64(stats.EWMACount), // #nosec G115 -- non-negative count
+			}
+			outcome := 0.0
+			if matches[id] {
+				outcome = 1.0
+				stats.CorrCount++
+			}
+			tracker.Update(outcome)
+			stats.EWMAWeightedSum = tracker.WeightedSum
+			stats.EWMAWeightDenom = tracker.WeightDenom
+			stats.EWMACount = uint64(tracker.Count) // #nosec G115 -- Count is monotonic non-negative
+
+			if err := txn.Set(validatorStatsKey(id), encodeValidatorStats(stats, true)); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 

@@ -70,8 +70,8 @@ func TestValidatorLifecycle_L1_PersistAndHydrate(t *testing.T) {
 			ID:    vid,
 			Power: 1,
 		}))
-		require.NoError(t, app.badgerStore.IncrementVoteStats(vid, true, 90))
-		require.NoError(t, app.badgerStore.IncrementVoteStats(vid, true, 95))
+		require.NoError(t, app.badgerStore.IncrementVoteStats(vid, true, 90, false))
+		require.NoError(t, app.badgerStore.IncrementVoteStats(vid, true, 95, false))
 	}
 
 	// Run processEpoch at the first post-fork boundary (H=100, gate at 50).
@@ -132,7 +132,7 @@ func TestValidatorLifecycle_L2_RemovalPrunesPoEW(t *testing.T) {
 			ID:    vid,
 			Power: 1,
 		}))
-		require.NoError(t, app.badgerStore.IncrementVoteStats(vid, true, 90))
+		require.NoError(t, app.badgerStore.IncrementVoteStats(vid, true, 90, false))
 	}
 
 	// First post-fork epoch — all four get poew:<id>.
@@ -172,7 +172,7 @@ func TestValidatorLifecycle_L3_RestartBetweenEpochs(t *testing.T) {
 			ID:    vid,
 			Power: 1,
 		}))
-		require.NoError(t, app.badgerStore.IncrementVoteStats(vid, true, 90))
+		require.NoError(t, app.badgerStore.IncrementVoteStats(vid, true, 90, false))
 	}
 
 	// One post-fork epoch ran at H=100.

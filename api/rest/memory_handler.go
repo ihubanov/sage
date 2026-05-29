@@ -1175,6 +1175,17 @@ func (s *Server) handleGetMemory(w http.ResponseWriter, r *http.Request) {
 	// Apply confidence decay.
 	currentConf := memory.ComputeConfidence(rec.ConfidenceScore, rec.CreatedAt, time.Now(), len(corrs), rec.DomainTag)
 
+	// Surface the on-chain classification so GET /v1/memory/{id} matches the
+	// `classification` field the query/search/hybrid responses already return
+	// (handleQueryMemory et al.). Read-display only — enforcement still happens
+	// via the HasAccessMultiOrg gate above; this just stops the detail view from
+	// silently reporting every record as PUBLIC (0). Guarded on badgerStore like
+	// that gate, since some deployment modes run without it.
+	var memClass uint8
+	if s.badgerStore != nil {
+		memClass, _ = s.badgerStore.GetMemoryClassification(memoryID)
+	}
+
 	writeJSON(w, http.StatusOK, MemoryDetailResponse{
 		MemoryID:        rec.MemoryID,
 		SubmittingAgent: rec.SubmittingAgent,
@@ -1183,6 +1194,7 @@ func (s *Server) handleGetMemory(w http.ResponseWriter, r *http.Request) {
 		MemoryType:      string(rec.MemoryType),
 		DomainTag:       rec.DomainTag,
 		ConfidenceScore: currentConf,
+		Classification:  int(memClass),
 		Status:          string(rec.Status),
 		ParentHash:      rec.ParentHash,
 		CreatedAt:       rec.CreatedAt,

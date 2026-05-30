@@ -820,6 +820,16 @@ func NewSageAppWithStores(bs *store.BadgerStore, offchain store.OffchainStore, l
 // returns the current version. The fields are populated by the refreshV8*Fork
 // calls in NewSageApp before CometBFT ever calls Info(). A new fork must add
 // its case here, mirroring the v8*UpgradeName constants (app-vN → version N).
+//
+// LOCKSTEP INVARIANT: the top case here MUST equal cmd/sage-gui's
+// upgradeTargetAppVersion and the highest v8*UpgradeName fork. The app-v6
+// version-regression guard (processUpgradePropose) rejects
+// TargetAppVersion <= currentAppVersion(), and the watchdog reads this value
+// via /abci_info — if a future fork bumps the watchdog target without
+// extending this switch, the ceiling lags, the guard wrongly accepts the
+// live version, and the watchdog re-proposes in a loop. Adding app-vN means:
+// add a v8_(N-1)AppliedHeight gate, a case returning N here, bump the watchdog
+// target, and extend TestUpgradeNameConstantsAreCanonical — all together.
 func (app *SageApp) currentAppVersion() uint64 {
 	switch {
 	case app.v8_5AppliedHeight > 0:

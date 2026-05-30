@@ -1,4 +1,5 @@
-<!-- Verified against code at SAGE v8.1.1 (commit 2ca50ba). EXCEPTION: concepts/consensus-confidence-decay.md re-verified at v8.4.0 (PoE weight system through the app-v2…app-v5 forks). The REST/SDK/MCP surface is unchanged across v8.2–v8.4, so those files remain accurate; the v8.1.1 pin reflects their last full re-verification, not stale behavior. -->
+<!-- Verified against code at SAGE v8.1.1 (commit 2ca50ba). EXCEPTION: concepts/consensus-confidence-decay.md re-verified at v8.4.0 (PoE weight system through the app-v2…app-v5 forks). The REST/SDK/MCP surface is unchanged across v8.2–v8.5, so those files remain accurate; the v8.1.1 pin reflects their last full re-verification, not stale behavior. v8.5/app-v6 adds upgrade-machinery propose/revert guards only — it does NOT touch the PoE weight system or the REST/SDK/MCP surface documented here. (rest-api.md GET /health corrected at v8.5.0: no `version` field — intentionally omitted to avoid version-fingerprinting.) -->
+
 
 # SAGE Reference — Agent Integration Index
 

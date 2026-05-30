@@ -1080,7 +1080,9 @@ Completed pipeline messages sent by the authenticated agent.
 
 Liveness probe. No auth.
 
-**Response** (HTTP 200): `{"status": "healthy", "version": "..."}`
+**Response** (HTTP 200): `{"status": "healthy"}`
+
+The `version` field is intentionally omitted — `/health` is reachable through the wizard tunnel allowlist, so it stays minimal to avoid version-fingerprinting an internet-exposed node (`internal/metrics/health.go`). Returns HTTP 503 `{"status": "unhealthy"}` when a dependency (PostgreSQL or CometBFT) is down.
 
 ---
 

@@ -57,7 +57,22 @@ Add agents, configure domain-level read/write permissions, manage clearance leve
 
 ---
 
-## What's New in v8.4
+## What's New in v8.5
+
+**Proof-of-Experience Phase 2 is complete.** Across the v8 line, all four factors of a validator's quorum weight are now real and consensus-active: **accuracy** (verdict-correctness EWMA, `app-v4`), **corroboration** (lifetime verdict-match count, `app-v4`), **recency**, and **domain expertise** (domain-conditional weight, `app-v5`). A 2/3 quorum is no longer a 2/3 *majority* — it's a 2/3 *weighted* vote where weight is a validator's demonstrated track record, in context.
+
+**v8.5.0 hardens the upgrade machinery itself** behind a new fork (`app-v6`) so the consensus layer self-defends its own protocol activations. Three guards, each fork-gated (pre-fork blocks replay byte-identical):
+
+- **Canonical-name guard.** `processUpgradePropose` now rejects any plan whose `Name` isn't the canonical `app-v<N>` for its `TargetAppVersion`. The v8.x fork gates activate by matching `plan.Name` against `app-v<N>`, so a plan named anything else bumps the CometBFT app version while leaving the gate false (the bug class fixed in v8.4.1/8.4.2). The consensus layer now refuses such a plan from *any* proposer, not just the watchdog.
+- **Version-regression guard.** Rejects a propose whose `TargetAppVersion <= currentAppVersion()` — no silent regression or no-op upgrade. CometBFT provides no such check; the propose path is now the deterministic gate.
+- **Revert safety.** A live in-band downgrade is replay-unsafe by construction (it clears a fork gate to a *past* height → AppHash divergence → halt), so `processUpgradeRevert` now explicitly rejects post-fork (Code 90) instead of accepting a silent no-op. The only correct downgrade is a forward upgrade + off-chain snapshot rewind.
+
+Reviewed by a multi-agent adversarial pass (0 blockers, replay-safe, pre-fork byte-identical). SDK 8.5.0.
+
+## Older releases
+
+<details>
+<summary>v8.4 — real Domain factor + the v8.4.1/8.4.2 upgrade-activation fix</summary>
 
 **v8.4.2 (patch).** Two halves of one upgrade-activation fix:
 - **Watchdog plan naming.** The v7.5 watchdog named the upgrade plan after the binary version (e.g. `8.2.1`) instead of the canonical `app-v<N>` form the activation path keys on. On a real chain this bumped the CometBFT app version on activation while leaving every `postV8_*Fork` gate false — silently disabling the v8.x PoE consensus rules the upgrade was meant to turn on (confirmed in production logs: plans activated as `name=8.0.0`/`name=8.2.1`). The plan name is now derived from a single source of truth (`tx.CanonicalUpgradeName`), with guard tests coupling both the activation constants *and* the reported app version to it.
@@ -72,7 +87,7 @@ Real Domain factor — the **last Phase-1 stub closed**. After v8.3 made accurac
 - **Consensus-drift hardening (from a 73-agent adversarial audit of v8.3+v8.4).** Folded into the same fork: epoch-weight normalization now sums in **sorted-key order** (`NormalizeWeightsDeterministic`) — the legacy map-iteration sum was non-associative and could split the AppHash across replicas with ≥3 distinct-magnitude weights (a latent issue since v8.2, masked by equal-weight devnets). Also: re-submitting a memoryID that already reached a terminal verdict is now rejected (it previously rewound to `proposed` and let a fresh vote double-credit the verdict EWMA — a reputation-gaming vector); verdict crediting is gated on the on-chain status write succeeding; and the PoE fork gates are reconciled monotonic so a version jump can't activate a higher fork while a lower one stays off. Every fix is fork-gated or no-ops on existing chains (byte-identical replay).
 - **Test coverage.** Store DS1-DS4 (per-domain codec/round-trip/independence/atomicity, `memdomain` get/set). Quorum DQ1-DQ7 (expert dissent flips a verdict; same votes → opposite outcome by domain; shared/unknown fall back; per-domain crediting + replay idempotency). An end-to-end test drives a real `app-v5` activation, asserting `memdomain:`/`vstats_domain:` appear only post-fork. Plus determinism (200× bit-identical `NormalizeWeightsDeterministic`), re-submit-guard (both fork sides), and monotonic-reconcile regressions. Full suite green; lint clean.
 
-## Older releases
+</details>
 
 <details>
 <summary>v8.3 — real PoE signals (verdict-correctness EWMA + corroboration)</summary>

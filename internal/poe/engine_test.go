@@ -3,10 +3,12 @@ package poe
 import (
 	"fmt"
 	"math"
+	"sort"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestComputeWeight(t *testing.T) {
@@ -59,6 +61,73 @@ func TestNormalizeWeightsDeterministic_StableAcrossCalls(t *testing.T) {
 	// Invariant preserved: normalized weights sum to ~1.0 (the rep-cap loop is
 	// bounded at 10 iterations and need not drive every weight strictly under
 	// 10% for an arbitrary spread — see TestRepCap — so we only assert the sum).
+	var sum float64
+	for _, w := range ref {
+		sum += w
+	}
+	assert.InDelta(t, 1.0, sum, 1e-9, "normalized weights sum to 1")
+}
+
+// TestNormalizeWeights_LegacyMapOrderSumDiverges is the regression guard the
+// v8.4 (app-v5) consensus-split fix was missing: it proves the legacy
+// map-iteration-order summation is genuinely non-deterministic on a *realistic*
+// heterogeneous weight set — so NormalizeWeightsDeterministic's sorted-key sum is
+// load-bearing, not a no-op rename. The StableAcrossCalls / EqualWeightsMatchLegacy
+// tests only show the fix is self-consistent and harmless on equal weights; this
+// one demonstrates the bug it actually fixes.
+//
+// Mechanism: sumWeights totals a Go map. The legacy path (deterministic=false)
+// walks the map in Go's per-process randomized order; the consensus path
+// (deterministic=true) walks sorted keys. IEEE-754 float64 addition is
+// non-associative, so on weights spanning a wide enough magnitude range the two
+// orderings land on different bits. Those exact bits scale every persisted
+// poew:<id> weight into the AppHash, so a node summing in a different order would
+// commit a divergent AppHash. We compute the same multiset's total in sorted-key
+// order (what the consensus path uses) and in reverse-key order (an equally-legal
+// order the legacy randomized walk can produce verbatim) and show they differ at
+// the bit level — then confirm the deterministic variant pins exactly one result.
+func TestNormalizeWeights_LegacyMapOrderSumDiverges(t *testing.T) {
+	// The same 15-validator realistic spread used by StableAcrossCalls:
+	// ComputeWeight-scale values with ≥3 distinct magnitudes. (Empirically,
+	// sorted-vs-reverse summation of this set differs by 1 ULP.)
+	weights := map[string]float64{
+		"v01": 0.9837261, "v02": 0.0102345, "v03": 0.5500001, "v04": 0.0100000,
+		"v05": 0.7321119, "v06": 0.0339211, "v07": 0.9999999, "v08": 0.0410201,
+		"v09": 0.1234567, "v10": 0.8765432, "v11": 0.0501234, "v12": 0.6543210,
+		"v13": 0.0199999, "v14": 0.4444444, "v15": 0.0876543,
+	}
+
+	// Sorted-key total: exactly what sumWeights(weights, true) — the post-v8.4
+	// consensus path — accumulates.
+	sortedTotal := sumWeights(weights, true)
+
+	// Reverse-key total: a legal Go map-iteration order, so the legacy
+	// sumWeights(weights, false) used pre-fork can land here on some process.
+	revIDs := make([]string, 0, len(weights))
+	for id := range weights {
+		revIDs = append(revIDs, id)
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(revIDs)))
+	var revTotal float64
+	for _, id := range revIDs {
+		revTotal += weights[id]
+	}
+
+	require.NotEqual(t, math.Float64bits(sortedTotal), math.Float64bits(revTotal),
+		"expected an order-sensitive sum (the hazard the v8.4 fix guards): "+
+			"sorted=%#x rev=%#x — if this ever matches, choose a weight set with a "+
+			"wider magnitude spread", math.Float64bits(sortedTotal), math.Float64bits(revTotal))
+
+	// The deterministic variant must pin exactly the sorted-key result, every
+	// call, regardless of map seed — and still satisfy the sum-to-1 invariant.
+	ref := NormalizeWeightsDeterministic(weights)
+	for i := 0; i < 64; i++ {
+		got := NormalizeWeightsDeterministic(weights)
+		for id, w := range ref {
+			assert.Equal(t, math.Float64bits(w), math.Float64bits(got[id]),
+				"run %d: deterministic normalize must be bit-stable for %s", i, id)
+		}
+	}
 	var sum float64
 	for _, w := range ref {
 		sum += w

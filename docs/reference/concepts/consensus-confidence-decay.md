@@ -1,8 +1,8 @@
-<!-- Verified against code at SAGE v8.4.0 (the PoE weight system re-verified through the app-v2…app-v5 forks) -->
+<!-- Verified against code at SAGE v8.5.0 (the PoE weight system re-verified through the app-v2…app-v6 forks; app.go file:line anchors re-checked against the v8.5.0 tree) -->
 
 # Consensus, Confidence, and Decay
 
-Verified against code at SAGE v8.4.0. The PoE weight system below is fork-gated: the "Phase 1" equal-weight / stubbed-factor behavior described historically is the **pre-fork** path, retained only so old blocks replay byte-identical. The **post-fork** behavior (PoE-weighted quorum at `app-v3`/v8.2, real verdict-correctness accuracy + corroboration at `app-v4`/v8.3, real domain factor at `app-v5`/v8.4) is what live chains run today.
+Verified against code at SAGE v8.5.0. The PoE weight system below is fork-gated: the "Phase 1" equal-weight / stubbed-factor behavior described historically is the **pre-fork** path, retained only so old blocks replay byte-identical. The **post-fork** behavior (PoE-weighted quorum at `app-v3`/v8.2, real verdict-correctness accuracy + corroboration at `app-v4`/v8.3, real domain factor at `app-v5`/v8.4) is what live chains run today.
 
 ## Overview
 
@@ -49,11 +49,11 @@ Commit called (after FinalizeBlock completes):
 
 ### Determinism Requirement
 
-`FinalizeBlock` is marked critical in `app.go:541-542`: **"This method MUST be deterministic. No time.Now(), no map iteration without sorting, no goroutines, no external I/O except BadgerDB reads."** `req.Time` (block time from the proposer) is used for all timestamps.
+`FinalizeBlock` is marked critical in `app.go:962-963`: **"This method MUST be deterministic. No time.Now(), no map iteration without sorting, no goroutines, no external I/O except BadgerDB reads."** `req.Time` (block time from the proposer) is used for all timestamps.
 
 ### Commit Ordering is Load-Bearing
 
-`app.go:2586-2595` explains the flush ordering: PostgreSQL writes happen **before** `SaveState` updates the ABCI height in BadgerDB. If PostgreSQL fails, BadgerDB records the old height → CometBFT reads the behind height via `Info()` → replays the block on restart → `FinalizeBlock` re-populates `pendingWrites` → `Commit` retries. This ensures BadgerDB and PostgreSQL cannot permanently diverge.
+`Commit` (`app.go:3256+`) explains the flush ordering: PostgreSQL writes happen **before** `SaveState` updates the ABCI height in BadgerDB. If PostgreSQL fails, BadgerDB records the old height → CometBFT reads the behind height via `Info()` → replays the block on restart → `FinalizeBlock` re-populates `pendingWrites` → `Commit` retries. This ensures BadgerDB and PostgreSQL cannot permanently diverge.
 
 ---
 
@@ -76,7 +76,7 @@ acceptWeight / totalWeight >= 2/3
 **Quorum weighting is fork-gated** (`checkAndApplyQuorum`, `app.go`):
 - **Pre-`app-v3` (v8.1.x and earlier):** all validators use **equal weight = 1.0** — quorum is a 2/3 *majority*. Retained for byte-identical replay of pre-fork blocks.
 - **Post-`app-v3` (v8.2+, `postV8_2Fork`):** quorum consults each validator's persisted PoE weight (`v.PoEWeight`), with a `1/N` bootstrap fallback (`poeWeightOrFallback`) for validators with no weight yet — a 2/3 *weighted* vote.
-- **Post-`app-v5` (v8.4+, `postV8_4Fork`):** for a memory in a non-shared domain `D`, the weight is computed *per-memory* as `ComputeWeight(globalAccuracy, domainAccuracy(v,D), recency, corroboration)` — domain-conditional, read live from `vstats_domain:<v>:<D>` + `vstats:<v>`. Shared (`general`/`self`) and unknown-domain memories fall back to the v8.2 scalar weight.
+- **Post-`app-v5` (v8.4+, `postV8_4Fork`):** for a memory in a non-shared domain `D`, the weight is computed *per-memory* as `ComputeWeight(globalAccuracy, domainAccuracy(v,D), recency, corroboration)` — domain-conditional, read live from `vstats_domain:<v>:<D>` + `vstats:<v>`. Shared (`general`/`self`/`meta` and any `sage-*`-prefixed domain) and unknown-domain memories fall back to the v8.2 scalar weight.
 
 `HasQuorum` stays ratio-only (`acceptWeight/totalWeight >= 2/3`) across all three, so the gate never moves the threshold itself.
 
@@ -85,7 +85,7 @@ acceptWeight / totalWeight >= 2/3
 ```
 Validator → POST /v1/memory/{id}/vote (accept | reject | abstain)
     ↓
-TxTypeMemoryVote → processMemoryVote (app.go:991-1041)
+TxTypeMemoryVote → processMemoryVote (app.go:1461+)
     ↓
 BadgerDB: state:vote:<memoryID>:<validatorID> = "accept"|"reject"|"abstain"
     ↓
@@ -100,7 +100,7 @@ checkAndApplyQuorum(memoryID, height, blockTime)
          → pendingWrite{status_update, StatusDeprecated}
 ```
 
-**All-voted-no-quorum path** (`app.go:1095-1118`): when all validators have cast votes but the 2/3 threshold is not met (e.g. 2 accept, 2 reject in a 4-validator setup), the memory is **immediately deprecated**. Without this, the memory would remain `proposed` forever and the auto-validator ticker would flood the chain with re-votes.
+**All-voted-no-quorum path** (`app.go:1664-1689`): when all validators have cast votes but the 2/3 threshold is not met (e.g. 2 accept, 2 reject in a 4-validator setup), the memory is **immediately deprecated**. Without this, the memory would remain `proposed` forever and the auto-validator ticker would flood the chain with re-votes.
 
 ### In-Process App Validators (Personal Mode)
 
@@ -110,7 +110,7 @@ In single-node personal mode (`sage-gui serve`), four in-process app validators 
 
 ## AppHash and State Root
 
-`ComputeAppHash` (`internal/store/badger.go:216+`) SHA-256 hashes all BadgerDB state in deterministic sorted-key order. This is the `AppHash` returned in `ResponseFinalizeBlock` and stored in every CometBFT block header. It provides tamper-evidence: any state modification outside the tx path would produce a mismatched AppHash and halt consensus.
+`ComputeAppHash` (`internal/store/badger.go:221+`) SHA-256 hashes all BadgerDB state in deterministic sorted-key order. This is the `AppHash` returned in `ResponseFinalizeBlock` and stored in every CometBFT block header. It provides tamper-evidence: any state modification outside the tx path would produce a mismatched AppHash and halt consensus.
 
 ---
 
@@ -125,7 +125,7 @@ PoE weights are computed at epoch boundaries and (post-`app-v3`) drive quorum vo
 const EpochInterval = 100  // blocks per epoch
 ```
 
-`IsEpochBoundary(height)` returns true when `height % 100 == 0 && height > 0`. At each boundary, `processEpoch` (`app.go:2457-2582`) recomputes weights for all validators.
+`IsEpochBoundary(height)` returns true when `height % 100 == 0 && height > 0`. At each boundary, `processEpoch` (`app.go:3058+`) recomputes weights for all validators.
 
 ### Weight Formula
 
@@ -159,7 +159,7 @@ So accuracy measures *being right* (voting with the eventual consensus), not pro
 T = exp(-λ * Δt_hours)
 λ = RecencyLambda = 0.01
 ```
-Hours are approximated from block height difference: `blocksSinceLast * 3.0 / 3600.0` (assuming 3 s/block). A validator that voted 100 blocks ago (~5 min) has `T ≈ 0.999`; 1000 blocks ago (~50 min) `T ≈ 0.995`.
+Hours are approximated from block height difference: `blocksSinceLast * 3.0 / 3600.0` (assuming 3 s/block). A validator that voted 100 blocks ago (~5 min) has `T ≈ 0.999`; 1000 blocks ago (~50 min) `T ≈ 0.992`.
 
 **Corroboration score (S)** — **real lifetime count** since `app-v4`/v8.3: `poe.CorroborationScore(CorrCount, CorrMax)` = `log(1+CorrCount) / log(1+CorrMax)`, where `CorrCount` (persisted in `vstats:<validatorID>`) increments each time the validator's vote matched a terminal verdict. *Pre-`app-v4`:* fixed `CorroborationScore(0, CorrMax) = 0`.
 
@@ -171,7 +171,7 @@ Since `app-v5`/v8.4, `processEpoch` uses `poe.NormalizeWeightsDeterministic`, wh
 
 ### Weight Storage
 
-Epoch scores are buffered as `pendingWrite{writeType:"epoch_score"}` and `pendingWrite{writeType:"validator_score"}` and flushed to PostgreSQL in `Commit`. BadgerDB retains the raw vote stats (`IncrementVoteStats` at `app.go:1020`).
+Epoch scores are buffered as `pendingWrite{writeType:"epoch_score"}` and `pendingWrite{writeType:"validator_score"}` and flushed to PostgreSQL in `Commit`. BadgerDB retains the raw vote stats (`IncrementVoteStats` at `app.go:1490`).
 
 ---
 
@@ -223,7 +223,7 @@ Corroborations do not change the memory's `ConfidenceScore` column in PostgreSQL
 
 ## Corroboration via Consensus
 
-`POST /v1/memory/{id}/corroborate` → `TxTypeMemoryCorroborate` → `processMemoryCorroborate` (`app.go:1166-1188`):
+`POST /v1/memory/{id}/corroborate` → `TxTypeMemoryCorroborate` → `processMemoryCorroborate` (`app.go:1767+`):
 
 1. Verifies agent Ed25519 identity proof.
 2. Buffers a `Corroboration` row for PostgreSQL (via `pendingWrite{writeType:"corroborate"}`).

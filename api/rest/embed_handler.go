@@ -103,9 +103,22 @@ func (s *Server) handleEmbed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Report the model the embedding was actually produced with. Providers
+	// expose it via the optional embedding.Modeler interface (openai-compatible
+	// returns its configured model, Ollama returns its bound model). Mirrors
+	// handleEmbedInfo's feature-detect of the Named interface for `provider`.
+	// Falls back to the legacy default for providers that don't implement
+	// Modeler (e.g. the hash provider), preserving prior behavior there.
+	model := "nomic-embed-text"
+	if m, ok := s.embedder.(embedding.Modeler); ok {
+		if name := m.Model(); name != "" {
+			model = name
+		}
+	}
+
 	writeJSON(w, http.StatusOK, EmbedResponse{
 		Embedding: emb,
-		Model:     "nomic-embed-text",
+		Model:     model,
 		Dimension: len(emb),
 	})
 }

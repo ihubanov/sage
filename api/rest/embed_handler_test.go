@@ -157,3 +157,75 @@ func TestHandleEmbedInfo_NamedProviderOverridesOllama(t *testing.T) {
 	assert.Equal(t, "openai-compatible", resp.Provider)
 	assert.Equal(t, 1536, resp.Dimension)
 }
+
+// modeledEmbedder implements the optional embedding.Modeler interface so we
+// can assert /v1/embed reports the model the embedding was actually produced
+// with, rather than the hardcoded "nomic-embed-text" literal.
+type modeledEmbedder struct {
+	model string
+	dim   int
+}
+
+func (m *modeledEmbedder) Embed(_ context.Context, _ string) ([]float32, error) {
+	return make([]float32, m.dim), nil
+}
+func (m *modeledEmbedder) Dimension() int { return m.dim }
+func (m *modeledEmbedder) Ready() bool    { return true }
+func (m *modeledEmbedder) Semantic() bool { return true }
+func (m *modeledEmbedder) Model() string  { return m.model }
+
+// TestHandleEmbed_ModelerReportsActualModel confirms POST /v1/embed reports the
+// provider's actual model (via the optional Modeler interface) instead of the
+// hardcoded "nomic-embed-text". An openai-compatible node must not claim its
+// gte-Qwen2 embeddings came from nomic-embed-text.
+func TestHandleEmbed_ModelerReportsActualModel(t *testing.T) {
+	emb := &modeledEmbedder{model: "Alibaba-NLP/gte-Qwen2-1.5B-instruct", dim: 1536}
+
+	memStore := newMockMemoryStore()
+	scoreStore := newMockScoreStore()
+	health := metrics.NewHealthChecker()
+	health.SetPostgresHealth(true)
+	health.SetCometBFTHealth(true)
+
+	srv := NewServer("", memStore, scoreStore, nil, health, zerolog.Nop(), emb)
+
+	body := []byte(`{"text":"hello"}`)
+	req, _ := signedRequest(t, http.MethodPost, "/v1/embed", body)
+	rr := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+	var resp EmbedResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+
+	assert.Equal(t, "Alibaba-NLP/gte-Qwen2-1.5B-instruct", resp.Model,
+		"/v1/embed must report the provider's actual model, not the hardcoded default")
+	assert.Equal(t, 1536, resp.Dimension)
+}
+
+// TestHandleEmbed_FallsBackForNonModeler confirms a provider that does NOT
+// implement Modeler (e.g. the hash provider) preserves the legacy default
+// model string — the fix is additive and must not regress that path.
+func TestHandleEmbed_FallsBackForNonModeler(t *testing.T) {
+	hashEmbedder := embedding.NewHashProvider(768)
+
+	memStore := newMockMemoryStore()
+	scoreStore := newMockScoreStore()
+	health := metrics.NewHealthChecker()
+	health.SetPostgresHealth(true)
+	health.SetCometBFTHealth(true)
+
+	srv := NewServer("", memStore, scoreStore, nil, health, zerolog.Nop(), hashEmbedder)
+
+	body := []byte(`{"text":"hello"}`)
+	req, _ := signedRequest(t, http.MethodPost, "/v1/embed", body)
+	rr := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+	var resp EmbedResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+
+	assert.Equal(t, "nomic-embed-text", resp.Model,
+		"non-Modeler provider must preserve the legacy default model string")
+}

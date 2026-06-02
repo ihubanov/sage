@@ -57,7 +57,16 @@ Add agents, configure domain-level read/write permissions, manage clearance leve
 
 ---
 
-## What's New in v8.8.0
+## What's New in v8.8.1
+
+**`POST /v1/embed` now reports the model that actually produced the embedding.** The handler previously wrote `model: "nomic-embed-text"` into every response regardless of the configured provider, so a node running the `openai-compatible` embedder mislabeled its vectors (e.g. `Alibaba-NLP/gte-Qwen2-1.5B-instruct` was reported as `nomic-embed-text`). `handleEmbed` now feature-detects the optional `embedding.Modeler` interface and reports the provider's real model, mirroring how the sibling `/v1/embed/info` already resolves `provider`. It falls back to the legacy default only for providers that don't expose a model (the hash provider), so that path is unchanged. Read-path REST only: no tx, no consensus, no AppHash contribution. SDK 8.8.1.
+
+Thanks to [@ihubanov](https://github.com/ihubanov) for the fix (#29).
+
+## Older releases
+
+<details>
+<summary>v8.8 — governance-activatable app-v7 content-validation + halt-safety floor</summary>
 
 **Governance-activatable `app-v7` content-validation + halt-safety floor.** v8.8.0 makes the v8.7.0 content-validation gate safely switchable on. `app-v7` is now a fully wired, **governance-activatable** consensus fork, and SAGE exposes the registration API a deployment uses to plug in *its own* content validators. A node stays **byte-identical to v8.7.0** unless an operator both registers validators *and* activates the `app-v7` upgrade — existing chains are AppHash-neutral, and consensus core ships **zero deployment-specific schemas**.
 
@@ -67,7 +76,7 @@ Add agents, configure domain-level read/write permissions, manage clearance leve
 
 The new machinery is dormant-by-default and AppHash-neutral; the only consensus-touching change — the version-regression floor — is a strict safety improvement that never lowers a committed app version. SDK 8.8.0.
 
-## Older releases
+</details>
 
 <details>
 <summary>v8.7 — dormant Layer-2 content-validator plumbing + MCP write-path re-heal</summary>

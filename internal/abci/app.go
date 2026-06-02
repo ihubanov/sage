@@ -307,12 +307,12 @@ type SageApp struct {
 	// postV8_5Fork's strict-greater-than.
 	v8_5AppliedHeight int64
 
-	// Layer-2 content-validation gate (Sentinel-agnostic core). All three are
+	// Layer-2 content-validation gate (deployment-agnostic core). All three are
 	// zero-valued by default so a node that never calls the setters and never
-	// activates the sentinel fork behaves bit-for-bit as before.
+	// activates the app-v7 fork behaves bit-for-bit as before.
 	contentValidators        *contentvalidator.ContentValidatorRegistry // nil  => disabled
 	contentValidationEnabled bool                                       // false => disabled
-	sentinelAppliedHeight    int64                                      // 0     => fork dormant
+	appV7AppliedHeight       int64                                      // 0     => fork dormant
 }
 
 // v8UpgradeName is the canonical name for the v8.0 activation record. The
@@ -336,11 +336,11 @@ const v8_4UpgradeName = "app-v5"
 // record. Same naming discipline: "app-v<TargetAppVersion>".
 const v8_5UpgradeName = "app-v6"
 
-// sentinelUpgradeName is the canonical activation-record name for the
+// appV7UpgradeName is the canonical activation-record name for the
 // content-validator (Layer-2 schema gate) fork. Same naming discipline:
 // "app-v<TargetAppVersion>". This fork is an INDEPENDENT feature gate and is
 // deliberately NOT part of the v8.x PoE monotonic chain.
-const sentinelUpgradeName = "app-v7"
+const appV7UpgradeName = "app-v7"
 
 // postV8Fork is the consensus-side fork-gate predicate. Use it inside
 // processTx and other height-aware paths. Strict greater-than mirrors
@@ -529,30 +529,30 @@ func (app *SageApp) refreshV8_5Fork() {
 	app.v8_5AppliedHeight = rec.AppliedHeight
 }
 
-// postSentinelFork is the consensus-side fork-gate predicate for the
+// postAppV7Fork is the consensus-side fork-gate predicate for the
 // content-validator (Layer-2 schema gate) activation. Strict greater-than
 // mirrors postV8_5Fork: the activation block H_act itself still runs the
 // pre-fork branch (gate dormant) so the only AppHash delta at H_act is the
 // MarkUpgradeApplied write. The gate only ever runs when this returns true
 // AND contentValidationEnabled AND contentValidators != nil.
-func (app *SageApp) postSentinelFork(height int64) bool {
-	return app.sentinelAppliedHeight > 0 && height > app.sentinelAppliedHeight
+func (app *SageApp) postAppV7Fork(height int64) bool {
+	return app.appV7AppliedHeight > 0 && height > app.appV7AppliedHeight
 }
 
-// refreshSentinelFork populates sentinelAppliedHeight from the persisted
+// refreshAppV7Fork populates appV7AppliedHeight from the persisted
 // upgrade audit trail. Called on boot (so a node restarting on a post-fork
 // chain picks up the gate without waiting for activation) and after the
 // activation block in FinalizeBlock.
-func (app *SageApp) refreshSentinelFork() {
-	rec, err := app.badgerStore.GetAppliedUpgrade(sentinelUpgradeName)
+func (app *SageApp) refreshAppV7Fork() {
+	rec, err := app.badgerStore.GetAppliedUpgrade(appV7UpgradeName)
 	if err != nil {
-		app.logger.Warn().Err(err).Str("name", sentinelUpgradeName).Msg("read sentinel applied-upgrade record")
+		app.logger.Warn().Err(err).Str("name", appV7UpgradeName).Msg("read app-v7 applied-upgrade record")
 		return
 	}
 	if rec == nil {
 		return
 	}
-	app.sentinelAppliedHeight = rec.AppliedHeight
+	app.appV7AppliedHeight = rec.AppliedHeight
 }
 
 // recordV8_5Branch is the v8.5 sibling of recordV8_4Branch. Same metric
@@ -580,6 +580,31 @@ func (app *SageApp) SetContentValidationEnabled(enabled bool) {
 	app.contentValidationEnabled = enabled
 }
 
+// RoleResolver returns a deterministic, read-only role lookup over on-chain
+// agent state, intended to be captured ONCE at boot by a deployment's content
+// validators so they can enforce signer-role authority from chain state rather
+// than from a self-asserted role string in the record body.
+//
+// The returned closure performs a single read-only Badger lookup per call and
+// returns "" when the agent is unknown or the read errors. GetRegisteredAgent
+// returns (nil, err) on a missing key, so the `|| a == nil` guard is
+// load-bearing: it prevents a nil-pointer deref on the *OnChainAgent returned
+// alongside the not-found error.
+//
+// Consensus-safety: pure w.r.t. consensus — no time, no goroutines, no network,
+// no writes; only a read-only Badger View. The string it returns is the RAW
+// on-chain role as registered; any mapping from that to a deployment's own
+// schema role vocabulary is the deployment's concern, not the chain's.
+func (app *SageApp) RoleResolver() func(agentID string) string {
+	return func(agentID string) string {
+		a, err := app.badgerStore.GetRegisteredAgent(agentID)
+		if err != nil || a == nil {
+			return ""
+		}
+		return a.Role
+	}
+}
+
 // reconcilePoEForkMonotonicity makes the v8.x PoE fork gates monotonic: a higher
 // fork being active implies every lower one is too. If an upgrade jumps straight
 // to a higher app version (e.g. app-v2 → app-v5, skipping app-v3/app-v4), the
@@ -603,7 +628,7 @@ func (app *SageApp) reconcilePoEForkMonotonicity() {
 	// lower fork is active wherever a higher one is — backfilling a skipped gate to
 	// the NEAREST higher activation, not the topmost (which would wrongly push a low
 	// gate's activation later than an already-set intermediate gate's).
-	// NOTE: sentinelAppliedHeight (content-validator fork) is DELIBERATELY
+	// NOTE: appV7AppliedHeight (content-validator fork) is DELIBERATELY
 	// excluded from this slice. It is an independent feature gate, not part of
 	// the v8 PoE monotonic chain (v8 <= v8_2 <= ... <= v8_5); coupling its
 	// activation height to the PoE forks would be wrong.
@@ -763,7 +788,7 @@ func NewSageApp(badgerPath string, postgresURL string, logger zerolog.Logger) (*
 	app.refreshV8_3Fork()
 	app.refreshV8_4Fork()
 	app.refreshV8_5Fork()
-	app.refreshSentinelFork()
+	app.refreshAppV7Fork()
 	app.reconcilePoEForkMonotonicity()
 
 	// Reload persisted validators from BadgerDB (survives restart)
@@ -810,7 +835,7 @@ func NewSageAppWithStores(bs *store.BadgerStore, offchain store.OffchainStore, l
 	app.refreshV8_3Fork()
 	app.refreshV8_4Fork()
 	app.refreshV8_5Fork()
-	app.refreshSentinelFork()
+	app.refreshAppV7Fork()
 	app.reconcilePoEForkMonotonicity()
 
 	persistedVals, err := bs.LoadValidators()
@@ -831,29 +856,51 @@ func NewSageAppWithStores(bs *store.BadgerStore, offchain store.OffchainStore, l
 }
 
 // currentAppVersion reports the consensus app version this node announces to
-// CometBFT in Info(): the highest activated PoE fork's target version, or 1 if
+// CometBFT in Info(): the highest activated fork's target version, or 1 if
 // none has activated. FinalizeBlock bumps consensus_params.version.app to
 // plan.TargetAppVersion when a fork activates, so a node restarting on a
 // post-fork chain MUST report the same version here or the CometBFT handshake
 // sees an app-version regression against the committed consensus params.
 //
-// The fork gates activate in order (reconcilePoEForkMonotonicity guarantees a
-// higher fork implies every lower one is applied too), so a top-down check
-// returns the current version. The fields are populated by the refreshV8*Fork
-// calls in NewSageApp before CometBFT ever calls Info(). A new fork must add
-// its case here, mirroring the v8*UpgradeName constants (app-vN → version N).
+// The PoE fork gates (v8..v8_5) activate in order (reconcilePoEForkMonotonicity
+// guarantees a higher PoE fork implies every lower one is applied too), so a
+// top-down check returns the current version. The fields are populated by the
+// refresh*Fork calls in both constructors before CometBFT ever calls Info(). A
+// new fork must add its case here, mirroring the *UpgradeName constants
+// (app-vN → version N).
 //
-// LOCKSTEP INVARIANT: the top case here MUST equal cmd/sage-gui's
-// upgradeTargetAppVersion and the highest v8*UpgradeName fork. The app-v6
-// version-regression guard (processUpgradePropose) rejects
-// TargetAppVersion <= currentAppVersion(), and the watchdog reads this value
-// via /abci_info — if a future fork bumps the watchdog target without
-// extending this switch, the ceiling lags, the guard wrongly accepts the
-// live version, and the watchdog re-proposes in a loop. Adding app-vN means:
-// add a v8_(N-1)AppliedHeight gate, a case returning N here, bump the watchdog
-// target, and extend TestUpgradeNameConstantsAreCanonical — all together.
+// app-v7 (content-validation activation) is an INDEPENDENT feature gate,
+// NOT a member of the v8 PoE monotonic ladder. Its version (7) is deliberately
+// DECOUPLED from both the PoE chain and the watchdog target. But because 7 is
+// the HIGHEST version any activation can commit, its case MUST rank FIRST: once
+// FinalizeBlock bumps committed consensus_params.version.app to 7 on app-v7
+// activation, Info() has to report 7 too — regardless of which PoE gates are
+// also set — or the next handshake sees a 7→6 regression and halts the chain.
+// app-v7 can activate even though the PoE gates below it have NOT (it is
+// excluded from reconcilePoEForkMonotonicity), so it cannot lean on the
+// top-down PoE ordering; it is checked as a standalone top case.
+//
+// LOCKSTEP INVARIANT (PoE ladder only): the highest PoE case here (app-v6 →
+// v8_5AppliedHeight) MUST equal cmd/sage-gui's upgradeTargetAppVersion and the
+// highest v8*UpgradeName fork. The app-v6 version-regression guard
+// (processUpgradePropose) rejects TargetAppVersion <= currentAppVersion(), and
+// the watchdog reads this value via /abci_info — if a future PoE fork bumps the
+// watchdog target without extending this switch, the ceiling lags, the guard
+// wrongly accepts the live version, and the watchdog re-proposes in a loop.
+// Adding a PoE app-vN means: add a v8_(N-1)AppliedHeight gate, a case returning
+// N here, bump the watchdog target, and extend
+// TestUpgradeNameConstantsAreCanonical — all together.
+//
+// app-v7 is INTENTIONALLY EXEMPT from that lockstep: the watchdog target stays
+// at 6 (cmd/sage-gui/upgrade_watchdog.go) so app-v7 NEVER auto-fires and only
+// activates via an explicit governance plan {Name:"app-v7", TargetAppVersion:7}.
+// Post-fix the top case here is 7 while the watchdog target is 6 BY DESIGN —
+// and that is also loop-safe: an app-v7-active chain reports 7, watchdog target
+// 6 <= 7, so the watchdog stops without re-proposing.
 func (app *SageApp) currentAppVersion() uint64 {
 	switch {
+	case app.appV7AppliedHeight > 0:
+		return 7 // app-v7 (content-validation activation) — independent gate, highest version, must rank first
 	case app.v8_5AppliedHeight > 0:
 		return 6 // app-v6 (v8.5 upgrade-machinery hardening)
 	case app.v8_4AppliedHeight > 0:
@@ -1063,8 +1110,29 @@ func (app *SageApp) FinalizeBlock(_ context.Context, req *abcitypes.RequestFinal
 	// transition deterministic across replicas.
 	var consensusParamUpdates *cmtproto.ConsensusParams
 	if plan, planErr := app.badgerStore.GetUpgradePlan(); planErr == nil && plan != nil && plan.ActivationHeight == req.Height {
-		consensusParamUpdates = &cmtproto.ConsensusParams{
-			Version: &cmtproto.VersionParams{App: plan.TargetAppVersion},
+		// Version-non-regression floor (deterministic on every replica): never
+		// commit a consensus version.app lower than the chain's current app
+		// version. app-v7 (content-validation) is an INDEPENDENT gate that can be
+		// activated out of order relative to the PoE ladder (app-v2..app-v6); a
+		// late app-v6 activation after app-v7 would otherwise commit version.app=6
+		// while currentAppVersion() already reports 7, and the next CometBFT
+		// handshake would see a 7->6 regression and halt every node (the
+		// v8.4.1/8.4.2 bug class). On a would-be regression, skip ONLY the version
+		// bump — the feature gate below still activates and the plan is still
+		// marked applied, so app-v6's behavior turns on without rewinding the
+		// committed version. currentAppVersion() reads in-memory fork heights set
+		// identically on every node, so this branch is replica-deterministic.
+		if plan.TargetAppVersion >= app.currentAppVersion() {
+			consensusParamUpdates = &cmtproto.ConsensusParams{
+				Version: &cmtproto.VersionParams{App: plan.TargetAppVersion},
+			}
+		} else {
+			app.logger.Error().
+				Str("name", plan.Name).
+				Uint64("target_app_version", plan.TargetAppVersion).
+				Uint64("current_app_version", app.currentAppVersion()).
+				Int64("height", req.Height).
+				Msg("upgrade plan would regress consensus version.app; skipping the version bump (feature gate still activates) to prevent a handshake halt")
 		}
 		if markErr := app.badgerStore.MarkUpgradeApplied(plan.Name, plan.TargetAppVersion, req.Height); markErr != nil {
 			app.logger.Error().Err(markErr).
@@ -1088,8 +1156,8 @@ func (app *SageApp) FinalizeBlock(_ context.Context, req *abcitypes.RequestFinal
 		if plan.Name == v8_5UpgradeName {
 			app.v8_5AppliedHeight = req.Height
 		}
-		if plan.Name == sentinelUpgradeName {
-			app.sentinelAppliedHeight = req.Height
+		if plan.Name == appV7UpgradeName {
+			app.appV7AppliedHeight = req.Height
 		}
 		// Keep the PoE fork gates monotonic if this activation jumped past an
 		// intermediate version (e.g. straight to app-v5) — backfill any unset
@@ -1413,7 +1481,7 @@ func (app *SageApp) processMemorySubmit(parsedTx *tx.ParsedTx, height int64, blo
 	// FinalizeBlock so the reject is byte-identical on every validator and feeds
 	// ComputeAppHash. Fork-gated + config-gated => opt-in + replay-safe. Placed
 	// BEFORE SetMemoryHash so a rejected record never mutates Badger / the AppHash.
-	if app.contentValidationEnabled && app.postSentinelFork(height) && app.contentValidators != nil {
+	if app.contentValidationEnabled && app.postAppV7Fork(height) && app.contentValidators != nil {
 		recView := &memory.MemoryRecord{
 			MemoryID:        memoryID,
 			SubmittingAgent: agentID,

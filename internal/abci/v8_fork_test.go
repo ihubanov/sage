@@ -41,6 +41,22 @@ func TestUpgradeNameConstantsAreCanonical(t *testing.T) {
 	assert.Equal(t, uint64(5), app.currentAppVersion(), "v8_4UpgradeName is app-v5")
 	app.v8_5AppliedHeight = 50
 	assert.Equal(t, uint64(6), app.currentAppVersion(), "v8_5UpgradeName is app-v6")
+
+	// app-v7 (content-validation activation) is an INDEPENDENT feature gate, not a
+	// PoE-ladder member. Its version (7) is the highest, so once its gate is set
+	// currentAppVersion() MUST report 7 — even on a chain where every PoE gate is
+	// already set — or FinalizeBlock's committed version.app=7 outruns Info() and
+	// the next handshake halts on a 7→6 regression. (The watchdog target stays at
+	// 6 by design; app-v7 is governance-activated only.)
+	app.appV7AppliedHeight = 60
+	assert.Equal(t, uint64(7), app.currentAppVersion(), "app-v7 is the highest version — top case")
+
+	// And it reports 7 even when the PoE gates BELOW it are unset: app-v7 can
+	// activate without the PoE forks (it is excluded from monotonicity reconcile),
+	// so its case cannot lean on the PoE top-down ordering.
+	bare := setupTestApp(t)
+	bare.appV7AppliedHeight = 60
+	assert.Equal(t, uint64(7), bare.currentAppVersion(), "app-v7 active with no PoE gate still reports 7")
 }
 
 // TestV8Fork_DefaultZero asserts a freshly-created app reports zero fork
@@ -102,6 +118,13 @@ func TestInfo_AppVersionReflectsActivatedFork(t *testing.T) {
 
 	app.v8_5AppliedHeight = 50
 	assert.Equal(t, uint64(6), info(), "app-v6 (v8.5 upgrade-machinery hardening) → version 6")
+
+	// app-v7 (content-validation activation) → version 7. This is the halt
+	// fix: FinalizeBlock commits version.app=7 on activation, so Info() MUST also
+	// report 7 or a restarting node hands CometBFT a 7→6 app-version regression
+	// and the chain halts on the handshake (the v8.4.1/8.4.2 bug class).
+	app.appV7AppliedHeight = 60
+	assert.Equal(t, uint64(7), info(), "app-v7 (content-validation activation) → version 7")
 }
 
 // TestV8Fork_RefreshFromPersisted asserts refreshV8Fork pulls the height

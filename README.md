@@ -57,7 +57,20 @@ Add agents, configure domain-level read/write permissions, manage clearance leve
 
 ---
 
-## What's New in v8.7.0
+## What's New in v8.8.0
+
+**Governance-activatable `app-v7` content-validation + halt-safety floor.** v8.8.0 makes the v8.7.0 content-validation gate safely switchable on. `app-v7` is now a fully wired, **governance-activatable** consensus fork, and SAGE exposes the registration API a deployment uses to plug in *its own* content validators. A node stays **byte-identical to v8.7.0** unless an operator both registers validators *and* activates the `app-v7` upgrade — existing chains are AppHash-neutral, and consensus core ships **zero deployment-specific schemas**.
+
+- **Halt-safe `app-v7` activation.** `app-v7` is an independent gate, decoupled from the PoE fork ladder and the upgrade watchdog (which stays targeted at app-v6, so `app-v7` never auto-fires). The activation commit now carries an **unconditional version-non-regression floor**: an out-of-order activation can never commit a backward `version.app`, closing the `7→6` handshake-regression halt class (the v8.4.1/8.4.2 bug class). Activates only via an explicit governance upgrade plan.
+- **Deployment registration API.** A deployment registers its own validators against `RegisterContentValidator(domain, outcome_class, …)` and arms them with `SetContentValidators` / `SetContentValidationEnabled` at boot; unset ⇒ nil registry ⇒ the gate stays dormant. `RoleResolver` exposes a deterministic, read-only on-chain role lookup so a deployment's validator can enforce signer authority from chain state rather than any self-asserted field. SAGE provides the mechanism; the schemas, allowlists, and role mappings live in — and are owned by — the deployment.
+- **Determinism contract.** The gate runs only inside `FinalizeBlock`, before any state write, returning a deterministic `Code 18` reject identical on every replica; a deployment's validators must likewise be pure functions of the record (no clock / network / unsorted-map iteration) to preserve AppHash parity.
+
+The new machinery is dormant-by-default and AppHash-neutral; the only consensus-touching change — the version-regression floor — is a strict safety improvement that never lowers a committed app version. SDK 8.8.0.
+
+## Older releases
+
+<details>
+<summary>v8.7 — dormant Layer-2 content-validator plumbing + MCP write-path re-heal</summary>
 
 **Layer-2 content-validator plumbing (dormant) + a memory-write resilience fix.** v8.7.0 lands the generic, deployment-agnostic scaffolding for a consensus-time content-aware schema gate, shipped **dormant** — no validators are registered, the gate is disabled by default, and its activation fork (`app-v7`) is not triggered, so the binary's on-chain behavior and AppHash are **byte-identical to v8.6.0** on every existing chain (full `replay_v8_*`/upgrade/quorum suites green; `golangci-lint` v2.12.2 = 0 issues).
 
@@ -67,7 +80,7 @@ Add agents, configure domain-level read/write permissions, manage clearance leve
 
 The Layer-2 slice is dormant-by-default and AppHash-neutral; the MCP fix is operational-only (client write path) with zero consensus surface. SDK 8.7.0.
 
-## Older releases
+</details>
 
 <details>
 <summary>v8.6 — PoE observability + dead-code cleanup + cross-node determinism harness</summary>

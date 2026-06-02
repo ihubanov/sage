@@ -50,6 +50,15 @@ import (
 // (replay-unsafe). The plan name is derived from CanonicalUpgradeName below —
 // never name a plan after the binary version; that is the bug class app-v6's
 // canonical-name guard defends against.
+//
+// DELIBERATELY STAYS AT 6 — do NOT bump for app-v7. The watchdog auto-proposes
+// app-v<target> only when target > the chain's reported app version; keeping the
+// target at 6 guarantees app-v7 NEVER auto-fires on install. app-v7 (the
+// content-validator fork) is GOVERNANCE-ACTIVATED ONLY: it activates
+// solely when an operator submits a {Name:"app-v7", TargetAppVersion:7} plan, and
+// is intentionally excluded from this watchdog target. (Loop-safety holds either
+// way: pre-fork the chain reports 6 ⇒ 6<=6 ⇒ stop; post-app-v7 it reports 7 ⇒
+// 6<=7 ⇒ stop.)
 const upgradeTargetAppVersion uint64 = 6
 
 // upgradeWatchdogConfig is everything the watchdog needs. Constructed

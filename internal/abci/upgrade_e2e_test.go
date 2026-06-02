@@ -266,3 +266,135 @@ func TestV85_EndToEnd_AppV6ActivationAndGuards(t *testing.T) {
 	assert.Equal(t, "app-v7", planD.Name)
 	assert.Equal(t, uint64(7), planD.TargetAppVersion)
 }
+
+// TestV87_EndToEnd_AppV7ActivationReportsVersion7 drives a REAL app-v7
+// content-validator fork activation all the way to its activation block — the
+// step the pre-existing app-v7 coverage stopped short of ("plan persisted" in
+// TestV85_EndToEnd_AppV6ActivationAndGuards step (d)) — and asserts the fix for
+// the version-regression handshake halt:
+//
+//	FinalizeBlock commits ConsensusParamUpdates.Version.App == 7 AND
+//	currentAppVersion()/Info().AppVersion == 7 (== the committed param) AND
+//	the app-v7 gate (postAppV7Fork) bites at H_act+1.
+//
+// Pre-fix, FinalizeBlock bumped the committed param to 7 while Info() kept
+// reporting 6 (currentAppVersion had no app-v7 case), so a restarting node
+// handed CometBFT a 7→6 app-version regression and every node halted on the next
+// handshake. This test locks the gate→version coherence that prevents it.
+func TestV87_EndToEnd_AppV7ActivationReportsVersion7(t *testing.T) {
+	app := setupTestApp(t)
+	ak := newAgentKey(t)
+
+	info := func() uint64 {
+		resp, err := app.Info(context.Background(), &abcitypes.RequestInfo{})
+		require.NoError(t, err)
+		return resp.AppVersion
+	}
+
+	// Reach app-v6 first (a real chain activates app-v7 on top of the PoE ladder),
+	// so the app-v6 version-regression guard accepts the 7>6 propose.
+	activateV85(app, 5)
+	require.Equal(t, uint64(6), app.currentAppVersion(), "precondition: chain at app-v6")
+	require.Equal(t, uint64(6), info(), "precondition: Info reports 6 before app-v7")
+	require.False(t, app.postAppV7Fork(1_000_000), "app-v7 gate dormant before activation")
+
+	// 1. Propose canonical app-v7/7 (post-app-v6 fork: canonical-name + 7>6 guards pass).
+	postH := int64(1_000)
+	require.True(t, app.postV8_5Fork(postH))
+	proposeTx := makeUpgradeProposeTx(t, ak, "app-v7", 7, "", 0)
+	require.Equal(t, uint32(0), app.processTx(proposeTx, postH, time.Now()).Code,
+		"canonical app-v7 propose must be accepted")
+	plan, err := app.badgerStore.GetUpgradePlan()
+	require.NoError(t, err)
+	require.NotNil(t, plan)
+	require.Equal(t, "app-v7", plan.Name)
+	require.Equal(t, uint64(7), plan.TargetAppVersion)
+	actH := plan.ActivationHeight // postH + 200 floor
+
+	// 2. FinalizeBlock at the activation height: commits version.app=7 AND flips
+	//    the app-v7 gate. THIS is where the pre-fix regression was born.
+	respAt, err := app.FinalizeBlock(context.Background(), &abcitypes.RequestFinalizeBlock{Height: actH, Time: time.Now()})
+	require.NoError(t, err)
+	require.NotNil(t, respAt.ConsensusParamUpdates)
+	require.NotNil(t, respAt.ConsensusParamUpdates.Version)
+	assert.Equal(t, uint64(7), respAt.ConsensusParamUpdates.Version.App,
+		"activation block must commit consensus version.app=7")
+	assert.Equal(t, actH, app.appV7AppliedHeight, "app-v7 gate must flip on activation")
+
+	// 3. THE HALT FIX: Info()/currentAppVersion() must now report 7 — matching the
+	//    committed consensus param. A mismatch here is the regression that halts
+	//    every node on its next restart/handshake.
+	assert.Equal(t, uint64(7), app.currentAppVersion(), "currentAppVersion must report 7 post-app-v7")
+	assert.Equal(t, uint64(7), info(), "Info().AppVersion must equal the committed version.app (7)")
+
+	// 4. The app-v7 fork bites at H_act+1 (strict >, matching CometBFT H+1).
+	assert.False(t, app.postAppV7Fork(actH), "at activation block: still pre-fork (H+1 semantic)")
+	assert.True(t, app.postAppV7Fork(actH+1), "first post-activation block: app-v7 fork active")
+
+	// 5. Simulate a restart: refreshAppV7Fork rehydrates the gate from the
+	//    persisted audit record, and Info() STILL reports 7 — the handshake-safe
+	//    invariant survives a reboot.
+	app.appV7AppliedHeight = 0
+	app.refreshAppV7Fork()
+	assert.Equal(t, actH, app.appV7AppliedHeight, "restart must rehydrate app-v7 gate from audit record")
+	assert.Equal(t, uint64(7), info(), "post-restart Info() must still report 7 (no regression on handshake)")
+}
+
+// TestV87_AppV7ActivationBlocksLaterAppV6VersionRegression reproduces the
+// out-of-order halt window the version-non-regression floor closes. On a YOUNG
+// chain (pre-app-v6, so the propose-time guards are skipped) an operator can
+// activate app-v7 (version 7) before the watchdog walks the PoE ladder up to
+// app-v6. When app-v6 (version 6) later activates, the committed consensus
+// version.app must NOT regress 7->6 — a regression would make the next CometBFT
+// handshake see a lower app version and halt every node (the v8.4.1/8.4.2 bug
+// class) — while the app-v6 feature gate still turns on.
+func TestV87_AppV7ActivationBlocksLaterAppV6VersionRegression(t *testing.T) {
+	app := setupTestApp(t)
+	ak := newAgentKey(t)
+
+	info := func() uint64 {
+		resp, err := app.Info(context.Background(), &abcitypes.RequestInfo{})
+		require.NoError(t, err)
+		return resp.AppVersion
+	}
+
+	// 1. Activate app-v7 out of order on a young chain (propose guards are
+	//    postV8_5Fork-gated, so the chain accepts app-v7 before app-v6).
+	proposeV7 := makeUpgradeProposeTx(t, ak, "app-v7", 7, "", 0)
+	require.Equal(t, uint32(0), app.processTx(proposeV7, int64(1_000), time.Now()).Code,
+		"app-v7 propose accepted on a young chain")
+	planV7, err := app.badgerStore.GetUpgradePlan()
+	require.NoError(t, err)
+	actV7 := planV7.ActivationHeight
+	respV7, err := app.FinalizeBlock(context.Background(), &abcitypes.RequestFinalizeBlock{Height: actV7, Time: time.Now()})
+	require.NoError(t, err)
+	require.NotNil(t, respV7.ConsensusParamUpdates)
+	require.Equal(t, uint64(7), respV7.ConsensusParamUpdates.Version.App, "app-v7 commits version.app=7")
+	require.Equal(t, uint64(7), info(), "chain reports version 7 after app-v7")
+	require.Equal(t, uint64(7), app.currentAppVersion())
+
+	// 2. A LATER app-v6 plan activates (the watchdog finally reaches app-v6),
+	//    targeting version 6 < the current 7. Inject it directly to model the
+	//    out-of-order activation without a second propose.
+	actV6 := actV7 + 50
+	require.NoError(t, app.badgerStore.SetUpgradePlan(&store.UpgradePlanRecord{
+		Name:             v8_5UpgradeName, // "app-v6"
+		TargetAppVersion: 6,
+		ActivationHeight: actV6,
+	}))
+
+	// 3. THE FLOOR: app-v6 activation must NOT commit a backward version.app.
+	respV6, err := app.FinalizeBlock(context.Background(), &abcitypes.RequestFinalizeBlock{Height: actV6, Time: time.Now()})
+	require.NoError(t, err)
+	if respV6.ConsensusParamUpdates != nil && respV6.ConsensusParamUpdates.Version != nil {
+		assert.GreaterOrEqual(t, respV6.ConsensusParamUpdates.Version.App, uint64(7),
+			"app-v6 activation must not commit a version.app below 7")
+	}
+	assert.Equal(t, uint64(7), info(),
+		"committed version.app must stay 7 — a 7->6 regression would halt the next handshake")
+	assert.Equal(t, uint64(7), app.currentAppVersion())
+
+	// 4. The app-v6 FEATURE gate still activated — only the version number was floored.
+	assert.Greater(t, app.v8_5AppliedHeight, int64(0),
+		"app-v6 feature gate must still activate despite the version floor")
+}

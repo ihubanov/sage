@@ -65,6 +65,19 @@ func (s *Server) registerTools() map[string]Tool {
 			},
 			Handler: s.toolForget,
 		},
+		"sage_corroborate": {
+			Name:        "sage_corroborate",
+			Description: "Corroborate an existing memory — independently back it as the calling agent. Use this to reinforce a memory you have verified or observed from a second source. Corroboration is the multi-agent trust signal: once two or more distinct agents back a memory it transitions from attributed to consensus. A node cannot corroborate its own memory.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"memory_id": map[string]any{"type": "string", "description": "The memory ID to corroborate"},
+					"evidence":  map[string]any{"type": "string", "description": "Optional supporting note or source for the corroboration"},
+				},
+				"required": []string{"memory_id"},
+			},
+			Handler: s.toolCorroborate,
+		},
 		"sage_list": {
 			Name:        "sage_list",
 			Description: "Browse memories with filters. Use this to see what memories exist in a domain, with a specific status, or tagged with a label.",
@@ -668,6 +681,30 @@ func (s *Server) toolForget(ctx context.Context, params map[string]any) (any, er
 		"memory_id": memoryID,
 		"status":    "challenged",
 		"reason":    reason,
+	}, nil
+}
+
+func (s *Server) toolCorroborate(ctx context.Context, params map[string]any) (any, error) {
+	memoryID, _ := params["memory_id"].(string)
+	if memoryID == "" {
+		return nil, fmt.Errorf("memory_id is required")
+	}
+
+	evidence := stringParam(params, "evidence", "")
+
+	body, _ := json.Marshal(map[string]string{"evidence": evidence})
+	path := fmt.Sprintf("/v1/memory/%s/corroborate", url.PathEscape(memoryID))
+	var resp struct {
+		TxHash string `json:"tx_hash"`
+	}
+	if err := s.doSignedJSON(ctx, "POST", path, body, &resp); err != nil {
+		return nil, fmt.Errorf("corroborate memory: %w", err)
+	}
+
+	return map[string]any{
+		"memory_id": memoryID,
+		"tx_hash":   resp.TxHash,
+		"status":    "corroborated",
 	}, nil
 }
 

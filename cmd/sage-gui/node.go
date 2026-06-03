@@ -34,6 +34,7 @@ import (
 	"github.com/l33tdawg/sage/api/rest"
 	"github.com/l33tdawg/sage/api/rest/middleware"
 	sageabci "github.com/l33tdawg/sage/internal/abci"
+	"github.com/l33tdawg/sage/internal/auth"
 	"github.com/l33tdawg/sage/internal/embedding"
 	"github.com/l33tdawg/sage/internal/mcp"
 	"github.com/l33tdawg/sage/internal/memory"
@@ -174,6 +175,22 @@ func runServe() (rerr error) {
 		return fmt.Errorf("open BadgerDB: %w", err)
 	}
 	defer badgerStore.CloseBadger() //nolint:errcheck
+
+	// Seed the replay-nonce allocator from the chain's committed nonces. The
+	// app-v9 consensus gate rejects any tx whose nonce <= the signer's highest
+	// committed nonce, so on a fresh process / post-restart every in-process
+	// producer (REST, web, watchdog, validator txs — all on the shared node key)
+	// must resume ABOVE the chain instead of trusting the wall clock to exceed it.
+	// Local badger read, keyed exactly like the consensus path
+	// (auth.PublicKeyToAgentID), consulted at most once per key. Liveness-only,
+	// never in the AppHash. GetNonce returns 0 for an unseen key -> no-op seed.
+	tx.SetNonceFloorFunc(func(pub ed25519.PublicKey) (uint64, bool) {
+		n, gerr := badgerStore.GetNonce(auth.PublicKeyToAgentID(pub))
+		if gerr != nil || n == 0 {
+			return 0, false
+		}
+		return n, true
+	})
 
 	// Create SAGE ABCI app with SQLite backend
 	app, err := sageabci.NewSageAppWithStores(badgerStore, sqliteStore, logger)

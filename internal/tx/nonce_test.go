@@ -90,3 +90,87 @@ func TestMonotonicNonce_ConcurrentNoDuplicates(t *testing.T) {
 		t.Fatalf("expected %d distinct nonces, got %d", goroutines*perG, len(seen))
 	}
 }
+
+// TestMonotonicNonce_SeedRaisesFloor verifies the on-chain seed lifts the starting
+// point above the wall clock: with a floor far above any UnixNano, the first
+// allocation resumes at floor+1 (not the clock), and the sequence stays strictly
+// increasing from there. This is the cross-restart / cross-process fix — a fresh
+// process resumes above the chain's committed nonce instead of trusting time.
+func TestMonotonicNonce_SeedRaisesFloor(t *testing.T) {
+	pub, sk, _ := ed25519.GenerateKey(nil)
+	const floor = uint64(9_000_000_000_000_000_000) // ~9e18, well above 2026 UnixNano (~1.75e18), below MaxUint64
+	SetNonceFloorFunc(func(p ed25519.PublicKey) (uint64, bool) {
+		if string(p) == string(pub) {
+			return floor, true
+		}
+		return 0, false
+	})
+	defer SetNonceFloorFunc(nil)
+
+	n1 := MonotonicNonce(sk)
+	if n1 != floor+1 {
+		t.Fatalf("first nonce should resume at floor+1 (%d), got %d", floor+1, n1)
+	}
+	n2 := MonotonicNonce(sk)
+	if n2 <= n1 {
+		t.Fatalf("not strictly increasing after seed: %d <= %d", n2, n1)
+	}
+}
+
+// TestMonotonicNonce_SeedIgnoredWhenBelowClock confirms the seed is a max(), not a
+// set: a tiny committed nonce must NOT cap the sequence below the wall clock. The
+// first allocation is still the UnixNano-scale value, never floor+1.
+func TestMonotonicNonce_SeedIgnoredWhenBelowClock(t *testing.T) {
+	pub, sk, _ := ed25519.GenerateKey(nil)
+	SetNonceFloorFunc(func(p ed25519.PublicKey) (uint64, bool) {
+		if string(p) == string(pub) {
+			return 5, true
+		}
+		return 0, false
+	})
+	defer SetNonceFloorFunc(nil)
+
+	n := MonotonicNonce(sk)
+	if n == 6 || n < 1_000_000_000_000_000_000 {
+		t.Fatalf("tiny floor should be dominated by the wall clock, got %d", n)
+	}
+}
+
+// TestMonotonicNonce_SeedConsultedOncePerKey verifies the floor hook is read at
+// most once per key (the seeded guard). After the first allocation the in-process
+// sequence is authoritative — re-querying the chain on every sign would be wasteful
+// and could regress under a lagging read.
+func TestMonotonicNonce_SeedConsultedOncePerKey(t *testing.T) {
+	pub, sk, _ := ed25519.GenerateKey(nil)
+	var calls int
+	SetNonceFloorFunc(func(p ed25519.PublicKey) (uint64, bool) {
+		if string(p) == string(pub) {
+			calls++
+		}
+		return 0, false
+	})
+	defer SetNonceFloorFunc(nil)
+
+	for i := 0; i < 5; i++ {
+		MonotonicNonce(sk)
+	}
+	if calls != 1 {
+		t.Fatalf("floor hook should be consulted exactly once per key, got %d calls", calls)
+	}
+}
+
+// TestMonotonicNonce_NilFloorUnchanged pins that with no hook wired (the default),
+// the allocator behaves exactly as the pure-clock version: strictly increasing and
+// never 0.
+func TestMonotonicNonce_NilFloorUnchanged(t *testing.T) {
+	SetNonceFloorFunc(nil)
+	_, sk, _ := ed25519.GenerateKey(nil)
+	var prev uint64
+	for i := 0; i < 1000; i++ {
+		n := MonotonicNonce(sk)
+		if n == 0 || n <= prev {
+			t.Fatalf("nil-floor behavior broke at iter %d: n=%d prev=%d", i, n, prev)
+		}
+		prev = n
+	}
+}

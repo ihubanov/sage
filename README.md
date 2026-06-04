@@ -57,7 +57,20 @@ Add agents, configure domain-level read/write permissions, manage clearance leve
 
 ---
 
-## What's New in v9.2.1
+## What's New in v9.2.2
+
+**Snapshot retention — the node now bounds its own disk.** v9.2.2 is a non-fork patch: the committed app version stays 10 and nothing here touches consensus or the AppHash. SAGE has taken periodic chain snapshots since v7.5 (every 10k blocks / 6h, plus before every upgrade), but it never reaped them — the `KeepLast` retention policy and the crash-staging sweep both existed yet were wired into nothing, so on a long-lived node snapshots accumulated without bound.
+
+- **Snapshots are now pruned automatically.** After every successful snapshot the scheduler keeps the N newest (default 5) and removes the rest, and at boot it clears any backlog older builds left behind. One anchor per distinct binary version is always retained, so a downgrade-to-rollback stays possible no matter how aggressive the retention count. Tune it with `SAGE_SNAPSHOT_KEEP` (≥1). This is purely off-chain disk housekeeping — it touches only `DataDir/snapshots/`, never consensus state.
+- **Crash-staging dirs are reaped at boot.** A snapshot that crashed mid-write left a `.staging-*` directory behind, and nothing ever removed them. The node now sweeps them on startup.
+- **New `sage-gui snapshot` command.** `snapshot list` shows the on-disk inventory; `snapshot prune [--keep N]` runs the same retention on demand, for a one-off cleanup without restarting the node.
+
+SDK 9.2.2.
+
+## Older releases
+
+<details>
+<summary>v9.2.1 — FTS5 backfill startup hotfix + two-sided fork-branch metrics + on-chain nonce seed</summary>
 
 **Startup and liveness hardening — no consensus change.** v9.2.1 is a non-fork patch on top of v9.2.0's `app-v10`: the committed app version stays 10 and all three fixes live off the consensus path, so every historical block replays byte-identically. It clears a startup wedge on large chains, completes the fork-activation metrics, and lifts the last cross-restart limits on the nonce allocator.
 
@@ -67,7 +80,7 @@ Add agents, configure domain-level read/write permissions, manage clearance leve
 
 SDK 9.2.1.
 
-## Older releases
+</details>
 
 <details>
 <summary>v9.2.0 — app-v10 corroboration integrity guard + on-chain author field</summary>

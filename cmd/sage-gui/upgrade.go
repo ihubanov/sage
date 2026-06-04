@@ -21,9 +21,13 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -74,18 +78,29 @@ Subcommands:
   propose --target <N>         Propose activation of app-v<N> (must be current+1)
 
 propose flags:
-  --target <N>   App version to activate. MUST be the chain's current version + 1.
-                 Forks activate one at a time; jumping (e.g. 6 -> 10) would turn on
-                 only app-v10 and permanently strand the skipped forks.
-  --name <s>     Optional. Defaults to the canonical "app-v<target>" (which is
-                 required); a non-canonical name is rejected.
-  --rpc <url>    CometBFT RPC endpoint (default: $SAGE_COMET_RPC or
-                 http://127.0.0.1:26657).
-  --yes          Skip the confirmation prompt.
+  --target <N>      App version to activate. MUST be the chain's current version + 1.
+                    Forks activate one at a time; jumping (e.g. 6 -> 10) would turn on
+                    only app-v10 and permanently strand the skipped forks.
+  --name <s>        Optional. Defaults to the canonical "app-v<target>" (which is
+                    required); a non-canonical name is rejected.
+  --agent-key <p>   Sign the proposal with this key instead of $SAGE_HOME/agent.key.
+                    Accepts an agent.key seed or a CometBFT priv_validator_key.json.
+                    Use past app-v8 when the chain-admin identity isn't your default
+                    agent.key (issue #34).
+  --rpc <url>       CometBFT RPC endpoint (default: $SAGE_COMET_RPC or
+                    http://127.0.0.1:26657).
+  --yes             Skip the confirmation prompt.
 
-The proposal is signed with the operator agent key at $SAGE_HOME/agent.key and
-routed through the 2/3 governance quorum; validators auto-vote ACCEPT if they
-support the target. Run this on the node host where the key lives.`)
+The proposal is signed with $SAGE_HOME/agent.key (or the --agent-key file) and routed
+through the 2/3 governance quorum; validators auto-vote ACCEPT if they support the
+target. Run this on the node host where the key lives.
+
+Past app-v8 the proposer must be a chain-admin agent: the signing key's agent ID must
+hold Role==admin in the on-chain registry. On a standard node that is usually your
+operator agent.key — once it has been used for any admin op, which is what materializes
+the role on chain; on some deployments it is the genesis validator key (pass it with
+--agent-key). If BOTH keys are rejected with code 47, the admin role isn't materialized
+on chain yet: run any admin op (e.g. a set-permission) with that key first, then retry.`)
 }
 
 // runUpgradeStatus prints the chain's current app version and the next fork an
@@ -112,7 +127,23 @@ func runUpgradeStatus(args []string) error {
 		return nil
 	}
 	fmt.Printf("Next fork         : app-v%d — activate with:\n", current+1)
-	fmt.Printf("    sage-gui upgrade propose --target %d\n", current+1)
+	// Past app-v8 processUpgradePropose admin-gates the proposer (app.go, code
+	// 47): the signing key's agent ID must hold Role==admin on chain. On a standard
+	// node that's usually the operator agent.key once it's been materialized on
+	// chain (its first admin op writes the role); but a different key may be the
+	// admin, so surface --agent-key here rather than printing a next-step that
+	// silently assumes the default key works (issue #34).
+	// Threshold is current >= 8: a propose is admin-gated only when made while the
+	// chain is ALREADY at app-v8+ (postAppV8Rules); the target-8 propose itself
+	// runs from app-v7 on the legacy self-activating path and needs no admin.
+	if current >= 8 {
+		fmt.Printf("    sage-gui upgrade propose --target %d\n", current+1)
+		fmt.Println("    (post-app-v8 the proposer must be a chain-admin agent — the signing key's agent ID must")
+		fmt.Println("     hold Role==admin on chain. Usually that's your operator agent.key once it has been used for")
+		fmt.Println("     an admin op; if a different key is this chain's admin, pass it with --agent-key <chain-admin-key>.)")
+	} else {
+		fmt.Printf("    sage-gui upgrade propose --target %d\n", current+1)
+	}
 	return nil
 }
 
@@ -123,6 +154,7 @@ func runUpgradePropose(args []string) error {
 	name := fs.String("name", "", "plan name (optional; defaults to the canonical app-v<target>)")
 	rpc := fs.String("rpc", defaultCometRPC(), "CometBFT RPC endpoint")
 	yes := fs.Bool("yes", false, "skip the confirmation prompt")
+	agentKeyPath := fs.String("agent-key", "", "sign with this key instead of $SAGE_HOME/agent.key (an agent.key seed or a CometBFT priv_validator_key.json); required past app-v8 where the proposer must be a chain-admin")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -133,10 +165,16 @@ func runUpgradePropose(args []string) error {
 	// Warnings to stderr; the command's own output goes to stdout via fmt.Print.
 	logger := zerolog.New(os.Stderr).Level(zerolog.WarnLevel).With().Timestamp().Logger()
 
-	// Operator key — the same key/path the watchdog and REST server use for RBAC.
-	key := loadOperatorAgentKey(logger)
-	if key == nil {
-		return fmt.Errorf("no operator agent key at %s/agent.key — run this on the node host where the key lives", SageHome())
+	// Signing identity. Past app-v8, processUpgradePropose admin-gates the proposer
+	// (app.go, code 47): the tx-signing key's agent ID must have Role=="admin" on
+	// chain. The default $SAGE_HOME/agent.key is usually that identity once it has
+	// been materialized on chain (the gate reads BadgerDB with no SQL fallback), but
+	// on some deployments a different key is the admin — so --agent-key lets the
+	// operator sign as whichever key IS the chain-admin without hand-building the
+	// tx, the manual workaround issue #34 was filed about.
+	key, keySource, err := resolveProposeSigningKey(*agentKeyPath, logger)
+	if err != nil {
+		return err
 	}
 
 	readCtx, cancelRead := context.WithTimeout(context.Background(), 15*time.Second)
@@ -155,7 +193,10 @@ func runUpgradePropose(args []string) error {
 	if !*yes {
 		fmt.Printf("Propose activation of %s (app version %d) on the chain at app-v%d?\n", canonical, *target, current)
 		fmt.Println("  • Routed through the 2/3 governance quorum; validators auto-vote ACCEPT if they support the target.")
-		fmt.Printf("  • Signed with the operator agent key at %s/agent.key.\n", SageHome())
+		if current >= 8 {
+			fmt.Println("  • Post-app-v8: the proposer must be a chain-admin agent, else rejected at block execution (code 47).")
+		}
+		fmt.Printf("  • Signed with the key at %s.\n", keySource)
 		fmt.Print("Proceed? [y/N]: ")
 		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 		if s := strings.ToLower(strings.TrimSpace(line)); s != "y" && s != "yes" {
@@ -199,7 +240,25 @@ func runUpgradePropose(args []string) error {
 		if strings.Contains(res.TxResultLog, "already pending") {
 			return fmt.Errorf("an upgrade plan is already pending (at-most-one-pending invariant); wait for it to activate or expire before proposing %s", canonical)
 		}
-		return fmt.Errorf("rejected at block execution (code %d): %s\n(a common cause is the operator key lacking the chain-admin role required to propose upgrades)", res.TxResultCode, res.TxResultLog)
+		// Past app-v8 the gate (processUpgradePropose, app.go) requires the
+		// signing key's agent ID to hold Role==admin in the on-chain registry, and
+		// that role to be MATERIALIZED on chain (written on the identity's first
+		// admin op — the gate has no SQL-bootstrap fallback). Tailor the remedy to
+		// whether the operator already overrode the key, so we don't hand back
+		// circular "re-pass --agent-key" advice to someone who just did (issue #34).
+		hint := "past app-v8 the proposer must be a chain-admin agent: the signing key's agent ID " +
+			"(hex of its ed25519 pubkey) must hold Role==admin on chain, and that role must already be " +
+			"materialized (it is written on the identity's first admin op, e.g. a set-permission)."
+		if *agentKeyPath != "" {
+			hint += fmt.Sprintf(" The supplied --agent-key (%s) isn't an on-chain admin — verify its agent ID has "+
+				"Role==admin; if it's admin in SQL but not yet on chain, run any admin op with it first, then retry.", keySource)
+		} else {
+			hint += fmt.Sprintf(" The default key at %s isn't an on-chain admin. If a different key is this chain's "+
+				"admin (e.g. the genesis validator key) pass it with --agent-key; otherwise materialize agent.key's "+
+				"admin role by running any admin op with it first, then retry:\n"+
+				"    sage-gui upgrade propose --target %d --agent-key <chain-admin-key>", keySource, *target)
+		}
+		return fmt.Errorf("rejected at block execution (code %d): %s\n(%s)", res.TxResultCode, res.TxResultLog, hint)
 	}
 
 	fmt.Printf("✓ Proposed %s (target app version %d) — accepted at height %d.\n", canonical, *target, res.Height)
@@ -208,8 +267,103 @@ func runUpgradePropose(args []string) error {
 	fmt.Println("    sage-gui upgrade status")
 	if *target < sageabci.MaxSupportedAppVersion() {
 		fmt.Printf("  After it activates, propose the next fork: sage-gui upgrade propose --target %d\n", *target+1)
+		// Once this target activates the chain reports app-v<target>, so the
+		// follow-up propose is admin-gated whenever *target >= 8 (it runs from an
+		// app-v8+ chain). Carry the same chain-admin caveat the status next-step
+		// prints, so the success path doesn't re-strand the operator (issue #34).
+		// Threshold is *target >= 8, NOT *target+1 >= 8: a just-proposed target 7
+		// leaves the chain at app-v7, where the target-8 follow-up still takes the
+		// legacy self-activating path and needs no admin.
+		if *target >= 8 {
+			fmt.Println("  (the chain will then be at app-v8+, so that propose must be signed by a chain-admin agent —")
+			fmt.Println("   pass --agent-key for the admin identity if it isn't your default agent.key)")
+		}
 	}
 	return nil
+}
+
+// resolveProposeSigningKey selects the key the propose tx is signed with and
+// returns it alongside a human-readable source label (for the confirm prompt and
+// error messages). When --agent-key is given it wins; otherwise the default
+// $SAGE_HOME/agent.key is used (the watchdog/REST RBAC key). Past app-v8 the
+// proposer must be a chain-admin agent (issue #34), which the default key often
+// isn't — hence the override.
+func resolveProposeSigningKey(agentKeyPath string, logger zerolog.Logger) (ed25519.PrivateKey, string, error) {
+	if agentKeyPath != "" {
+		key, err := loadProposeSigningKey(agentKeyPath)
+		if err != nil {
+			return nil, "", err
+		}
+		return key, agentKeyPath, nil
+	}
+	key := loadOperatorAgentKey(logger)
+	if key == nil {
+		return nil, "", fmt.Errorf("no operator agent key at %s/agent.key — run this on the node host where the key lives, or pass --agent-key <path>", SageHome())
+	}
+	return key, filepath.Join(SageHome(), "agent.key"), nil
+}
+
+// loadProposeSigningKey reads an operator-supplied signing-key file and parses
+// it. Thin I/O wrapper around parseProposeSigningKey (which is pure and unit-
+// tested) so a missing/unreadable path yields a clear, actionable error.
+func loadProposeSigningKey(path string) (ed25519.PrivateKey, error) {
+	data, err := os.ReadFile(path) //nolint:gosec // operator-supplied path on the node host
+	if err != nil {
+		return nil, fmt.Errorf("read --agent-key %s: %w", path, err)
+	}
+	key, err := parseProposeSigningKey(data)
+	if err != nil {
+		return nil, fmt.Errorf("--agent-key %s: %w", path, err)
+	}
+	return key, nil
+}
+
+// parseProposeSigningKey turns the raw bytes of a key file into an ed25519
+// private key, accepting the three forms an operator realistically has on a node
+// host:
+//   - a raw 32-byte agent.key seed (the SAGE operator-key format),
+//   - a raw 64-byte expanded ed25519 private key,
+//   - a CometBFT priv_validator_key.json (the genesis validator key — the
+//     identity that is the materialized chain-admin on standard deployments, and
+//     the one issue #34's reporter had to sign with by hand to climb past app-v8).
+//
+// Length-first detection is unambiguous: a priv_validator_key.json is hundreds of
+// bytes of JSON, never exactly 32 or 64. Pure (operates on bytes, no I/O) so the
+// format detection is unit-tested directly.
+func parseProposeSigningKey(data []byte) (ed25519.PrivateKey, error) {
+	switch len(data) {
+	case ed25519.SeedSize: // 32-byte seed
+		return ed25519.NewKeyFromSeed(data), nil
+	case ed25519.PrivateKeySize: // 64-byte expanded key
+		return ed25519.PrivateKey(append([]byte(nil), data...)), nil
+	}
+	// Not a raw key blob — try CometBFT's priv_validator_key.json shape.
+	var pv struct {
+		PrivKey struct {
+			Value string `json:"value"`
+		} `json:"priv_key"`
+	}
+	if err := json.Unmarshal(data, &pv); err != nil {
+		// Deliberately content-free: wrapping the json error with %w would echo the
+		// first byte of the operator's key file (json's "invalid character 'x'")
+		// to stderr. The shape check is all the operator needs.
+		return nil, fmt.Errorf("unrecognized key file: expected a 32-byte seed, a 64-byte ed25519 key, or a priv_validator_key.json")
+	}
+	if pv.PrivKey.Value == "" {
+		return nil, fmt.Errorf("priv_validator_key.json has no priv_key.value")
+	}
+	raw, err := base64.StdEncoding.DecodeString(pv.PrivKey.Value)
+	if err != nil {
+		return nil, fmt.Errorf("decode priv_key.value base64: %w", err)
+	}
+	switch len(raw) {
+	case ed25519.SeedSize:
+		return ed25519.NewKeyFromSeed(raw), nil
+	case ed25519.PrivateKeySize:
+		return ed25519.PrivateKey(append([]byte(nil), raw...)), nil
+	default:
+		return nil, fmt.Errorf("priv_key.value decodes to %d bytes (want a 32-byte seed or 64-byte ed25519 key)", len(raw))
+	}
 }
 
 // validateUpgradeTarget enforces the operator-submit invariants for an

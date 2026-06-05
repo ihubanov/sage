@@ -57,7 +57,20 @@ Add agents, configure domain-level read/write permissions, manage clearance leve
 
 ---
 
-## What's New in v9.2.3
+## What's New in v9.2.4
+
+**`upgrade propose` can sign as the chain-admin identity.** v9.2.4 is a non-fork patch: the committed app version stays 10 and nothing here touches consensus, the AppHash, or block replay. It closes [#34](https://github.com/l33tdawg/sage/issues/34) — a follow-up to [#32](https://github.com/l33tdawg/sage/issues/32) — reported by [@ihubanov](https://github.com/ihubanov). Past app-v8, `processUpgradePropose` requires the proposer to be a chain-admin agent, but `sage-gui upgrade propose` only ever signed with `$SAGE_HOME/agent.key` — so on a node where that key isn't the materialized chain-admin, the command (and `upgrade status`'s printed next-step) couldn't climb past app-v8.
+
+- **New `--agent-key <path>` flag.** `upgrade propose --agent-key` signs the proposal with an operator-supplied key — an `agent.key` seed or a CometBFT `priv_validator_key.json` — instead of the default, so the operator can propose as whichever identity holds the chain-admin role.
+- **Self-explanatory post-app-v8 guidance.** `upgrade status` and the propose next-steps now state that past app-v8 the signing key's agent ID must hold `Role==admin` on chain; the code-47 rejection explains the requirement (and the on-chain materialization prerequisite) instead of handing back a command that can't run.
+- **Client-side only.** `processUpgradePropose` is unchanged, so every historical block replays byte-identically.
+
+SDK 9.2.4.
+
+## Older releases
+
+<details>
+<summary>v9.2.3 — operator path to activate the app-v7…app-v10 forks (closes #32)</summary>
 
 **Operator path to activate the app-v7…app-v10 forks.** v9.2.3 is a non-fork patch: the committed app version stays 10 and nothing here touches consensus, the AppHash, or block replay. It closes a gap reported in [#32](https://github.com/l33tdawg/sage/issues/32) by [@ihubanov](https://github.com/ihubanov). The upgrade machinery's voting and processing halves were complete — `processUpgradePropose` activates a plan deterministically and validators auto-vote ACCEPT — but nothing in the tree could *submit* a plan for the governance-gated forks. The only `UpgradePropose` constructor was the boot watchdog, frozen at the deployment-safe default, so on a long-lived chain app-v7 (content-validation), app-v8 (quorum-gated upgrades), app-v9 (nonce/replay) and app-v10 (corroboration integrity) were unreachable past app-v6.
 
@@ -67,7 +80,7 @@ Add agents, configure domain-level read/write permissions, manage clearance leve
 
 SDK 9.2.3.
 
-## Older releases
+</details>
 
 <details>
 <summary>v9.2.2 — snapshot retention/pruning (KeepLast wired + boot staging sweep + snapshot CLI)</summary>

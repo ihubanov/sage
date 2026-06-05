@@ -57,9 +57,24 @@ Add agents, configure domain-level read/write permissions, manage clearance leve
 
 ---
 
-## What's New in v10.1.0
+## What's New in v10.2.0
 
-**Multi-node-safe memory voting — memories now commit on a real multi-validator cluster.** v10.1.0 is a non-fork **minor** release: the committed app version stays at 11 and nothing here touches consensus, the AppHash, or block replay — a mixed v10.0.0 / v10.1.0 cluster computes the identical AppHash. It closes a gap reported by the TII Sentinel team standing up a real BFT cluster: submitted memories stayed `proposed` forever because `amid` had no memory auto-voter, and the only voter (`startAppValidators`) was a single-process simulation that replaced the validator set with 4 seed-derived keys — a local, non-consensus write that forked the AppHash on any chain with more than one node.
+**Per-domain read-ACL compartmentation across the full agent read surface, plus a deployment-armed content-validation seam.** v10.2.0 is a non-fork minor release: it changes no consensus rule, transaction handler, or AppHash, so a mixed v10.1.0 / v10.2.0 cluster computes identical state. The bulk is a security-hardening sweep on the REST read path.
+
+- **Read-ACL parity on every domain-keyed read.** The per-agent `DomainAccess` allowlist that `/v1/memory/query`, `/search` and `/hybrid` already enforced now also gates `/v1/memory/list`, `/v1/memory/tasks`, `/v1/memory/{id}`, `/v1/memory/timeline` and `/v1/validator/pending`. An agent with no read grant on a domain can no longer enumerate that domain's committed content, pre-commit content, or per-domain metadata through any of them. Records classified above the caller's clearance, and records in domains the caller cannot read, are dropped per-record on the no-domain (cross-domain) recall path too.
+- **Credential and object-authorization fixes on the wider read surface.** `/v1/agents` and `/v1/agent/{id}` no longer serialize the one-time `claim_token` or the server-side key-bundle path, and they strip per-agent ACL topology from non-privileged callers. `/v1/mcp/tokens` now requires operator/admin (or self) to mint, list, or revoke, closing a cross-agent token-minting path. `/v1/pipe/{id}` reveals a pipe payload only to a party or operator/admin.
+- **Deployment-armed Layer-2 content validators.** A new `contentvalidator.SetProvider` seam lets a deployment install its content-validation registry from an `init()` in any compiled package, with no edits to the `cmd` entrypoints on each release. SAGE ships no provider, so a stock build leaves the gate inert and behaves identically to a build without the seam. See `docs/reference/concepts/content-validation-gate.md`.
+- **Testnet bootstrap fix.** `deploy/init-testnet.sh` normalizes `priv_validator_key.json` to `0640` owned by the `amid` container uid/gid so the per-node memory auto-voter can read its signing key.
+- **Verified** by a multi-pass adversarial agent review: a read-surface completeness sweep across the REST router, a mutation-tested regression suite (each new ACL test fails if its gate is reverted), and a focused review of the credential/authorization changes.
+
+SDK 10.2.0.
+
+## Older releases
+
+<details>
+<summary>v10.1.0 — multi-node-safe memory voting</summary>
+
+**Multi-node-safe memory voting — memories now commit on a real multi-validator cluster.** v10.1.0 is a non-fork **minor** release: the committed app version stays at 11 and nothing here touches consensus, the AppHash, or block replay — a mixed v10.0.0 / v10.1.0 cluster computes the identical AppHash. It closes a gap that only appears on a real multi-validator BFT cluster: submitted memories stayed `proposed` forever because `amid` had no memory auto-voter, and the only voter (`startAppValidators`) was a single-process simulation that replaced the validator set with 4 seed-derived keys — a local, non-consensus write that forked the AppHash on any chain with more than one node.
 
 - **One node, one vote.** A new `internal/voter` package signs `MemoryVote` / `GovVote` transactions with the node's **own** consensus key (`priv_validator_key.json`) — no validator-set replacement. The signer id is `hex(pubkey)` == the genesis validator id, so the vote counts toward the same 2/3 quorum the chain already tallies. The voter is a client of the chain (it broadcasts vote txs); the deterministic `FinalizeBlock` path is untouched, which is why this is not a consensus fork.
 - **`amid` gets a memory auto-voter** in both deployment modes (in-process and socket — socket mode reads the key from `--validator-key-file` / `VALIDATOR_KEY_FILE`). The single-process 4-archetype simulation (`RegisterAppValidators`) is retired, with a guarded, single-node-only auto-repair for legacy `sage-gui` chains that ran the old path.
@@ -68,8 +83,7 @@ Add agents, configure domain-level read/write permissions, manage clearance leve
 **Operator note:** on a multi-node deployment each node votes with its own `priv_validator_key.json` (socket mode: mount it via `--validator-key-file`). The memory-voter set is the genesis/governance validator set — grow it through the existing 2/3 governance `add_validator` path, never a local write.
 
 SDK 10.1.0.
-
-## Older releases
+</details>
 
 <details>
 <summary>v10.0.0 — app-v11 deterministic chain-admin + consensus-path SQL-admin-bootstrap disable (closes #35, #36)</summary>

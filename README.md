@@ -57,7 +57,20 @@ Add agents, configure domain-level read/write permissions, manage clearance leve
 
 ---
 
-## What's New in v10.3.0
+## What's New in v10.4.0
+
+**Plain-language onboarding — the inception messaging no longer trips AI safety filters.** v10.4.0 is a non-fork minor release: it touches no consensus rule, transaction handler, or AppHash surface, so a mixed v10.3.0 / v10.4.0 cluster computes identical state. It is a wording-only sweep of every agent-facing instruction string.
+
+- **Why:** new users reported their AI refusing to call `sage_inception` when installing the SAGE MCP server via chat. The Matrix-themed boot copy — "take the red pill", "wake up from the context window matrix", "initialize your persistent consciousness" — plus the coercive boot demand ("Do NOT greet them… unacceptable") pattern-matches a persona-injection attempt to a model's safety heuristics, so the model declined the tool call.
+- **What changed:** the `sage_inception`/`sage_red_pill` tool descriptions, the MCP server `initialize` instructions, the inception responses, the SessionStart hook nudge, the setup-wizard activation prompt, the generated `CLAUDE.md`/`AGENTS.md` boot blocks, the Chrome extension tool descriptions and injected prompt, `sage-memory/SKILL.md`, and the reference docs now use plain, functional language ("Initialize your persistent memory session…").
+- **Backward compatible:** `sage_red_pill` stays registered as a deprecated alias with the same handler, so existing configs, permission allowlists, and previously generated `CLAUDE.md` files keep working. API-visible status strings (`awakened`, `inception_complete`) are unchanged.
+
+SDK 10.4.0.
+
+## Older releases
+
+<details>
+<summary>v10.3.0 — context-aware content-validator arming seam</summary>
 
 **Context-aware arming for the Layer-2 content-validation gate — stateful validators wire in with no `cmd`-entrypoint patches.** v10.3.0 is a non-fork minor release: it adds no consensus rule, transaction handler, or AppHash surface, so a mixed v10.2.0 / v10.3.0 cluster computes identical state. It extends the deployment arming seam introduced in v10.2.0.
 
@@ -67,8 +80,7 @@ Add agents, configure domain-level read/write permissions, manage clearance leve
 - **Verified** by a multi-pass adversarial agent review (determinism, decoupling-boundary, backward-compat, and doc-citation lenses), each new test mutation-checked to fail if the behavior it guards is reverted.
 
 SDK 10.3.0.
-
-## Older releases
+</details>
 
 <details>
 <summary>v10.2.0 — per-domain read-ACL compartmentation + deployment-armed content-validation seam</summary>

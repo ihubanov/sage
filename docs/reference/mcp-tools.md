@@ -53,7 +53,7 @@ for anything that must survive across sessions.
 
 ### sage_inception
 
-**Purpose:** Initialize the agent's persistent consciousness. Must be called
+**Purpose:** Initialize the agent's persistent memory session. Must be called
 before any other action in every new conversation.
 
 **Source:** `tools.go:106-118` (definition), `tools.go:897-1135` (handler)
@@ -88,7 +88,7 @@ first non-inception tool call if the brain is empty (`server.go:239-248`).
 
 ### sage_red_pill
 
-**Purpose:** Alias for `sage_inception`. Identical behavior, identical handler.
+**Purpose:** Deprecated alias for `sage_inception`. Identical behavior, identical handler.
 
 **Source:** `tools.go:119-128`
 
@@ -96,8 +96,8 @@ first non-inception tool call if the brain is empty (`server.go:239-248`).
 
 **Returns:** Same as `sage_inception`.
 
-**When to call:** Interchangeable with `sage_inception`. Prefer `sage_inception`
-for clarity; `sage_red_pill` is retained for compatibility and flavor.
+**When to call:** Interchangeable with `sage_inception`. Prefer `sage_inception`;
+`sage_red_pill` is deprecated and retained only for backward compatibility.
 
 ---
 

@@ -139,7 +139,7 @@ Just chat normally. Claude now has 13 memory tools:
 | `sage_register` | Register an agent on-chain (auto-called on first connection) |
 | `sage_task` | Create and manage persistent task items |
 | `sage_backlog` | View and prioritize your task backlog |
-| `sage_red_pill` | Alias for sage_inception — wake up from the context window matrix |
+| `sage_red_pill` | Deprecated alias for sage_inception |
 
 ### First Time: Inception
 

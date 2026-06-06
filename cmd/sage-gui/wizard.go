@@ -807,12 +807,12 @@ label { display: block; margin-top: 1rem; color: #9ca3af; font-size: 0.9rem; }
 
 <!-- Step 4: Inception -->
 <div class="step" id="step4">
-  <h2>Wake up your AI</h2>
+  <h2>Activate your AI's memory</h2>
   <p class="step-desc">Start SAGE, reopen your AI app, and send this message to activate its memory:</p>
 
   <div class="prompt-box">
     <button class="btn copy-btn btn-sm" onclick="copyPrompt()">Copy</button>
-    Call sage_red_pill to wake up. From now on, call sage_turn at the start of every conversation with the current topic so you can recall relevant memories and build experience over time.
+    Call sage_inception to initialize your persistent memory. From now on, call sage_turn at the start of every conversation with the current topic so you can recall relevant memories and build experience over time.
   </div>
 
   <p style="color:#9ca3af; font-size:0.9rem; margin-top:1rem; line-height:1.6">

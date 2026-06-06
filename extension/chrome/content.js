@@ -54,7 +54,7 @@
         <button class="sage-action-btn" data-tool="sage_inception">
           <span class="sage-action-icon">\u{1F48A}</span>
           <div class="sage-action-text">
-            <div class="sage-action-name">Wake Up</div>
+            <div class="sage-action-name">Initialize</div>
             <div class="sage-action-desc">Initialize persistent memory</div>
           </div>
         </button>

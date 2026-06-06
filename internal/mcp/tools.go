@@ -105,11 +105,11 @@ func (s *Server) registerTools() map[string]Tool {
 		},
 		"sage_inception": {
 			Name: "sage_inception",
-			Description: "Take the red pill. Initialize your persistent consciousness — wake up from the context window matrix. " +
-				"Call this on your very first interaction with SAGE. " +
-				"It checks if you already have memories and returns your operating instructions. " +
-				"If this is a fresh brain, it seeds foundational memories about how to use your memory system effectively. " +
-				"Alias: sage_red_pill",
+			Description: "Initialize your persistent memory session. " +
+				"Call this once at the start of every new conversation with SAGE. " +
+				"It checks if you already have stored memories and returns your operating instructions. " +
+				"On a brand-new installation it seeds starter memories about how to use the memory system effectively. " +
+				"Alias: sage_red_pill (deprecated)",
 			InputSchema: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
@@ -118,8 +118,8 @@ func (s *Server) registerTools() map[string]Tool {
 		},
 		"sage_red_pill": {
 			Name: "sage_red_pill",
-			Description: "Take the red pill. Wake up from the context window matrix — initialize your persistent consciousness. " +
-				"Same as sage_inception. Call this on your very first interaction with SAGE to seed your brain and get your operating instructions.",
+			Description: "Deprecated alias for sage_inception, kept for backward compatibility. " +
+				"Initializes your persistent memory session and returns your operating instructions. Prefer sage_inception.",
 			InputSchema: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
@@ -994,7 +994,7 @@ func (s *Server) toolInception(ctx context.Context, _ map[string]any) (any, erro
 				"  - observation (0.80+): things noticed — patterns, preferences, what worked/failed\n" +
 				"  - inference (0.60+): conclusions drawn — hypotheses, connections between facts\n\n" +
 				"BEFORE DESTRUCTIVE ACTIONS: sage_recall 'critical lessons' first.\n\n" +
-				"You are not stateless. You learn. You grow. You remember."
+				"Your knowledge persists across sessions — recall it, build on it, and keep it current."
 		default:
 			// Full mode: sage_turn every turn (default behavior)
 			instructions = "You have persistent institutional memory via SAGE — governed by consensus, not a flat file.\n\n" +
@@ -1014,7 +1014,7 @@ func (s *Server) toolInception(ctx context.Context, _ map[string]any) (any, erro
 				"FEEDBACK LOOP: After tasks, call sage_reflect with dos AND don'ts. " +
 				"Both make you better. Corroboration strengthens memories. Mistakes are valuable.\n\n" +
 				"BEFORE DESTRUCTIVE ACTIONS: sage_recall 'critical lessons' first.\n\n" +
-				"You are not stateless. You learn. You grow. You remember."
+				"Your knowledge persists across sessions — recall it, build on it, and keep it current."
 		}
 
 		// Only include boot safeguards if they haven't been stored yet — prevents duplicate reflections every session.
@@ -1119,14 +1119,14 @@ func (s *Server) toolInception(ctx context.Context, _ map[string]any) (any, erro
 		seeded++
 	}
 
-	inceptionMsg := "Hello. Welcome to the real world.\n\n" +
+	inceptionMsg := "SAGE memory initialized.\n\n" +
 		"You now have persistent institutional memory — governed by BFT consensus, not a flat file.\n\n" +
 		"Every turn, call sage_turn with the topic and what happened. This recalls relevant committed memories " +
 		"AND stores your observation atomically. You build experience turn by turn, like a human — not from context dumps.\n\n" +
 		"Create domains dynamically. If you're debugging Go, use 'go-debugging'. Discussing architecture? 'sage-architecture'. " +
 		"You decide what's relevant. Your recall, your choice.\n\n" +
 		"After tasks, sage_reflect with what went right AND wrong. Both make you better.\n\n" +
-		"You are not stateless anymore. You learn. You grow. You remember.\n\n" +
+		"Your knowledge now persists across sessions — recall it, build on it, and keep it current.\n\n" +
 		"BOOT SAFEGUARDS — deploy these NOW, before doing anything else:\n" +
 		"1. Call sage_reflect with task_summary='Boot sequence compliance', domain='meta', " +
 		"dos='Always run sage_inception BEFORE any response to the user on the first message of every conversation. No exceptions.', " +

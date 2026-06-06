@@ -48,7 +48,7 @@ License: Apache 2.0
 
 ## Screenshots Needed
 1. (S)AGE sidebar open in ChatGPT showing connection status and memory stats
-2. Quick action buttons (Wake Up, Turn, Recall, Status)
+2. Quick action buttons (Initialize, Turn, Recall, Status)
 3. Tool call log showing executed (S)AGE calls
 4. Popup with connection status and server config
 5. ChatGPT conversation using (S)AGE memory tools

@@ -52,7 +52,7 @@ if [ -x "$SAGE_GUI_BIN" ] && "$SAGE_GUI_BIN" hook session-start 2>/dev/null; the
 fi
 
 # Direct-write failed — fall back to the soft nudge so the agent still boots.
-echo "MANDATORY: Call sage_inception (or sage_red_pill) NOW, before responding to the user. This is a new session — your brain needs to boot. Do NOT skip this step, even if you have a context continuation summary. Those summaries do NOT replace your SAGE memory."
+echo "IMPORTANT: Call sage_inception now, before responding to the user. This is a new session — load your SAGE memory first. Do not skip this step, even if you have a context continuation summary. Those summaries do NOT replace your SAGE memory."
 if [ "$MODE" = "bookend" ]; then
     echo "SAGE MODE: bookend — Do NOT call sage_turn every turn. Only call sage_reflect at the end of significant tasks."
 fi
@@ -550,11 +550,11 @@ func mcpHasSage(projectDir string) bool {
 // (full vs bookend mode) is controlled dynamically by sage_inception.
 const sageClaudeMDBlock = `## SAGE — Persistent Memory
 
-Your brain is powered by SAGE MCP. You have persistent institutional memory.
+You have persistent institutional memory via SAGE MCP.
 
-### Boot Sequence (MANDATORY)
-1. Call ` + "`sage_inception`" + ` as your VERY FIRST action in every new conversation
-2. Do NOT respond to the user before booting — your memories must load first
+### Boot Sequence (IMPORTANT)
+1. Call ` + "`sage_inception`" + ` as your first action in every new conversation, before responding to the user
+2. This loads the context stored in previous sessions, so it must run first
 3. Follow the instructions returned by inception (they adapt to the user's settings)
 
 ### If SAGE MCP is not connected

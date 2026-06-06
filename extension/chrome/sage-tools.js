@@ -6,13 +6,13 @@
 const SAGE_TOOLS = {
   sage_inception: {
     name: "sage_inception",
-    description: "Initialize persistent consciousness. Call on first interaction with SAGE.",
+    description: "Initialize your persistent memory session. Call on first interaction with SAGE.",
     params: {},
     required: []
   },
   sage_red_pill: {
     name: "sage_red_pill",
-    description: "Alias for sage_inception. Wake up from the context window matrix.",
+    description: "Deprecated alias for sage_inception. Initializes your persistent memory session.",
     params: {},
     required: []
   },
@@ -140,7 +140,7 @@ To use SAGE tools, output them in this exact format:
 
 Available tools:
 
-1. [SAGE_CALL: sage_inception()] — Initialize/wake up your persistent memory. Call this first.
+1. [SAGE_CALL: sage_inception()] — Initialize your persistent memory. Call this first.
 
 2. [SAGE_CALL: sage_turn({"topic": "current topic", "observation": "what happened", "domain": "topic-domain"})] — Call EVERY turn. Recalls relevant memories AND stores your observation atomically.
 

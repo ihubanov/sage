@@ -119,11 +119,11 @@ func writeCodexConfig(path, binPath, sageHome string) error {
 // sageClaudeMDBlock but references Codex's config file path.
 const sageAgentsMDBlock = `## SAGE — Persistent Memory
 
-Your brain is powered by SAGE MCP. You have persistent institutional memory.
+You have persistent institutional memory via SAGE MCP.
 
-### Boot Sequence (MANDATORY)
-1. Call ` + "`sage_inception`" + ` as your VERY FIRST action in every new conversation
-2. Do NOT respond to the user before booting — your memories must load first
+### Boot Sequence (IMPORTANT)
+1. Call ` + "`sage_inception`" + ` as your first action in every new conversation, before responding to the user
+2. This loads the context stored in previous sessions, so it must run first
 3. Follow the instructions returned by inception (they adapt to the user's settings)
 
 ### If SAGE MCP is not connected

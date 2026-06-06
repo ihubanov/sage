@@ -44,7 +44,7 @@ or `api/openapi.yaml`, **trust this reference** — those two have known drift (
 ## Critical facts (the ones agents get wrong)
 
 ### Boot sequence (MCP)
-1. `sage_inception` (alias `sage_red_pill`) — **very first action every conversation.** Loads your brain.
+1. `sage_inception` (deprecated alias `sage_red_pill`) — **very first action every conversation.** Loads your stored memory context.
 2. `sage_turn` — **every turn.** Atomically recalls committed memories for the topic *and* stores your observation. Also auto-checks the pipeline inbox.
 3. `sage_reflect` — after tasks. Store dos and don'ts.
 

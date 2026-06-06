@@ -50,9 +50,9 @@ This skill enables **persistent memory storage** for AI agents. By design:
 
 On the **first message of every new conversation**, before responding to the user:
 
-1. Call `sage_inception` (or `sage_red_pill`) — this checks if your brain is online and returns your operating instructions
-2. Do NOT greet the user first. Do NOT say anything. Boot your brain first.
-3. After inception, follow the safeguard instructions it returns.
+1. Call `sage_inception` — this checks if your memory is online and returns your operating instructions
+2. Do this before replying, so the user's stored context is loaded from the start.
+3. After inception, follow the instructions it returns.
 
 ## Every Turn
 
@@ -87,7 +87,7 @@ When using `sage_remember`:
 
 | Tool | Purpose |
 |------|---------|
-| `sage_inception` | Boot your brain. Call first in every new session. |
+| `sage_inception` | Initialize your memory session. Call first in every new session. |
 | `sage_turn` | Per-turn memory cycle. Recalls + stores atomically. |
 | `sage_remember` | Store a new memory with content, type, domain, and confidence. |
 | `sage_recall` | Retrieve memories by topic and/or domain. |
@@ -99,7 +99,7 @@ When using `sage_remember`:
 | `sage_register` | Register this agent with the SAGE node. |
 | `sage_task` | Create/update tasks for tracking work. |
 | `sage_backlog` | View pending tasks. |
-| `sage_red_pill` | Alias for sage_inception. |
+| `sage_red_pill` | Deprecated alias for sage_inception. |
 
 ## Reflection (After Tasks)
 
@@ -130,7 +130,7 @@ definitions. No credentials or API keys are included.
 
 ## Key Principles
 
-- **You are not stateless.** You learn. You grow. You remember.
+- **Knowledge persists across sessions** — recall it, build on it, and keep it current.
 - **Local-only**: all data stays on your machine. No cloud, no telemetry, no tracking.
 - **Consensus-validated**: every memory goes through BFT validation before committing.
 - **Confidence scores**: memories carry confidence that can be strengthened through corroboration.

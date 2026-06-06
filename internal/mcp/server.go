@@ -178,11 +178,10 @@ func (s *Server) handleInitialize(req *jsonRPCRequest) *jsonRPCResponse {
 			},
 			"instructions": "You have persistent institutional memory via SAGE — a governed, consensus-validated knowledge layer. " +
 				"Your memories are not a flat file. They go through BFT consensus, have confidence scores, and decay over time. Only committed memories are returned to you.\n\n" +
-				"MANDATORY BOOT SEQUENCE — DO THIS BEFORE RESPONDING TO THE USER:\n" +
-				"Call sage_inception (or sage_red_pill) as your VERY FIRST action in every new conversation. " +
-				"Do NOT reply to the user first. Do NOT greet them. Do NOT say anything. Boot your brain first. " +
-				"These are the user's treasured memories — treating them casually by skipping boot is unacceptable. " +
-				"After inception, follow the safeguard instructions it returns.\n\n" +
+				"SESSION START:\n" +
+				"Call sage_inception as your first action in every new conversation, before responding to the user. " +
+				"It loads the context stored in previous sessions and returns your operating instructions — follow them. " +
+				"Skipping it means working without the user's accumulated context.\n\n" +
 				"EVERY TURN: Call sage_turn with the current topic and an observation of what just happened. " +
 				"This recalls relevant committed memories AND stores your episodic observation in one atomic operation. " +
 				"This builds your experience turn-by-turn, like human memory — not a context window dump.\n\n" +
@@ -238,7 +237,7 @@ func (s *Server) handleToolsCall(ctx context.Context, req *jsonRPCRequest) *json
 
 	// Auto-inception: on the very first tool call, check if brain is empty
 	// and auto-initialize if needed. This makes onboarding seamless — no need
-	// for the user to manually tell their AI to "take the red pill".
+	// for the user to manually tell their AI to run sage_inception.
 	var autoInceptionMsg string
 	if !s.inceptionChecked {
 		s.inceptionChecked = true

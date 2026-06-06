@@ -22,7 +22,7 @@ func TestInstallClaudeMD_CreateNew(t *testing.T) {
 	assert.Contains(t, content, "# CLAUDE.md")
 	assert.Contains(t, content, sageClaudeMDMarker)
 	assert.Contains(t, content, "sage_inception")
-	assert.Contains(t, content, "Boot Sequence (MANDATORY)")
+	assert.Contains(t, content, "Boot Sequence (IMPORTANT)")
 }
 
 func TestInstallClaudeMD_AppendToExisting(t *testing.T) {
@@ -153,7 +153,7 @@ func TestHookScripts_DirectWriteShellOut(t *testing.T) {
 
 func TestSageClaudeMDBlock_ContainsEssentials(t *testing.T) {
 	assert.Contains(t, sageClaudeMDBlock, "sage_inception")
-	assert.Contains(t, sageClaudeMDBlock, "MANDATORY")
+	assert.Contains(t, sageClaudeMDBlock, "IMPORTANT")
 	assert.Contains(t, sageClaudeMDBlock, "sage-gui serve")
 	assert.Contains(t, sageClaudeMDBlock, ".mcp.json")
 }

@@ -217,7 +217,7 @@ async function executeInception(baseUrl) {
       seeded++;
     } catch (_) {}
   }
-  return { status: "inception_complete", memories_seeded: seeded, message: "Welcome to the real world. Your brain is now online." };
+  return { status: "inception_complete", memories_seeded: seeded, message: "SAGE memory initialized. Your persistent memory is now online." };
 }
 
 async function executeTurn(params, baseUrl) {

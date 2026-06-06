@@ -57,7 +57,21 @@ Add agents, configure domain-level read/write permissions, manage clearance leve
 
 ---
 
-## What's New in v10.2.0
+## What's New in v10.3.0
+
+**Context-aware arming for the Layer-2 content-validation gate — stateful validators wire in with no `cmd`-entrypoint patches.** v10.3.0 is a non-fork minor release: it adds no consensus rule, transaction handler, or AppHash surface, so a mixed v10.2.0 / v10.3.0 cluster computes identical state. It extends the deployment arming seam introduced in v10.2.0.
+
+- **Stateful validators arm from a single `init()`.** The v10.2.0 `contentvalidator.SetProvider` seam armed *stateless* validators. The new `SetProviderWithContext` variant hands a provider a narrow, read-only `ArmContext` whose `RoleResolver()` is the same per-height on-chain role lookup the gate already consumes inside `FinalizeBlock`. A deployment whose validators enforce signer authority — trusting a record's self-asserted role only when the on-chain signer actually holds it — now arms them from one additive file, with no edits to the `cmd` entrypoints on each release.
+- **No new nondeterminism surface.** The only state exposed is the read-only role lookup the enforcement path already uses (no time, network, writes, or goroutines), so arming stays AppHash-deterministic. The `ArmContext` is a narrow adapter, not the app itself, so a provider cannot reach back into mutable app internals.
+- **Purely additive and backward compatible.** Stock builds register nothing and the gate stays inert; the existing no-arg `SetProvider` is unchanged. When both are registered the context-aware provider wins, and an explicit `SetContentValidators` still beats both. See `docs/reference/concepts/content-validation-gate.md`.
+- **Verified** by a multi-pass adversarial agent review (determinism, decoupling-boundary, backward-compat, and doc-citation lenses), each new test mutation-checked to fail if the behavior it guards is reverted.
+
+SDK 10.3.0.
+
+## Older releases
+
+<details>
+<summary>v10.2.0 — per-domain read-ACL compartmentation + deployment-armed content-validation seam</summary>
 
 **Per-domain read-ACL compartmentation across the full agent read surface, plus a deployment-armed content-validation seam.** v10.2.0 is a non-fork minor release: it changes no consensus rule, transaction handler, or AppHash, so a mixed v10.1.0 / v10.2.0 cluster computes identical state. The bulk is a security-hardening sweep on the REST read path.
 
@@ -68,8 +82,7 @@ Add agents, configure domain-level read/write permissions, manage clearance leve
 - **Verified** by a multi-pass adversarial agent review: a read-surface completeness sweep across the REST router, a mutation-tested regression suite (each new ACL test fails if its gate is reverted), and a focused review of the credential/authorization changes.
 
 SDK 10.2.0.
-
-## Older releases
+</details>
 
 <details>
 <summary>v10.1.0 — multi-node-safe memory voting</summary>

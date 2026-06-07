@@ -1446,23 +1446,31 @@ func (app *SageApp) ValidatorIDs() []string {
 // ReconcileSelfValidator is a ONE-TIME, SINGLE-NODE-ONLY local repair for chains
 // that previously ran the retired RegisterAppValidators path (the 4-archetype
 // simulation). Those chains persisted 4 seed-derived "app validator" keys into the
-// validator:* keyspace and removed the node's own genesis consensus validator — so
-// under the per-node voter the node's votes are rejected (signer not in the set,
-// processMemoryVote Code 13) and memories stop committing.
+// validator:* keyspace — in two shapes, depending on the chain's birth version:
 //
-// It re-adds selfID (the node's consensus key, power 10) and removes the archetype
-// keys via a LOCAL full-replace of the validator:* keyspace — the same keyspace the
-// old path wrote, which is folded into ComputeAppHash. Such a local, non-consensus
-// validator write is SAFE ONLY on a single-node chain (no peers to diverge from);
-// on a multi-validator chain it would fork the AppHash. The guard therefore refuses
-// unless ALL of the following hold:
+//   - {4 archetypes, selfID absent}: the node's votes are rejected under the
+//     per-node voter (signer not in the set, processMemoryVote Code 13) and
+//     memories stop committing.
+//   - {selfID + 4 archetypes} (issue #37): genesis persisted the node's consensus
+//     key to validator:*, and the old path's SaveValidators upsert added the
+//     archetypes without ever deleting it. The node votes fine, but the 4 phantom
+//     archetypes hold 4/5 of the power and never vote, so every governance quorum
+//     (acceptPower*3 >= totalPower*2 over ALL validators) is unreachable.
 //
-//  1. selfID is NOT already in the set — otherwise the chain is already healthy
-//     (genesis-seeded or already reconciled): permanent no-op.
-//  2. the set is EXACTLY the supplied archetypeIDs and nothing else — the
-//     unambiguous fingerprint of "RegisterAppValidators ran on this node." A real
-//     N-validator genesis quorum never matches, so the repair cannot fire there.
-//  3. singleNode is true — the caller (cmd/sage-gui) asserts this node is not in
+// It collapses both shapes to {selfID} via a LOCAL full-replace of the
+// validator:* keyspace — the same keyspace the old path wrote, which is folded
+// into ComputeAppHash. Such a local, non-consensus validator write is SAFE ONLY on
+// a single-node chain (no peers to diverge from); on a multi-validator chain it
+// would fork the AppHash. The guard therefore refuses unless ALL of the following
+// hold:
+//
+//  1. the set MINUS selfID equals EXACTLY the supplied archetypeIDs and nothing
+//     else (same size, same ids) — the unambiguous fingerprint of
+//     "RegisterAppValidators ran on this node." A healthy set ({selfID} alone, or
+//     any genesis-seeded quorum) has no archetype members, and a real N-validator
+//     quorum has non-archetype members — neither matches, so the repair cannot
+//     fire there and re-running after a repair is a permanent no-op.
+//  2. singleNode is true — the caller (cmd/sage-gui) asserts this node is not in
 //     quorum mode.
 //
 // archetypeIDs is supplied by the caller, which owns the seed→key derivation, so
@@ -1474,22 +1482,31 @@ func (app *SageApp) ReconcileSelfValidator(selfID string, archetypeIDs []string,
 	}
 	current := app.validators.GetAll()
 
-	// (1) already healthy — selfID present?
+	// Partition the set into the node's own key and everything else; keep the
+	// node's existing power when present (10 otherwise, the genesis default).
+	selfPower := int64(10)
+	selfPresent := false
+	others := make([]string, 0, len(current))
 	for _, v := range current {
 		if v.ID == selfID {
-			return false, nil
+			selfPresent = true
+			selfPower = v.Power
+			continue
 		}
+		others = append(others, v.ID)
 	}
-	// (2) the set must equal EXACTLY the archetype fingerprint (same size, same ids).
-	if len(current) != len(archetypeIDs) {
+
+	// (1) the non-self members must equal EXACTLY the archetype fingerprint
+	// (same size, same ids).
+	if len(others) != len(archetypeIDs) {
 		return false, nil
 	}
 	fingerprint := make(map[string]struct{}, len(archetypeIDs))
 	for _, id := range archetypeIDs {
 		fingerprint[id] = struct{}{}
 	}
-	for _, v := range current {
-		if _, ok := fingerprint[v.ID]; !ok {
+	for _, id := range others {
+		if _, ok := fingerprint[id]; !ok {
 			return false, nil // a non-archetype validator is present → not a legacy single-node chain
 		}
 	}
@@ -1500,14 +1517,16 @@ func (app *SageApp) ReconcileSelfValidator(selfID string, archetypeIDs []string,
 	// in-memory set AFTER the durable write succeeds, so a persist failure leaves
 	// in-memory and disk consistently un-repaired — safely retried on next restart
 	// rather than leaving the node voting with a key that isn't on disk.
-	if err := app.badgerStore.ReplaceValidators(map[string]int64{selfID: 10}); err != nil {
+	if err := app.badgerStore.ReplaceValidators(map[string]int64{selfID: selfPower}); err != nil {
 		return false, fmt.Errorf("reconcile persist: %w", err)
 	}
 	for _, id := range archetypeIDs {
 		_ = app.validators.RemoveValidator(id)
 	}
-	if err := app.validators.AddValidator(&validator.ValidatorInfo{ID: selfID, Power: 10}); err != nil {
-		return false, fmt.Errorf("reconcile self validator: %w", err)
+	if !selfPresent {
+		if err := app.validators.AddValidator(&validator.ValidatorInfo{ID: selfID, Power: selfPower}); err != nil {
+			return false, fmt.Errorf("reconcile self validator: %w", err)
+		}
 	}
 	metrics.ValidatorCount.Set(float64(app.validators.Size()))
 	app.logger.Warn().

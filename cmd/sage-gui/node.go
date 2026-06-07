@@ -698,8 +698,10 @@ func runServe() (rerr error) {
 	if selfKey := loadNodeSigningKey(cometCfg.PrivValidatorKeyFile(), logger); selfKey != nil {
 		selfID := hex.EncodeToString(selfKey.Public().(ed25519.PublicKey))
 		// Backward-compat: repair a legacy single-node chain that previously ran the
-		// retired 4-archetype RegisterAppValidators path (whose persisted set lacks
-		// this node's consensus key). The guard makes this impossible on a quorum chain.
+		// retired 4-archetype RegisterAppValidators path — whether the persisted set
+		// lacks this node's consensus key (votes rejected) or carries it alongside the
+		// 4 phantom archetypes (governance quorum unreachable, issue #37). The guard
+		// makes this impossible on a quorum chain.
 		if changed, rErr := app.ReconcileSelfValidator(selfID, deriveArchetypeIDs(selfKey), !cfg.Quorum.Enabled); rErr != nil {
 			logger.Warn().Err(rErr).Msg("legacy validator reconcile skipped")
 		} else if changed {

@@ -68,7 +68,7 @@ func runExport() error {
 
 	baseURL := os.Getenv("SAGE_API_URL")
 	if baseURL == "" {
-		baseURL = "http://localhost" + cfg.RESTAddr
+		baseURL = restBaseURL(cfg.RESTAddr)
 	}
 
 	fmt.Println("Exporting memories from SAGE...")
@@ -183,7 +183,7 @@ func runImport() error {
 
 	baseURL := os.Getenv("SAGE_API_URL")
 	if baseURL == "" {
-		baseURL = "http://localhost" + cfg.RESTAddr
+		baseURL = restBaseURL(cfg.RESTAddr)
 	}
 
 	// Read vault file.

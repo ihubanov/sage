@@ -92,6 +92,42 @@ def test_submit_request_valid():
     assert req.content == "Test memory content"
 
 
+def test_gov_proposal_parses_created_at():
+    # The server stamps governance_proposals.created_at (NOT NULL DEFAULT
+    # RFC3339) and emits it as `created_at` on both the list
+    # (ListGovProposals) and detail (GetGovProposal) responses. The model must
+    # read it back so a caller listing proposals can see when each was raised.
+    from sage_sdk.models import GovProposal
+    proposal = GovProposal.model_validate({
+        "proposal_id": "prop-1",
+        "operation": "add_validator",
+        "target_agent_id": "agent-1",
+        "proposer_id": "agent-0",
+        "status": "pending",
+        "created_height": 100,
+        "expiry_height": 200,
+        "reason": "onboard validator",
+        "created_at": "2026-06-12T08:42:00.000Z",
+    })
+    assert proposal.created_at == datetime(2026, 6, 12, 8, 42, tzinfo=proposal.created_at.tzinfo)
+
+
+def test_gov_proposal_tolerates_missing_created_at():
+    # An older server (or an omitempty-empty value) omits the field; the
+    # additive Optional defaults to None so the model still validates.
+    from sage_sdk.models import GovProposal
+    proposal = GovProposal.model_validate({
+        "proposal_id": "prop-1",
+        "operation": "add_validator",
+        "target_agent_id": "agent-1",
+        "proposer_id": "agent-0",
+        "status": "pending",
+        "created_height": 100,
+        "expiry_height": 200,
+    })
+    assert proposal.created_at is None
+
+
 def test_vote_request():
     from sage_sdk.models import VoteRequest
     vote = VoteRequest(decision="accept", rationale="Verified correct")

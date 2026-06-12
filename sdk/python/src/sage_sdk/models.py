@@ -462,6 +462,13 @@ class GovProposal(BaseModel):
     expiry_height: int
     executed_height: int | None = None
     reason: str | None = None
+    # Wall-clock creation time the server stamps on every proposal row
+    # (governance_proposals.created_at, NOT NULL DEFAULT RFC3339 — always
+    # populated) and emits as `created_at` on BOTH the list and detail
+    # responses (json:"created_at,omitempty"). The model dropped it on read, so
+    # a caller listing/inspecting proposals could never see when each was
+    # raised. Additive Optional: older servers omit it, so it defaults to None.
+    created_at: datetime | None = None
 
 
 class GovVote(BaseModel):

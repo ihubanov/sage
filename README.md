@@ -57,16 +57,48 @@ Add agents, configure domain-level read/write permissions, manage clearance leve
 
 ---
 
-## What's New in v10.4.3
+## What's New in v10.5.2
 
-**`sage-gui export` / `import` work on a stock install again.** v10.4.3 is a non-fork patch release: it touches only the client-side operator CLI — no consensus rule, transaction handler, or AppHash surface — so a mixed v10.4.x cluster computes identical state.
+**A pending upgrade plan can no longer freeze a quiet chain.** At app-v12+ an idle chain mints no blocks (the #40 fix working as designed) — so a pending upgrade plan's activation height, ~200 blocks out, never arrived on its own. v10.5.1's heartbeat handled that only inside the auto-advance ladder, which stops at the chain-admin gate on established chains whose admin isn't the operator `agent.key`; a manual `upgrade propose` there pinned the chain at the propose block, looking exactly like a consensus hang (#41 — it isn't one; nothing is wedged or corrupted).
 
-- **The bug:** with `SAGE_API_URL` unset (the default), `sage-gui export` and `sage-gui import` built the node URL by concatenating `"http://localhost" + cfg.RESTAddr`. On the shipped default `RESTAddr` (`127.0.0.1:8080`) that produced `http://localhost127.0.0.1:8080` — an unconnectable host — so both commands failed with a misleading "is sage-gui serve running?" error even when the node was up.
-- **The fix:** both call sites now derive the URL through the existing `restBaseURL` helper, which prepends `localhost` only for the bare `:port` form and otherwise keeps the host as-is — matching the sibling `seed` and `mcp-token` commands, which already handled the unset-`SAGE_API_URL` fallback correctly (`vault.go` was the lone holdout). A new `TestRestBaseURL` pins the behaviour so the concat bug can't regress.
+- **Always-on pending-plan pump.** Whenever a plan is pending and the chain is quiescent below its activation height, the node heartbeats it forward — one idempotent tx per block — until the fork activates. Independent of auto-advance, admin roles, and `disable_auto_upgrade`. **Chains frozen by #41 recover by installing this binary and restarting; nothing else to do.**
+- **Auto-advance reads the pending plan directly** instead of inferring it from propose-rejection text (the admin gate fires before the already-pending check, so the old probe could never see "already pending" on an admin-gated chain). A restart mid-ladder now resumes the climb.
+- **`upgrade propose --wait`** stays attached and heartbeats the chain to activation interactively; without it, the success output at app-v12+ now carries the quiescence caveat.
 
-Thanks to @ihubanov for the fix (#38). SDK 10.4.3.
+Thanks to @ihubanov for the exceptional report (#41). SDK 10.5.2 (lockstep, no SDK changes).
 
 ## Older releases
+
+<details>
+<summary>v10.5.1 — app-v13 corrected AppHash rule + upgrade auto-advance</summary>
+
+**Updating the binary now brings the chain up to date too — and the v10.5.0 hash rule is corrected.** Two things our post-release adversarial review surfaced, both fixed here:
+
+- **app-v13 fork — corrected AppHash rule (supersedes app-v12).** v10.5.0's app-v12 rule excluded the entire `state:` namespace from the AppHash; that namespace also hosts governance proposals/votes, memory quorum votes, and shared-domain markers, so the hash silently stopped committing to them. app-v13 excludes exactly the three per-block bookkeeping keys instead — same idle fixed point (no more empty-block minting), full integrity cover restored. v12-era blocks replay byte-identically; chains that activated v12 should advance to v13 (the auto-advance below does it for you).
+- **Personal-mode upgrade auto-advance.** Single-validator nodes now walk the governance fork ladder to the binary's supported ceiling automatically — propose, auto-vote, activate, repeat — including registering your operator key as chain-admin while the pre-app-v9 window allows it, and heartbeating a quiet chain so pending activations still arrive. The Cerebrum update click (or any binary upgrade) is now genuinely "do whatever's needed". Opt out with `disable_auto_upgrade: true`; quorum clusters are never auto-advanced.
+- **Updater fixes (macOS):** when macOS App Management blocks the in-place update, the dashboard now explains exactly what to do (grant the permission or drag-install the DMG) instead of failing cryptically — and it detects the "binary replaced but old daemon still running" state and offers the restart that actually applies it.
+- Also: snapshot verification works across all hash-rule eras; idle chains still take time-based snapshots; a crash replaying a fork-activation block no longer loses the version bump; `upgrade propose` no longer reports failure for a proposal that actually landed; the dashboard shows a quiet chain as "idle" instead of a stalled countdown; DMG/EXE release assets ship with `.sha256` files.
+
+SDK 10.5.1 (lockstep, no SDK changes).
+</details>
+
+<details>
+<summary>v10.5.0 — idle empty-block fix (app-v12) + block retention</summary>
+
+**An idle node no longer mints empty blocks forever, and old blocks get pruned.** An idle personal node produced an empty block every second and the chain grew ~200 MB/day at rest (#40). `create_empty_blocks=false` was always set — but CometBFT's `needProofBlock` overrides it whenever the AppHash moved in the previous block, and SAGE's AppHash moved *every* block because Commit rewrites the volatile `state:` bookkeeping keys (height, last app hash, epoch) that the hash itself included. **app-v12 fork:** post-fork the AppHash excludes the `state:` namespace so an idle chain reaches a fixed point (rule corrected by app-v13 in v10.5.1). **Block retention:** Commit reports a CometBFT `RetainHeight`, pruning blocks older than `retain_blocks` (personal default 100000, quorum opt-in, `-1` keeps everything). Operator runbook: `sage-gui upgrade status` → `upgrade propose --target <next>`, one fork at a time (chain-admin key needed past app-v8) — or just take v10.5.1, which automates the ladder. Thanks to @ic0ns (#40). SDK 10.5.0.
+</details>
+
+<details>
+<summary>v10.4.4 — Python SDK reads back memory links</summary>
+
+**The Python SDK reads back the memory links the node already emits.** v10.4.4 is a non-fork patch release: it changes only the Python SDK client model — no consensus rule, transaction handler, or AppHash surface — so a mixed v10.4.x cluster computes identical state. `GET /v1/memory/{id}` returns a `linked_memories` array and `link_memories()` already let a caller *write* links — but the SDK `MemoryRecord` model silently dropped them on read (the same write-but-not-read asymmetry fixed for `provider` in #30). One additive Optional `linked_memories` field, shared by the sync and async clients; older servers omit it → defaults to `None`, forward/back compatible. Thanks to @ihubanov for the fix (#39). SDK 10.4.4.
+</details>
+
+<details>
+<summary>v10.4.3 — sage-gui export/import work on a stock install</summary>
+
+**`sage-gui export` / `import` work on a stock install again.** With `SAGE_API_URL` unset (the default), both commands built the node URL by concatenating `"http://localhost" + cfg.RESTAddr` → `http://localhost127.0.0.1:8080`, an unconnectable host, so both failed with a misleading "is sage-gui serve running?" error even when the node was up. Both call sites now derive the URL through the existing `restBaseURL` helper (`vault.go` was the lone holdout), and a new `TestRestBaseURL` pins the behaviour. Client-side operator CLI only — no consensus surface changes. Thanks @ihubanov (#38). SDK 10.4.3.
+</details>
 
 <details>
 <summary>v10.4.2 — memories commit again on fresh installs</summary>

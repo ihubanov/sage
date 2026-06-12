@@ -64,6 +64,12 @@ class MemoryRecord(BaseModel):
     deprecated_at: datetime | None = None
     votes: list | None = None
     corroborations: list | None = None
+    # Memories linked to this one. The server emits `linked_memories` on the
+    # GET /v1/memory/{id} detail response (memory_handler.go), the OpenAPI
+    # MemoryRecord schema documents it, and link_memories() already lets a
+    # caller WRITE links — but the model dropped it on read, so links could be
+    # created yet never read back. Untyped list to match votes/corroborations.
+    linked_memories: list | None = None
     similarity_score: float | None = None
     # Provenance tag the submitter attached to the memory (e.g. "claude-code",
     # "chatgpt"). The server emits it as `provider` (json:"provider,omitempty")
@@ -456,6 +462,13 @@ class GovProposal(BaseModel):
     expiry_height: int
     executed_height: int | None = None
     reason: str | None = None
+    # Wall-clock creation time the server stamps on every proposal row
+    # (governance_proposals.created_at, NOT NULL DEFAULT RFC3339 — always
+    # populated) and emits as `created_at` on BOTH the list and detail
+    # responses (json:"created_at,omitempty"). The model dropped it on read, so
+    # a caller listing/inspecting proposals could never see when each was
+    # raised. Additive Optional: older servers omit it, so it defaults to None.
+    created_at: datetime | None = None
 
 
 class GovVote(BaseModel):

@@ -28,6 +28,8 @@ import (
 
 	"github.com/rs/zerolog"
 
+	sageabci "github.com/l33tdawg/sage/internal/abci"
+	"github.com/l33tdawg/sage/internal/store"
 	"github.com/l33tdawg/sage/internal/tx"
 )
 
@@ -69,6 +71,31 @@ type upgradeWatchdogConfig struct {
 	CometRPC      string             // e.g. "http://127.0.0.1:26657"
 	TickInterval  time.Duration      // default 30s if zero
 	Logger        zerolog.Logger
+
+	// PersonalMode is true on a single-validator node (quorum disabled). Only
+	// personal nodes auto-advance past the legacy target-6 behavior: the node
+	// IS the whole validator set and the operator IS the governance, so
+	// walking the fork ladder automatically is safe. Quorum clusters keep the
+	// legacy watchdog — fork scheduling there is an operator decision.
+	PersonalMode bool
+
+	// AutoAdvance enables the v10.5.1 personal-mode ladder walk (the
+	// "clicking update brings the chain up to date" fix, issue #40 follow-up).
+	// Wired from config: disable_auto_upgrade inverts it.
+	AutoAdvance bool
+
+	// PendingPlan reads the chain's pending UpgradePlan straight from the
+	// node's store: (nil, nil) when none is pending. Wired in-process by
+	// runServe; nil in CLI contexts, which only have the RPC surface. Two
+	// consumers (issue #41): the always-on pending-plan pump, and the
+	// auto-advance pre-check — the propose-rejection text can't signal
+	// "already pending" on an admin-gated chain because processUpgradePropose
+	// checks the admin gate before the at-most-one-pending invariant.
+	PendingPlan func() (*store.UpgradePlanRecord, error)
+
+	// PumpInterval overrides the pending-plan pump cadence. Zero means the
+	// 5s default; only tests set it.
+	PumpInterval time.Duration
 }
 
 // startUpgradeWatchdog launches the watchdog goroutine. Returns
@@ -80,6 +107,29 @@ func startUpgradeWatchdog(ctx context.Context, cfg upgradeWatchdogConfig) bool {
 		cfg.Logger.Debug().Msg("upgrade watchdog: no agent key, skipping")
 		return false
 	}
+	interval := cfg.TickInterval
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+
+	// v10.5.2 pending-plan pump (issue #41): independent of every mode and
+	// gate below — a pending plan that can't reach its activation height on a
+	// quiescent chain is frozen governance regardless of how it was proposed.
+	startPendingPlanPump(ctx, cfg)
+
+	// v10.5.1 personal-mode auto-advance: walk the governance fork ladder to
+	// the binary's compiled ceiling instead of stopping at the legacy PoE
+	// target. Replaces (supersedes) the legacy loop on personal nodes.
+	if cfg.PersonalMode && cfg.AutoAdvance {
+		go runAutoAdvance(ctx, cfg, interval)
+		cfg.Logger.Info().
+			Uint64("max_app_version", sageabci.MaxSupportedAppVersion()).
+			Str("binary_version", cfg.BinaryVersion).
+			Dur("interval", interval).
+			Msg("v10.5.1 upgrade auto-advance armed — personal node will walk the fork ladder to the binary ceiling")
+		return true
+	}
+
 	if upgradeTargetAppVersion <= 1 {
 		// Default chain app version is 1; no upgrade target means
 		// the watchdog has nothing to propose. This is the steady-
@@ -87,10 +137,6 @@ func startUpgradeWatchdog(ctx context.Context, cfg upgradeWatchdogConfig) bool {
 		cfg.Logger.Debug().Uint64("target_app_version", upgradeTargetAppVersion).
 			Msg("upgrade watchdog: no upgrade target, skipping")
 		return false
-	}
-	interval := cfg.TickInterval
-	if interval <= 0 {
-		interval = 30 * time.Second
 	}
 
 	go runUpgradeWatchdog(ctx, cfg, interval)
@@ -131,6 +177,341 @@ func runUpgradeWatchdog(ctx context.Context, cfg upgradeWatchdogConfig, interval
 			}
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// v10.5.1 personal-mode auto-advance (issue #40 follow-up)
+//
+// The legacy watchdog stops at the frozen PoE target (app-v6); every later
+// fork required the operator to hand-run `upgrade propose` once per fork —
+// which in practice nobody did (the maintainer's own chain sat at app-v6 for
+// five forks), so "clicking update in Cerebrum" never actually brought the
+// CHAIN up to date, only the binary. On a personal node the operator is the
+// entire validator set and the governance quorum, so the ladder walk is safe
+// to automate: propose the next fork, wait for activation, repeat until the
+// chain reaches the binary's compiled ceiling.
+//
+// Two wrinkles the automation must handle:
+//   - Admin gate: proposes on a chain at app-v8+ must be signed by an
+//     on-chain admin agent. While the chain is below app-v9 the wire
+//     role=admin self-grant is still open (app-v9 closes it), so the
+//     auto-advance registers the operator's agent.key as admin in passing.
+//   - Quiescent chains: post-app-v12/13 an idle chain mints no blocks, so a
+//     pending plan's ActivationHeight would never arrive. While a plan is
+//     pending and the height is stagnant, the loop submits heartbeat txs
+//     (idempotent re-registration, Code 0 "already registered") to tick the
+//     chain forward.
+// ---------------------------------------------------------------------------
+
+// pickAutoAdvanceTarget returns the next fork target for the auto-advance:
+// 0 when the chain is already at (or past) the binary ceiling, the frozen PoE
+// skip-ahead target (6) below it — reconcilePoEForkMonotonicity backfills
+// app-v2..v5, exactly like the legacy watchdog — and current+1 above it
+// (app-v7+ are independent gates that must activate strictly one at a time).
+func pickAutoAdvanceTarget(current, maxSupported uint64) uint64 {
+	switch {
+	case current >= maxSupported:
+		return 0
+	case current < upgradeTargetAppVersion:
+		return upgradeTargetAppVersion
+	default:
+		return current + 1
+	}
+}
+
+func runAutoAdvance(ctx context.Context, cfg upgradeWatchdogConfig, interval time.Duration) {
+	// First tick on a short delay so the chain has time to start producing.
+	first := time.NewTimer(10 * time.Second)
+	select {
+	case <-ctx.Done():
+		first.Stop()
+		return
+	case <-first.C:
+	}
+
+	maxSupported := sageabci.MaxSupportedAppVersion()
+	adminEnsured := false
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		current, _, err := readChainAppVersionAndHeight(ctx, cfg.CometRPC)
+		if err != nil {
+			cfg.Logger.Warn().Err(err).Msg("auto-advance: read chain status failed")
+		} else {
+			target := pickAutoAdvanceTarget(current, maxSupported)
+			if target == 0 {
+				cfg.Logger.Info().Uint64("chain_app_version", current).
+					Msg("auto-advance: chain is at the binary ceiling — ladder complete")
+				return
+			}
+
+			// A plan may already be pending — a manual propose with the
+			// chain-admin key, or a restart mid-ladder. Don't infer that from
+			// the propose rejection: processUpgradePropose checks the admin
+			// gate BEFORE the at-most-one-pending invariant, so on a chain
+			// whose admin isn't agent.key the rejection reads "not admin"
+			// (terminal stop) instead of "already pending" (wait) — issue
+			// #41's freeze. Read the pending-plan slot directly and wait.
+			if plan := readPendingPlan(cfg); plan != nil {
+				cfg.Logger.Info().Str("plan", plan.Name).
+					Int64("activation_height", plan.ActivationHeight).
+					Msg("auto-advance: a plan is already pending — waiting for activation instead of proposing")
+				if waitForActivation(ctx, cfg, current, nil) {
+					continue // next rung immediately
+				}
+			} else {
+				// Open-door admin registration: by the time the chain reaches
+				// app-v8 the NEXT propose is admin-gated, and app-v9 closes the
+				// self-grant — so register the operator key as admin the moment
+				// the gate is relevant and the door is still open. Idempotent
+				// (Code 0 "already registered" if the key is known).
+				if !adminEnsured && current >= upgradeTargetAppVersion {
+					ensureOperatorAdminRegistered(ctx, cfg)
+					adminEnsured = true
+				}
+
+				switch proposeForAutoAdvance(ctx, cfg, target) {
+				case autoAdvanceProposed, autoAdvancePending:
+					if waitForActivation(ctx, cfg, current, nil) {
+						continue // next rung immediately
+					}
+				case autoAdvanceAdminRejected:
+					cfg.Logger.Error().Uint64("target", target).
+						Msg("auto-advance: propose rejected by the chain-admin gate — this node's agent.key does not hold the on-chain admin role. " +
+							"Run `sage-gui upgrade propose --target " + fmt.Sprint(target) + " --agent-key <chain-admin-key>` with the admin identity, " +
+							"or perform any admin op with agent.key first, then restart. Auto-advance is stopping (it will retry on next boot; " +
+							"a plan proposed manually still activates — the pending-plan pump carries it to its activation height).")
+					return
+				case autoAdvanceTransient:
+					// fall through to the next tick
+				}
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+type autoAdvanceOutcome int
+
+const (
+	autoAdvanceProposed autoAdvanceOutcome = iota
+	autoAdvancePending
+	autoAdvanceAdminRejected
+	autoAdvanceTransient
+)
+
+// proposeForAutoAdvance submits an UpgradePropose for target and classifies
+// the outcome. Uses broadcast_tx_commit because the meaningful rejections
+// (admin gate, already-pending) surface at block execution, which the
+// fire-and-forget sync broadcast never sees.
+func proposeForAutoAdvance(ctx context.Context, cfg upgradeWatchdogConfig, target uint64) autoAdvanceOutcome {
+	ptx, err := buildUpgradeProposeTx(cfg, target)
+	if err != nil {
+		cfg.Logger.Error().Err(err).Msg("auto-advance: build propose tx failed")
+		return autoAdvanceTransient
+	}
+	encoded, err := tx.EncodeTx(ptx)
+	if err != nil {
+		cfg.Logger.Error().Err(err).Msg("auto-advance: encode propose tx failed")
+		return autoAdvanceTransient
+	}
+	res, err := broadcastTxCommit(ctx, cfg.CometRPC, encoded)
+	if err != nil {
+		// The tx may still have landed (commit-timeout 500s are common right
+		// after a restart) — the pending-wait probe sorts it out next tick.
+		cfg.Logger.Warn().Err(err).Msg("auto-advance: broadcast failed (may still have landed)")
+		return autoAdvanceTransient
+	}
+	combinedLog := res.CheckTxLog + " " + res.TxResultLog
+	switch {
+	case res.CheckTxCode == 0 && res.TxResultCode == 0:
+		cfg.Logger.Info().Uint64("target", target).Str("tx_hash", res.Hash).
+			Msg("auto-advance: upgrade proposed")
+		return autoAdvanceProposed
+	case strings.Contains(combinedLog, "already pending"):
+		return autoAdvancePending
+	case strings.Contains(combinedLog, "not registered") || strings.Contains(combinedLog, "admin"):
+		return autoAdvanceAdminRejected
+	default:
+		cfg.Logger.Warn().Uint32("check_code", res.CheckTxCode).Uint32("tx_code", res.TxResultCode).
+			Str("log", combinedLog).Msg("auto-advance: propose rejected")
+		return autoAdvanceTransient
+	}
+}
+
+// waitForActivation polls until the chain's app version moves past
+// fromVersion (the pending plan activated), heartbeating the chain forward
+// when it is quiescent: post-app-v12/13 an idle chain mints no blocks, so
+// without txs the plan's ActivationHeight would never arrive. progress (may
+// be nil) is invoked after every successful probe — the interactive
+// `upgrade propose --wait` uses it to narrate the climb. Returns true on
+// activation, false on timeout/cancellation (caller re-enters the main loop).
+func waitForActivation(ctx context.Context, cfg upgradeWatchdogConfig, fromVersion uint64, progress func(version uint64, height int64)) bool {
+	const probeEvery = 2 * time.Second
+	deadline := time.Now().Add(30 * time.Minute)
+	lastHeight := int64(-1)
+
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(probeEvery):
+		}
+
+		version, height, err := readChainAppVersionAndHeight(ctx, cfg.CometRPC)
+		if err != nil {
+			continue
+		}
+		if progress != nil {
+			progress(version, height)
+		}
+		if version > fromVersion {
+			cfg.Logger.Info().Uint64("chain_app_version", version).
+				Msg("auto-advance: fork activated")
+			return true
+		}
+		if height == lastHeight {
+			// Quiescent chain with a pending plan — tick it forward. The
+			// heartbeat is an idempotent operator re-registration: Code 0
+			// ("already registered"), no governance side effects, but the tx
+			// mints a block so the activation height approaches.
+			sendHeartbeatTx(ctx, cfg)
+		}
+		lastHeight = height
+	}
+	cfg.Logger.Warn().Msg("auto-advance: timed out waiting for activation — will re-probe on next tick")
+	return false
+}
+
+// readPendingPlan resolves the pending UpgradePlan via cfg.PendingPlan,
+// flattening the no-plan and error cases to nil (the watchdog treats a
+// transient store read failure the same as "nothing pending" and re-probes
+// on its next tick).
+func readPendingPlan(cfg upgradeWatchdogConfig) *store.UpgradePlanRecord {
+	if cfg.PendingPlan == nil {
+		return nil
+	}
+	plan, err := cfg.PendingPlan()
+	if err != nil {
+		return nil
+	}
+	return plan
+}
+
+// ensureOperatorAdminRegistered registers the operator's agent.key on chain
+// with role=admin via the pre-app-v9 wire-role path. Idempotent: an already
+// registered key comes back Code 0 "already registered" (role untouched).
+// Best-effort — a failure here surfaces later as the admin-gate rejection,
+// which carries the operator guidance.
+func ensureOperatorAdminRegistered(ctx context.Context, cfg upgradeWatchdogConfig) {
+	encoded, err := buildOperatorRegisterTx(cfg)
+	if err != nil {
+		cfg.Logger.Warn().Err(err).Msg("auto-advance: build admin register tx failed")
+		return
+	}
+	res, err := broadcastTxCommit(ctx, cfg.CometRPC, encoded)
+	if err != nil {
+		cfg.Logger.Warn().Err(err).Msg("auto-advance: admin register broadcast failed")
+		return
+	}
+	cfg.Logger.Info().Uint32("tx_code", res.TxResultCode).Str("log", res.TxResultLog).
+		Msg("auto-advance: operator admin registration ensured")
+}
+
+// sendHeartbeatTx fire-and-forgets an idempotent operator re-registration to
+// advance a quiescent chain toward a pending plan's activation height.
+func sendHeartbeatTx(ctx context.Context, cfg upgradeWatchdogConfig) {
+	encoded, err := buildOperatorRegisterTx(cfg)
+	if err != nil {
+		return
+	}
+	_, _ = broadcastTxSync(ctx, cfg.CometRPC, encoded)
+}
+
+// buildOperatorRegisterTx builds the signed AgentRegister used both for the
+// open-door admin self-grant and as the heartbeat tx. Mirrors the agent-proof
+// format signAgentProof/verifyAgentIdentity expect.
+func buildOperatorRegisterTx(cfg upgradeWatchdogConfig) ([]byte, error) {
+	pub, ok := cfg.AgentKey.Public().(ed25519.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("agent key public type assertion failed")
+	}
+	const name, role, bio = "operator-admin", "admin", "node operator key"
+	body := []byte(name + role + bio)
+	bodyHash := sha256.Sum256(body)
+	ts := time.Now().Unix()
+	tsBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(tsBytes, uint64(ts)) // #nosec G115 -- ts non-negative
+	sig := ed25519.Sign(cfg.AgentKey, append(append([]byte{}, bodyHash[:]...), tsBytes...))
+
+	ptx := &tx.ParsedTx{
+		Type:      tx.TxTypeAgentRegister,
+		Nonce:     tx.MonotonicNonce(cfg.AgentKey),
+		Timestamp: time.Unix(ts, 0),
+		AgentRegister: &tx.AgentRegister{
+			AgentID: hex.EncodeToString(pub),
+			Name:    name,
+			Role:    role,
+			BootBio: bio,
+		},
+		AgentPubKey:    pub,
+		AgentSig:       sig,
+		AgentBodyHash:  bodyHash[:],
+		AgentTimestamp: ts,
+	}
+	if err := tx.SignTx(ptx, cfg.AgentKey); err != nil {
+		return nil, fmt.Errorf("sign outer tx: %w", err)
+	}
+	return tx.EncodeTx(ptx)
+}
+
+// readChainAppVersionAndHeight reads /abci_info and returns both the app
+// version and the last block height (the height drives the quiescence
+// heartbeat). CometBFT serializes both as strings.
+func readChainAppVersionAndHeight(ctx context.Context, cometRPC string) (uint64, int64, error) {
+	url := strings.TrimRight(cometRPC, "/") + "/abci_info"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, 0, fmt.Errorf("abci_info: HTTP %d", resp.StatusCode)
+	}
+	var out struct {
+		Result struct {
+			Response struct {
+				AppVersion      string `json:"app_version"`
+				LastBlockHeight string `json:"last_block_height"`
+			} `json:"response"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return 0, 0, fmt.Errorf("decode abci_info: %w", err)
+	}
+	var version uint64
+	if out.Result.Response.AppVersion != "" {
+		if _, err := fmt.Sscanf(out.Result.Response.AppVersion, "%d", &version); err != nil {
+			return 0, 0, fmt.Errorf("parse app_version %q: %w", out.Result.Response.AppVersion, err)
+		}
+	}
+	var height int64
+	if out.Result.Response.LastBlockHeight != "" {
+		if _, err := fmt.Sscanf(out.Result.Response.LastBlockHeight, "%d", &height); err != nil {
+			return 0, 0, fmt.Errorf("parse last_block_height %q: %w", out.Result.Response.LastBlockHeight, err)
+		}
+	}
+	return version, height, nil
 }
 
 // maybeProposeUpgrade attempts to broadcast an UpgradePropose tx for

@@ -1,13 +1,19 @@
 package web
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSemverGreater(t *testing.T) {
@@ -136,4 +142,157 @@ func TestPathTraversalRejection(t *testing.T) {
 			assert.Equal(t, tt.want, rejected)
 		})
 	}
+}
+
+func TestInstallErrorMessagePermissionDenied(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("read-only dir permission semantics differ on Windows")
+	}
+
+	// Simulate the TCC failure mode: renaming a binary inside a directory we
+	// cannot write to (like /Applications/SAGE.app/Contents/MacOS when macOS
+	// denies App Management).
+	locked := filepath.Join(t.TempDir(), "locked")
+	require.NoError(t, os.Mkdir(locked, 0755))
+	binPath := filepath.Join(locked, "sage-gui")
+	require.NoError(t, os.WriteFile(binPath, []byte("old binary"), 0755))
+	require.NoError(t, os.Chmod(locked, 0555))
+	t.Cleanup(func() { _ = os.Chmod(locked, 0755) })
+
+	err := os.Rename(binPath, binPath+".old")
+	require.Error(t, err, "rename inside a read-only dir should fail")
+	assert.True(t, isPermissionDenied(err), "rename failure should be detected as permission denied: %v", err)
+
+	downloadURL := "https://github.com/l33tdawg/sage/releases/download/v10.5.0/sage-gui_10.5.0_darwin_arm64.tar.gz"
+	msg := installErrorMessage("Failed to backup current binary", err, downloadURL)
+
+	if runtime.GOOS == "darwin" {
+		// Actionable guidance, not a dead end
+		assert.Contains(t, msg, "App Management")
+		assert.Contains(t, msg, "System Settings")
+		assert.Contains(t, msg, "quit SAGE")
+		assert.Contains(t, msg, "https://github.com/l33tdawg/sage/releases/tag/v10.5.0")
+	} else {
+		assert.Contains(t, msg, "Failed to backup current binary")
+	}
+}
+
+func TestInstallErrorMessageGenericError(t *testing.T) {
+	// Non-permission errors keep the plain "action: error" shape.
+	err := errors.New("no space left on device")
+	msg := installErrorMessage("Failed to install", err, "https://github.com/l33tdawg/sage/releases/download/v10.5.0/x.tar.gz")
+	assert.Equal(t, "Failed to install: no space left on device", msg)
+	assert.NotContains(t, msg, "App Management")
+}
+
+func TestIsPermissionDenied(t *testing.T) {
+	assert.True(t, isPermissionDenied(os.ErrPermission))
+	assert.True(t, isPermissionDenied(fmt.Errorf("rename failed: %w", os.ErrPermission)))
+	assert.False(t, isPermissionDenied(errors.New("operation not permitted"))) // plain string, no errno
+	assert.False(t, isPermissionDenied(errors.New("disk full")))
+	assert.False(t, isPermissionDenied(nil))
+}
+
+func TestReleasePageURL(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{
+			"asset URL",
+			"https://github.com/l33tdawg/sage/releases/download/v10.5.0/sage-gui_10.5.0_darwin_arm64.tar.gz",
+			"https://github.com/l33tdawg/sage/releases/tag/v10.5.0",
+		},
+		{
+			"no marker falls back to latest",
+			"https://github.com/l33tdawg/sage/archive/main.tar.gz",
+			"https://github.com/l33tdawg/sage/releases/latest",
+		},
+		{
+			"marker without asset falls back to latest",
+			"https://github.com/l33tdawg/sage/releases/download/v10.5.0",
+			"https://github.com/l33tdawg/sage/releases/latest",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, releasePageURL(tt.url))
+		})
+	}
+}
+
+func TestParseVersionOutput(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"release build", "sage-gui v10.4.4 (commit e55b431, built 2026-06-10)\n", "v10.4.4"},
+		{"dev build", "sage-gui dev (commit none, built unknown)\n", "dev"},
+		{"multi-line takes first", "sage-gui v10.5.0 (commit abc, built now)\nextra noise\n", "v10.5.0"},
+		{"wrong binary name", "other-tool v1.0.0\n", ""},
+		{"garbage", "command not found\n", ""},
+		{"empty", "", ""},
+		{"name only", "sage-gui\n", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, parseVersionOutput(tt.input))
+		})
+	}
+}
+
+func TestRestartRequired(t *testing.T) {
+	tests := []struct {
+		name          string
+		running, disk string
+		want          bool
+	}{
+		{"disk newer than running", "v10.4.4", "v10.5.0", true},
+		{"same version", "v10.4.4", "v10.4.4", false},
+		{"same modulo v prefix", "10.4.4", "v10.4.4", false},
+		{"disk unknown", "v10.4.4", "", false},
+		{"running unknown", "", "v10.5.0", false},
+		{"running dev", "dev", "v10.5.0", false},
+		{"disk dev", "v10.4.4", "dev", false},
+		{"disk older still differs", "v10.5.0", "v10.4.4", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, restartRequired(tt.running, tt.disk))
+		})
+	}
+}
+
+func TestDiskBinaryVersion(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses shell scripts to fake the binary")
+	}
+	dir := t.TempDir()
+	writeScript := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0755))
+		return p
+	}
+	ctx := context.Background()
+
+	t.Run("parses version from fake binary", func(t *testing.T) {
+		p := writeScript("good", `echo "sage-gui v10.5.0 (commit abc1234, built 2026-06-11)"`)
+		assert.Equal(t, "v10.5.0", diskBinaryVersion(ctx, p))
+	})
+
+	t.Run("unparseable output is graceful", func(t *testing.T) {
+		p := writeScript("garbage", `echo "totally unexpected output"`)
+		assert.Equal(t, "", diskBinaryVersion(ctx, p))
+	})
+
+	t.Run("non-zero exit is graceful", func(t *testing.T) {
+		p := writeScript("failing", `exit 1`)
+		assert.Equal(t, "", diskBinaryVersion(ctx, p))
+	})
+
+	t.Run("missing binary is graceful", func(t *testing.T) {
+		assert.Equal(t, "", diskBinaryVersion(ctx, filepath.Join(dir, "does-not-exist")))
+	})
 }

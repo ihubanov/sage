@@ -7,11 +7,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -110,7 +112,7 @@ func (h *DashboardHandler) handleCheckUpdate(w http.ResponseWriter, r *http.Requ
 		expectedChecksum = fetchChecksumForAsset(r.Context(), client, checksumsURL, assetName)
 	}
 
-	writeJSONResp(w, http.StatusOK, map[string]any{
+	result := map[string]any{
 		"current_version":  current,
 		"latest_version":   latest,
 		"update_available": updateAvailable,
@@ -121,7 +123,68 @@ func (h *DashboardHandler) handleCheckUpdate(w http.ResponseWriter, r *http.Requ
 		"download_size":    assetSize,
 		"checksum":         expectedChecksum,
 		"platform":         runtime.GOOS + "/" + runtime.GOARCH,
-	})
+	}
+
+	// Detect an out-of-band update (e.g. drag-and-drop in Finder): the serve
+	// daemon survives the GUI quit, so the binary on disk may already be newer
+	// than this running process. When the versions differ, the UI should offer
+	// a restart instead of a re-download.
+	if diskVer := runningBinaryDiskVersion(r.Context()); restartRequired(current, diskVer) {
+		result["restart_required"] = true
+		result["disk_version"] = diskVer
+	}
+
+	writeJSONResp(w, http.StatusOK, result)
+}
+
+// runningBinaryDiskVersion returns the version reported by the binary currently
+// on disk at this process's executable path, or "" if it cannot be determined.
+func runningBinaryDiskVersion(ctx context.Context) string {
+	execPath, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if resolved, rerr := filepath.EvalSymlinks(execPath); rerr == nil {
+		execPath = resolved
+	}
+	return diskBinaryVersion(ctx, execPath)
+}
+
+// diskBinaryVersion runs binPath with the "version" arg and parses the version
+// from its output. Returns "" on any failure — callers treat that as "unknown".
+func diskBinaryVersion(ctx context.Context, binPath string) string {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, binPath, "version").Output() // #nosec G204 -- binPath is this process's own executable
+	if err != nil {
+		return ""
+	}
+	return parseVersionOutput(string(out))
+}
+
+// parseVersionOutput extracts the version from sage-gui's version line,
+// e.g. "sage-gui v10.4.4 (commit abc1234, built 2026-06-11)".
+// Returns "" if the output doesn't look like that.
+func parseVersionOutput(out string) string {
+	line := strings.TrimSpace(out)
+	if idx := strings.IndexByte(line, '\n'); idx >= 0 {
+		line = strings.TrimSpace(line[:idx])
+	}
+	fields := strings.Fields(line)
+	if len(fields) < 2 || fields[0] != "sage-gui" {
+		return ""
+	}
+	return fields[1]
+}
+
+// restartRequired reports whether the on-disk binary differs from the running
+// version (i.e. an update landed on disk but the daemon is still the old
+// binary). Unknown or dev versions never require a restart.
+func restartRequired(running, disk string) bool {
+	if running == "" || disk == "" || running == "dev" || disk == "dev" {
+		return false
+	}
+	return strings.TrimPrefix(running, "v") != strings.TrimPrefix(disk, "v")
 }
 
 // handleApplyUpdate kicks off an async download-and-replace of the sage-gui binary.
@@ -305,13 +368,13 @@ func (h *DashboardHandler) performUpdate(downloadURL, checksum, execPath string)
 	os.Remove(backupPath)
 
 	if err := os.Rename(execPath, backupPath); err != nil {
-		h.sendUpdateProgress("install", "error", "Failed to backup current binary: "+err.Error())
+		h.sendUpdateProgress("install", "error", installErrorMessage("Failed to backup current binary", err, downloadURL))
 		return
 	}
 
 	if err := os.Rename(newBinary, execPath); err != nil {
 		_ = os.Rename(backupPath, execPath) // rollback
-		h.sendUpdateProgress("install", "error", "Failed to install: "+err.Error())
+		h.sendUpdateProgress("install", "error", installErrorMessage("Failed to install", err, downloadURL))
 		return
 	}
 
@@ -353,6 +416,43 @@ func (h *DashboardHandler) handleRestart(w http.ResponseWriter, r *http.Request)
 		// Re-exec the binary with the same args
 		syscall.Exec(execPath, os.Args, os.Environ()) //nolint:errcheck,gosec // execPath is the verified current binary
 	}()
+}
+
+// isPermissionDenied reports whether err is a permission-style failure
+// (EPERM/EACCES). On macOS, a TCC "App Management" denial surfaces as
+// "operation not permitted" (EPERM) when renaming inside /Applications/SAGE.app.
+func isPermissionDenied(err error) bool {
+	return errors.Is(err, os.ErrPermission) ||
+		errors.Is(err, syscall.EPERM) ||
+		errors.Is(err, syscall.EACCES)
+}
+
+// installErrorMessage maps an install-step failure to a user-facing SSE message.
+// On macOS, permission errors get actionable TCC guidance instead of a dead end.
+func installErrorMessage(action string, err error, downloadURL string) string {
+	if runtime.GOOS == "darwin" && isPermissionDenied(err) {
+		return fmt.Sprintf(
+			"macOS blocked SAGE from modifying its app bundle (%s). "+
+				"Either: (a) grant SAGE \"App Management\" in System Settings → Privacy & Security → App Management, "+
+				"fully quit SAGE from the menu bar, relaunch, and retry the update; "+
+				"or (b) download the DMG from %s, drag-replace SAGE in Finder, then restart SAGE.",
+			err.Error(), releasePageURL(downloadURL))
+	}
+	return action + ": " + err.Error()
+}
+
+// releasePageURL derives the GitHub release page URL from a release-asset
+// download URL (".../releases/download/<tag>/<asset>" → ".../releases/tag/<tag>").
+// Falls back to the repo's latest-release page if the URL doesn't match that shape.
+func releasePageURL(downloadURL string) string {
+	const marker = "/releases/download/"
+	if idx := strings.Index(downloadURL, marker); idx >= 0 {
+		rest := downloadURL[idx+len(marker):]
+		if slash := strings.IndexByte(rest, '/'); slash > 0 {
+			return downloadURL[:idx] + "/releases/tag/" + rest[:slash]
+		}
+	}
+	return fmt.Sprintf("https://github.com/%s/%s/releases/latest", githubOwner, githubRepo)
 }
 
 // findAssetName returns the expected GoReleaser archive name for the current platform.

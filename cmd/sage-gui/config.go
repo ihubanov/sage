@@ -30,6 +30,28 @@ type Config struct {
 	RESTAddr   string           `yaml:"rest_addr"`
 	AgentKey   string           `yaml:"agent_key_file"`
 	BlockTime  string           `yaml:"block_time"` // e.g. "1s", "3s"
+
+	// RetainBlocks is the CometBFT block-retention window: Commit reports
+	// RetainHeight = height - RetainBlocks, and CometBFT prunes blocks BELOW
+	// that height — the retain height itself survives, so the blockstore keeps
+	// RetainBlocks+1 blocks (base = retain height through the tip, both
+	// inclusive). Memory content lives in BadgerDB/SQLite, not in old blocks,
+	// so pruning consensus history is safe on a personal node. 0 = mode default
+	// (personal: 100000; quorum: disabled — a fresh quorum peer block-syncs
+	// history from existing peers, so pruning there is opt-in). -1 = explicitly
+	// keep everything. Quorum operators who do opt in should keep the window at
+	// least as large as the consensus evidence max-age window (CometBFT default
+	// 100000 blocks / 48h), so misbehavior evidence can still be verified
+	// against retained blocks. See issue #40.
+	RetainBlocks int64 `yaml:"retain_blocks,omitempty"`
+
+	// DisableAutoUpgrade opts a personal node out of the v10.5.1 upgrade
+	// auto-advance: by default a single-validator node walks the governance
+	// fork ladder to the binary's compiled ceiling automatically (propose →
+	// auto-vote → activate, one fork at a time), so updating the binary also
+	// brings the CHAIN up to date. Quorum clusters never auto-advance
+	// regardless of this knob — fork scheduling there is an operator decision.
+	DisableAutoUpgrade bool `yaml:"disable_auto_upgrade,omitempty"`
 }
 
 // QuorumConfig controls multi-validator consensus mode.

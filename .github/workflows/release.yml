@@ -164,9 +164,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # The DMGs are uploaded outside goreleaser, so they never appear in its
+          # checksums.txt — publish a sibling .sha256 per asset (bare filenames,
+          # so `shasum -a 256 -c SAGE-….dmg.sha256` works from a download dir).
+          cd "dist/macos-${{ steps.arch.outputs.label }}"
+          for f in "SAGE-${{ github.ref_name }}-macOS-${{ steps.arch.outputs.label }}.dmg" \
+                   "SAGE-macOS-${{ steps.arch.outputs.label }}.dmg"; do
+            shasum -a 256 "$f" > "$f.sha256"
+          done
           gh release upload "${{ github.ref_name }}" \
-            "dist/macos-${{ steps.arch.outputs.label }}/SAGE-${{ github.ref_name }}-macOS-${{ steps.arch.outputs.label }}.dmg" \
-            "dist/macos-${{ steps.arch.outputs.label }}/SAGE-macOS-${{ steps.arch.outputs.label }}.dmg" \
+            "SAGE-${{ github.ref_name }}-macOS-${{ steps.arch.outputs.label }}.dmg" \
+            "SAGE-${{ github.ref_name }}-macOS-${{ steps.arch.outputs.label }}.dmg.sha256" \
+            "SAGE-macOS-${{ steps.arch.outputs.label }}.dmg" \
+            "SAGE-macOS-${{ steps.arch.outputs.label }}.dmg.sha256" \
             --clobber
 
   windows-exe:
@@ -206,9 +216,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Installer built outside goreleaser → absent from its checksums.txt;
+          # publish a sibling .sha256 per asset (bare filenames so
+          # `sha256sum -c` works from a download dir).
+          cd dist/windows-amd64
+          for f in "SAGE-${{ github.ref_name }}-Windows-Setup.exe" \
+                   "SAGE-Windows-Setup.exe"; do
+            sha256sum "$f" > "$f.sha256"
+          done
           gh release upload "${{ github.ref_name }}" \
-            "dist/windows-amd64/SAGE-${{ github.ref_name }}-Windows-Setup.exe" \
-            "dist/windows-amd64/SAGE-Windows-Setup.exe" \
+            "SAGE-${{ github.ref_name }}-Windows-Setup.exe" \
+            "SAGE-${{ github.ref_name }}-Windows-Setup.exe.sha256" \
+            "SAGE-Windows-Setup.exe" \
+            "SAGE-Windows-Setup.exe.sha256" \
             --clobber
 
   docker-mcp:

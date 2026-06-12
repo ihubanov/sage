@@ -2,6 +2,7 @@ package abci
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -289,6 +290,183 @@ func TestSnapshotScheduler_RetentionPrunesAfterTake(t *testing.T) {
 	if len(got) != len(want) || !got["100"] || !got["30"] {
 		t.Fatalf("retention kept %v, want %v", got, want)
 	}
+}
+
+// waitForSnapshotHeightDir polls for snapshots/<height>/OK specifically —
+// unlike waitForSnapshotDir, it does not return early on a sentinel from an
+// earlier snapshot.
+func waitForSnapshotHeightDir(t *testing.T, dataDir string, height int64) {
+	t.Helper()
+	ok := filepath.Join(dataDir, "snapshots", strconv.FormatInt(height, 10), "OK")
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(ok); err == nil {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("snapshot at height %d never produced OK sentinel", height)
+}
+
+// drainScheduler waits until no snapshot.Take is in flight, so a test can
+// safely close the live badger handle afterwards.
+func drainScheduler(t *testing.T, sched *SnapshotScheduler) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if !sched.inFlight.Load() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("snapshot goroutine never drained (inFlight still set)")
+}
+
+// readSnapshotReason returns manifest.json's reason for snapshots/<height>.
+func readSnapshotReason(t *testing.T, dataDir string, height int64) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(dataDir, "snapshots", strconv.FormatInt(height, 10), "manifest.json"))
+	if err != nil {
+		t.Fatalf("read manifest for height %d: %v", height, err)
+	}
+	var m struct {
+		Reason string `json:"reason"`
+	}
+	if uErr := json.Unmarshal(raw, &m); uErr != nil {
+		t.Fatalf("unmarshal manifest: %v", uErr)
+	}
+	return m.Reason
+}
+
+// countSnapshotDirs counts completed (non-staging) snapshot directories.
+func countSnapshotDirs(t *testing.T, dataDir string) int {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(dataDir, "snapshots"))
+	if err != nil {
+		t.Fatalf("read snapshots: %v", err)
+	}
+	count := 0
+	for _, e := range entries {
+		if e.IsDir() && len(e.Name()) >= 1 && e.Name()[0] != '.' {
+			count++
+		}
+	}
+	return count
+}
+
+// TestSnapshotScheduler_IdleFlushFires is the issue #40 follow-up guard: the
+// TimeInterval cadence only ever ran from Commit ticks, so a chain that went
+// quiet right after a burst of writes never snapshotted them. The wall-clock
+// idle-flush loop must (a) fire once the interval elapses with un-snapshotted
+// blocks, tagging the snapshot "idle-flush", and (b) NEVER fire again while
+// nothing new has been committed since that snapshot.
+func TestSnapshotScheduler_IdleFlushFires(t *testing.T) {
+	dataDir, db := seedTestDataDir(t)
+	defer func() { _ = db.Close() }()
+
+	sched := NewSnapshotScheduler(SnapshotSchedulerConfig{
+		DataDir:       dataDir,
+		BinaryVersion: "v10.5.1-test",
+		TimeInterval:  300 * time.Millisecond,
+		LiveBadger:    db,
+	}, zerolog.Nop())
+	if sched == nil {
+		t.Fatal("expected scheduler, got nil")
+	}
+	defer sched.Close()
+	sched.idleCheckEvery = 50 * time.Millisecond // before the first Tick — the loop starts lazily there
+
+	// One committed block, then the chain goes idle. The Tick itself must not
+	// fire (TimeInterval hasn't elapsed since boot, HeightInterval disabled).
+	sched.Tick(7, []byte{0x07})
+	if sched.inFlight.Load() {
+		t.Fatal("Tick(7) should not have fired before TimeInterval elapsed")
+	}
+
+	// The idle-flush loop must fire within ~TimeInterval+idleCheckEvery.
+	waitForSnapshotHeightDir(t, dataDir, 7)
+	if reason := readSnapshotReason(t, dataDir, 7); reason != "idle-flush" {
+		t.Errorf("snapshot reason = %q, want %q", reason, "idle-flush")
+	}
+
+	// Drain the in-flight goroutine, then prove the loop stays dormant: with
+	// no new Ticks since the snapshot there is nothing to flush, so several
+	// further intervals must not mint a second snapshot.
+	drainScheduler(t, sched)
+	time.Sleep(600 * time.Millisecond) // > 2x TimeInterval, many idle checks
+	if got := countSnapshotDirs(t, dataDir); got != 1 {
+		t.Fatalf("idle-flush refired with no new blocks: %d snapshot dirs, want 1", got)
+	}
+
+	// New blocks arrive → after another interval the loop must flush again.
+	sched.Tick(9, []byte{0x09})
+	waitForSnapshotHeightDir(t, dataDir, 9)
+	// Drain before the deferred db.Close — runTake may still be pruning.
+	drainScheduler(t, sched)
+}
+
+// TestSnapshotScheduler_IdleFlushNotArmedWithoutTimeInterval pins the lazy-arm
+// condition: a height-only scheduler has no time cadence to fall back on, so
+// no idle goroutine (and no idle snapshots) may exist.
+func TestSnapshotScheduler_IdleFlushNotArmedWithoutTimeInterval(t *testing.T) {
+	dataDir, db := seedTestDataDir(t)
+	defer func() { _ = db.Close() }()
+
+	sched := NewSnapshotScheduler(SnapshotSchedulerConfig{
+		DataDir:        dataDir,
+		BinaryVersion:  "v10.5.1-test",
+		HeightInterval: 1_000_000,
+		LiveBadger:     db,
+	}, zerolog.Nop())
+	if sched == nil {
+		t.Fatal("expected scheduler, got nil")
+	}
+	defer sched.Close()
+	sched.idleCheckEvery = 20 * time.Millisecond
+
+	sched.Tick(3, []byte{0x03})
+
+	sched.mu.Lock()
+	started := sched.idleLoopStarted
+	sched.mu.Unlock()
+	if started {
+		t.Fatal("idle-flush loop armed with TimeInterval=0")
+	}
+	time.Sleep(200 * time.Millisecond)
+	if _, err := os.Stat(filepath.Join(dataDir, "snapshots")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("no snapshot should exist without a cadence hit: %v", err)
+	}
+}
+
+// TestSnapshotScheduler_CloseStopsIdleFlush proves Close halts the wall-clock
+// loop (no fire after Close even with the interval elapsed and new blocks
+// pending) and is idempotent + nil-safe.
+func TestSnapshotScheduler_CloseStopsIdleFlush(t *testing.T) {
+	dataDir, db := seedTestDataDir(t)
+	defer func() { _ = db.Close() }()
+
+	sched := NewSnapshotScheduler(SnapshotSchedulerConfig{
+		DataDir:       dataDir,
+		BinaryVersion: "v10.5.1-test",
+		TimeInterval:  150 * time.Millisecond,
+		LiveBadger:    db,
+	}, zerolog.Nop())
+	if sched == nil {
+		t.Fatal("expected scheduler, got nil")
+	}
+	sched.idleCheckEvery = 30 * time.Millisecond
+
+	sched.Tick(5, []byte{0x05})
+	sched.Close()
+	sched.Close() // idempotent
+
+	time.Sleep(400 * time.Millisecond) // interval + several would-be checks
+	if _, err := os.Stat(filepath.Join(dataDir, "snapshots")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("idle-flush fired after Close: %v", err)
+	}
+
+	var nilSched *SnapshotScheduler
+	nilSched.Close() // nil-safe, must not panic
 }
 
 func TestSnapshotScheduler_TriggerForceFires(t *testing.T) {

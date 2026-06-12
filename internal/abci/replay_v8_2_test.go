@@ -86,15 +86,18 @@ func TestReplayV8_2_R1_PreForkByteIdentical(t *testing.T) {
 	hAfter, err := ComputeAppHash(app.badgerStore)
 	require.NoError(t, err)
 
-	// AppHash will differ from the before-snapshot because processEpoch DOES
-	// touch vstats:* and similar keys. The point is: no poew:* contributes.
-	// We assert ComputeAppHash is deterministic on a re-read (replay-safe) and
-	// that the absence of poew:* is the durable fact.
+	// processEpoch's ONLY on-chain write is the fork-gated SetEpochWeights;
+	// its other outputs are off-chain pendingWrites and in-memory weights.
+	// Pre-fork the epoch boundary is therefore AppHash-INERT — the digest a
+	// v8.1.2 binary committed is reproduced bit-for-bit, not merely "the
+	// poew:* keys are absent".
+	assert.Equal(t, hBefore, hAfter,
+		"pre-fork processEpoch must not move the AppHash (v8.1.2 parity)")
+
 	hReplay, err := ComputeAppHash(app.badgerStore)
 	require.NoError(t, err)
 	assert.Equal(t, hAfter, hReplay,
 		"ComputeAppHash must be deterministic on a re-read")
-	_ = hBefore // sanity: kept for symmetry; pre-fork snapshot is irrelevant here
 }
 
 // R2: with v8_2AppliedHeight set and height > activation, processEpoch DOES
@@ -103,34 +106,53 @@ func TestReplayV8_2_R1_PreForkByteIdentical(t *testing.T) {
 // poew:* contribution. This proves the activation actually changes the
 // AppHash trajectory (which is what consensus replicas will diverge on if
 // they disagree about post-fork state).
+//
+// The gate is set IN-MEMORY (v8_2AppliedHeight, the same field the real
+// FinalizeBlock activation arm assigns) rather than via MarkUpgradeApplied,
+// which would write an audit-trail key and contaminate the pre/post hash
+// diff. With the in-memory gate, the two stores are byte-identical by
+// construction before processEpoch runs, so the post-epoch divergence is
+// attributable to fork-gated writes — the poew:* keys — and nothing else.
+// (The persisted-record → gate derivation is covered by refreshV8_2Fork's
+// own suite and by the real-activation boundary test in replay_v8_4_test.)
 func TestReplayV8_2_R2_PostForkDivergesByPoEWKeys(t *testing.T) {
 	// Build two identical chains side by side. The only difference is whether
 	// the v8.2 gate is active.
 	appPre, _ := freshReplayApp(t)
+	appPost, _ := freshReplayApp(t)
+	appPost.v8_2AppliedHeight = 50
+	require.True(t, appPost.postV8_2Fork(100), "precondition: H=100 is post-fork")
+
+	// Byte-identical baseline: any post-epoch divergence below is the gate's.
+	basePre, err := ComputeAppHash(appPre.badgerStore)
+	require.NoError(t, err)
+	basePost, err := ComputeAppHash(appPost.badgerStore)
+	require.NoError(t, err)
+	require.Equal(t, basePre, basePost,
+		"two freshly-built stores must share a baseline AppHash")
+
 	appPre.processEpoch(100, time.Unix(2000, 0))
 	hPre, err := ComputeAppHash(appPre.badgerStore)
 	require.NoError(t, err)
 	require.False(t, hasPoEWKeys(t, appPre))
-
-	appPost, _ := freshReplayApp(t)
-	require.NoError(t, appPost.badgerStore.MarkUpgradeApplied(v8_2UpgradeName, 3, 50))
-	appPost.refreshV8_2Fork()
-	require.True(t, appPost.postV8_2Fork(100), "precondition: H=100 is post-fork")
+	// Pre-fork, processEpoch's only on-chain write (SetEpochWeights) is
+	// suppressed — everything else it produces is off-chain pendingWrites or
+	// in-memory. The epoch boundary must therefore be AppHash-INERT, exactly
+	// as on a v8.1.2 binary: this is the byte-parity property R1 states,
+	// pinned at the digest level.
+	assert.Equal(t, basePre, hPre,
+		"pre-fork processEpoch must not move the AppHash (v8.1.2 parity)")
 
 	appPost.processEpoch(100, time.Unix(2000, 0))
 	hPost, err := ComputeAppHash(appPost.badgerStore)
 	require.NoError(t, err)
 	require.True(t, hasPoEWKeys(t, appPost), "post-fork processEpoch must persist poew:*")
 
-	// The two AppHashes will also differ because appPost has the
-	// audit-trail upgrade record (MarkUpgradeApplied writes a key). To
-	// isolate the poew:* contribution, we assert two things:
-	//   a) AppHash differs (the gate is observable in the digest)
-	//   b) Removing poew:* keys from a copy of the post-fork store would
-	//      bring it closer to the pre-fork store — proved indirectly by
-	//      the GetEpochWeights round-trip in hasPoEWKeys.
+	// Identical substrates + identical epoch run ⇒ the ONLY keyspace delta is
+	// the fork-gated poew:* write, so the digests must diverge by exactly that
+	// contribution.
 	assert.NotEqual(t, hPre, hPost,
-		"post-fork AppHash must differ from pre-fork AppHash for the same epoch substrate")
+		"poew:* keys alone must move the AppHash for the same epoch substrate")
 
 	// Determinism guard: same store, same hash on re-read.
 	hPostReplay, err := ComputeAppHash(appPost.badgerStore)

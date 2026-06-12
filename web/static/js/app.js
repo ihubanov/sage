@@ -2449,11 +2449,18 @@ function SoftwareUpdate() {
 
             ${error && html`<div class="update-error">${error}</div>`}
 
-            ${!updateInfo?.update_available && updateInfo?.latest_version && !error && !installed && html`
+            ${!updateInfo?.update_available && updateInfo?.latest_version && !error && !installed && !updateInfo?.restart_required && html`
                 <div class="update-current">You're up to date.</div>
             `}
 
-            ${updateInfo?.update_available && !installed && !updating && html`
+            ${updateInfo?.restart_required && !installed && !updating && html`
+                <div class="update-available">
+                    <div class="update-release-name">Update installed — restart needed</div>
+                    <span class="update-size">On disk: ${updateInfo.disk_version} · Running: ${updateInfo.current_version}</span>
+                </div>
+            `}
+
+            ${updateInfo?.update_available && !updateInfo?.restart_required && !installed && !updating && html`
                 <div class="update-available">
                     <div class="update-release-name">${updateInfo.release_name || 'New version available'}</div>
                     ${updateInfo.download_size ? html`<span class="update-size">${formatSize(updateInfo.download_size)}</span>` : null}
@@ -2482,7 +2489,7 @@ function SoftwareUpdate() {
                     </button>
                 `}
 
-                ${updateInfo?.update_available && !installed && !updating && html`
+                ${updateInfo?.update_available && !updateInfo?.restart_required && !installed && !updating && html`
                     <button class="btn btn-primary" onClick=${doUpdate}>
                         Update Now
                     </button>
@@ -2494,7 +2501,7 @@ function SoftwareUpdate() {
                     </button>
                 `}
 
-                ${installed && !restarting && html`
+                ${(installed || updateInfo?.restart_required) && !restarting && !updating && html`
                     <button class="btn btn-primary update-restart-btn" onClick=${doRestart}>
                         Restart to Apply
                     </button>
@@ -3117,18 +3124,18 @@ function SettingsPage() {
 
     const uptime = uptimeRaw ? formatUptime(uptimeBaseSec.current + uptimeOffset) : '--';
 
-    // Format countdown — compute from block_time relative to now
-    const getCountdown = () => {
-        if (!chain?.block_time) return null;
-        const lastBlock = new Date(chain.block_time).getTime();
-        const blockInterval = 5000;
-        const elapsed = Date.now() - lastBlock;
-        const remaining = blockInterval - (elapsed % blockInterval);
-        return remaining;
-    };
-    const liveCountdown = getCountdown();
+    // Format countdown — compute from block_time relative to now. Post-v10.5.0
+    // (issue #40) an idle chain stops minting empty blocks, so a long gap since
+    // the last block is normal, not a stall: past CHAIN_IDLE_AFTER_MS we render
+    // an "idle — waiting for activity" state instead of a countdown that loops
+    // forever and reads like a stalled node.
+    const BLOCK_INTERVAL_MS = 5000;
+    const CHAIN_IDLE_AFTER_MS = 30000;
+    const blockElapsed = chain?.block_time ? Date.now() - new Date(chain.block_time).getTime() : null;
+    const chainIdle = blockElapsed !== null && blockElapsed > CHAIN_IDLE_AFTER_MS;
+    const liveCountdown = blockElapsed !== null && !chainIdle ? BLOCK_INTERVAL_MS - (blockElapsed % BLOCK_INTERVAL_MS) : null;
     const countdownDisplay = liveCountdown !== null ? (liveCountdown / 1000).toFixed(1) + 's' : '--';
-    const countdownPct = liveCountdown !== null ? Math.min(100, (liveCountdown / 5000) * 100) : 0;
+    const countdownPct = liveCountdown !== null ? Math.min(100, (liveCountdown / BLOCK_INTERVAL_MS) * 100) : 0;
 
     // Status indicator dot
     const statusDot = (active) => html`
@@ -3183,7 +3190,7 @@ function SettingsPage() {
                     <!-- Chain Health -->
                     <div class="settings-section chain-health-section">
                         <h3>
-                            Chain Health <${HelpTip} text="Your BFT consensus chain status. Blocks are produced every ~5 seconds. All validators must agree on memory operations." />
+                            Chain Health <${HelpTip} text="Your BFT consensus chain status. Blocks are produced every ~5 seconds while there is activity; since v10.5.0 an idle chain stops minting empty blocks. All validators must agree on memory operations." />
                         </h3>
                         ${chain ? html`
                             <div class="chain-stats-grid">
@@ -3191,11 +3198,19 @@ function SettingsPage() {
                                     <div class="chain-stat-value block-height">${Number(chain.block_height || 0).toLocaleString()}</div>
                                     <div class="chain-stat-label">Block Height</div>
                                 </div>
-                                <div class="chain-stat-card" title="Countdown to the next block (~5s intervals).">
-                                    <div class="chain-stat-value countdown-value">${countdownDisplay}</div>
-                                    <div class="chain-stat-label">Next Block</div>
-                                    <div class="countdown-bar"><div class="countdown-fill" style="width: ${countdownPct}%"></div></div>
-                                </div>
+                                ${chainIdle ? html`
+                                    <div class="chain-stat-card" title="No new block for over 30s. Since v10.5.0 an idle chain stops minting empty blocks — height advances when new transactions arrive.">
+                                        <div class="chain-stat-value countdown-value" style="color:var(--text-dim)">Idle</div>
+                                        <div class="chain-stat-label">Next Block</div>
+                                        <div style="font-size:10px;color:var(--text-muted);margin-top:4px">waiting for activity</div>
+                                    </div>
+                                ` : html`
+                                    <div class="chain-stat-card" title="Countdown to the next block (~5s intervals while there is activity).">
+                                        <div class="chain-stat-value countdown-value">${countdownDisplay}</div>
+                                        <div class="chain-stat-label">Next Block</div>
+                                        <div class="countdown-bar"><div class="countdown-fill" style="width: ${countdownPct}%"></div></div>
+                                    </div>
+                                `}
                                 <div class="chain-stat-card" title="Connected SAGE nodes in quorum mode. 0 = solo.">
                                     <div class="chain-stat-value">${chain.peers || '0'}</div>
                                     <div class="chain-stat-label">Peers</div>
@@ -3209,7 +3224,7 @@ function SettingsPage() {
                                 <div class="settings-row"><span class="label">Chain ID</span><span class="value chain-id-value">${chain.chain_id || '--'}</span></div>
                                 <div class="settings-row"><span class="label">Node</span><span class="value">${chain.moniker || '--'}</span></div>
                                 <div class="settings-row"><span class="label">Syncing</span><span class="value" style="color: ${chain.catching_up ? '#ef4444' : '#10b981'}">${chain.catching_up ? 'Catching up...' : 'In sync'}</span></div>
-                                <div class="settings-row"><span class="label">Last Block</span><span class="value">${chain.block_time ? new Date(chain.block_time).toLocaleTimeString() : '--'}</span></div>
+                                <div class="settings-row"><span class="label">Last Block</span><span class="value">${chain.block_time ? new Date(chain.block_time).toLocaleTimeString() : '--'}${chainIdle ? html` <span style="color:var(--text-muted)">(chain idle — not a stall)</span>` : ''}</span></div>
                             </div>
                         ` : html`<div class="chain-offline">${statusDot(false)} <span>Chain unavailable — CometBFT not running</span></div>`}
                     </div>

@@ -590,7 +590,7 @@ Access to a memory requires passing three checks, evaluated in order:
 
 ## Upgrade Machinery (v7.5)
 
-SAGE v7.5 ships the substrate for hands-off in-place chain upgrades. Existing chains can move forward across consensus-rule changes without a chain reset, without operator-typed commands, and without losing accumulated memory. The substrate has four moving parts:
+SAGE v7.5 ships the substrate for in-place chain upgrades: existing chains move forward across consensus-rule changes without a chain reset and without losing accumulated memory. How much of it is hands-off depends on the fork: the upgrade watchdog auto-proposes only up to its frozen deployment-safe default (app-v6), while every later fork (app-v7 onward) is governance-activated by an operator running `sage-gui upgrade propose --target <next>` one fork at a time (post-app-v8, signed by a chain-admin agent). An auto-advance mode for personal (single-validator) nodes — restoring the no-typed-commands experience for the later forks — lands in v10.5.1. The substrate has four moving parts:
 
 ### 1. Scheduled snapshots
 
@@ -621,6 +621,8 @@ A new chain has app version 1. The running binary embeds an `upgradeTargetAppVer
 At the activation height, `FinalizeBlock` reads the pending plan, emits `ResponseFinalizeBlock.ConsensusParamUpdates.Version.App = TargetAppVersion`, and calls `MarkUpgradeApplied` (which atomically clears the pending plan and writes an audit record at `upgrade:applied:<name>`). CometBFT applies the new app version at H+1 across every replica.
 
 At-most-one pending plan is enforced: a propose arriving while another is pending returns code 47 "already pending". A pre-activation `UpgradeCancel` (signed by any agent) clears the plan; post-activation cancel returns code 48 "too late".
+
+**Quiescent chains (app-v12+).** Once the issue-#40 idle fix is active, an idle chain mints no blocks — so a pending plan's activation height never arrives on its own. The always-on **pending-plan pump** (`cmd/sage-gui/upgrade_pump.go`, v10.5.2, issue #41) watches the `upgrade:plan` slot in-process: whenever a plan is pending and the height is stagnant below its activation height, it broadcasts idempotent heartbeat txs (operator re-registration, Code 0 "already registered") that each mint one block, carrying the chain to activation. It runs independently of auto-advance, admin roles, and `disable_auto_upgrade` — the plan already passed governance; the pump is execution, not an upgrade decision. Interactively, `sage-gui upgrade propose --wait` does the same climb attached to the terminal.
 
 ### 3. Halt detection
 

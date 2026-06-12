@@ -7,6 +7,12 @@
 //   - height-based: every N committed blocks (default 10_000)
 //   - time-based:   when at least M hours have passed since the last
 //     successful snapshot (default 6h)
+//   - idle-flush:   the time-based check only runs from Commit ticks, so
+//     once the chain goes quiet (post-app-v12, issue #40, an idle chain
+//     stops minting blocks) the last burst of writes would never be
+//     snapshotted. A wall-clock goroutine (started lazily on the first
+//     Tick) re-checks the TimeInterval every ~10 minutes and fires when
+//     blocks were committed since the last snapshot.
 //   - operator-explicit: SnapshotScheduler.Trigger(reason) is exported so
 //     the upgrade-watchdog can demand a snapshot immediately before an
 //     upgrade activation height.
@@ -18,6 +24,9 @@
 //   - inFlight (atomic) guards against concurrent Take invocations —
 //     only one snapshot at a time. Subsequent Tick calls see inFlight
 //     and skip until the running goroutine finishes.
+//   - The idle-flush goroutine reads/writes scheduler state under the
+//     same Mutex and routes its firing through Trigger, so it shares the
+//     inFlight coalescing with Tick. Close stops it.
 //   - The scheduler holds a reference to the live *badger.DB. Take is
 //     invoked with Options.LiveBadger set so it doesn't try to reopen
 //     the directory.
@@ -42,6 +51,12 @@ import (
 // distinct binary version (anchors are never pruned, so downgrade stays
 // possible regardless of K).
 const defaultSnapshotKeepLast = 5
+
+// defaultIdleFlushCheckInterval is how often the wall-clock idle-flush
+// goroutine re-evaluates the TimeInterval cadence. Coarse on purpose: the
+// loop exists only so a chain that went quiet still gets its final writes
+// snapshotted within ~TimeInterval+10m, not to tighten the cadence.
+const defaultIdleFlushCheckInterval = 10 * time.Minute
 
 // SnapshotSchedulerConfig is the operator-tunable surface. Zero values
 // resolve to sane defaults inside NewSnapshotScheduler. The scheduler is
@@ -88,12 +103,28 @@ type SnapshotSchedulerConfig struct {
 
 // SnapshotScheduler coordinates Commit-tail snapshot triggers.
 type SnapshotScheduler struct {
-	cfg        SnapshotSchedulerConfig
-	logger     zerolog.Logger
+	cfg    SnapshotSchedulerConfig
+	logger zerolog.Logger
+
 	mu         sync.Mutex
-	lastHeight int64
-	lastTime   time.Time
-	inFlight   atomic.Bool
+	lastHeight int64     // height of the last SUCCESSFUL snapshot
+	lastTime   time.Time // wall time of the last successful snapshot
+	// lastTickHeight / lastTickAppHash describe the newest committed block
+	// Tick has seen — the candidate the idle-flush loop snapshots when the
+	// chain goes quiet. lastTickAppHash is a private copy (Tick never stores
+	// the caller's buffer).
+	lastTickHeight  int64
+	lastTickAppHash []byte
+	idleLoopStarted bool
+
+	// idleCheckEvery is the idle-flush poll cadence, resolved from
+	// defaultIdleFlushCheckInterval in NewSnapshotScheduler. Tests may
+	// shorten it before the first Tick (the loop starts lazily there).
+	idleCheckEvery time.Duration
+	stopIdle       chan struct{}
+	stopOnce       sync.Once
+
+	inFlight atomic.Bool
 }
 
 // NewSnapshotScheduler builds a scheduler from cfg + logger. Returns nil
@@ -114,9 +145,11 @@ func NewSnapshotScheduler(cfg SnapshotSchedulerConfig, logger zerolog.Logger) *S
 		cfg.KeepLast = defaultSnapshotKeepLast
 	}
 	s := &SnapshotScheduler{
-		cfg:      cfg,
-		logger:   logger.With().Str("component", "snapshot-scheduler").Logger(),
-		lastTime: time.Now(),
+		cfg:            cfg,
+		logger:         logger.With().Str("component", "snapshot-scheduler").Logger(),
+		lastTime:       time.Now(),
+		idleCheckEvery: defaultIdleFlushCheckInterval,
+		stopIdle:       make(chan struct{}),
 	}
 	s.logger.Info().
 		Int64("height_interval", cfg.HeightInterval).
@@ -138,18 +171,35 @@ func (s *SnapshotScheduler) Tick(height int64, appHash []byte) {
 		return
 	}
 
-	if !s.shouldFire(height) {
+	// Copy appHash so neither the fired goroutine nor the idle-flush loop
+	// shares the buffer the caller retains.
+	ahCopy := make([]byte, len(appHash))
+	copy(ahCopy, appHash)
+
+	s.mu.Lock()
+	s.lastTickHeight = height
+	s.lastTickAppHash = ahCopy
+	// Lazily arm the wall-clock idle-flush fallback: the TimeInterval check
+	// below only ever runs from a Commit tick, so without this loop a chain
+	// that goes quiet (post-app-v12 an idle chain mints no blocks, issue
+	// #40) would leave its final burst of writes un-snapshotted forever.
+	startIdleLoop := s.cfg.TimeInterval > 0 && !s.idleLoopStarted
+	if startIdleLoop {
+		s.idleLoopStarted = true
+	}
+	fire := s.shouldFireLocked(height)
+	s.mu.Unlock()
+
+	if startIdleLoop {
+		go s.idleFlushLoop()
+	}
+	if !fire {
 		return
 	}
 	if !s.inFlight.CompareAndSwap(false, true) {
 		// Previous snapshot still running — skip this tick.
 		return
 	}
-
-	// Copy appHash so the goroutine doesn't share the buffer caller
-	// retains.
-	ahCopy := make([]byte, len(appHash))
-	copy(ahCopy, appHash)
 
 	go s.runTake(height, ahCopy, "scheduled")
 }
@@ -171,11 +221,8 @@ func (s *SnapshotScheduler) Trigger(height int64, appHash []byte, reason string)
 	go s.runTake(height, ahCopy, reason)
 }
 
-// shouldFire takes the mutex and consults the cadence config.
-func (s *SnapshotScheduler) shouldFire(height int64) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+// shouldFireLocked consults the cadence config. Caller holds s.mu.
+func (s *SnapshotScheduler) shouldFireLocked(height int64) bool {
 	if s.cfg.HeightInterval > 0 && (height-s.lastHeight) >= s.cfg.HeightInterval {
 		return true
 	}
@@ -183,6 +230,57 @@ func (s *SnapshotScheduler) shouldFire(height int64) bool {
 		return true
 	}
 	return false
+}
+
+// idleFlushLoop is the wall-clock fallback for the TimeInterval cadence.
+// Tick only runs from Commit, so once the chain stops producing blocks the
+// 6h timer can never fire from a tick and the writes committed since the
+// last snapshot would stay un-snapshotted indefinitely. The loop wakes
+// every idleCheckEvery and triggers a snapshot iff BOTH hold:
+//
+//   - TimeInterval has elapsed since the last successful snapshot, AND
+//   - at least one block was Tick'd after the last snapshotted height —
+//     so it never fires when nothing changed since the last snapshot.
+//
+// Once the idle-flush succeeds, lastHeight catches up to lastTickHeight and
+// the loop goes dormant until new blocks arrive: at most one snapshot per
+// idle period. Firing routes through Trigger, sharing the inFlight
+// coalescing with Tick. Runs until Close.
+func (s *SnapshotScheduler) idleFlushLoop() {
+	ticker := time.NewTicker(s.idleCheckEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.stopIdle:
+			return
+		case <-ticker.C:
+		}
+
+		s.mu.Lock()
+		due := s.cfg.TimeInterval > 0 && time.Since(s.lastTime) >= s.cfg.TimeInterval
+		height := s.lastTickHeight
+		hasNewBlocks := height > s.lastHeight
+		appHash := s.lastTickAppHash // private copy made by Tick; never mutated
+		s.mu.Unlock()
+
+		if !due || !hasNewBlocks {
+			continue
+		}
+		// If a snapshot is in flight Trigger no-ops; the next wake re-checks
+		// against the then-updated lastHeight, so a duplicate never fires.
+		s.Trigger(height, appHash, "idle-flush")
+	}
+}
+
+// Close stops the idle-flush goroutine (if it was started). It does not
+// wait for an in-flight snapshot.Take to finish — Take is crash-safe by
+// design (staging dir + OK sentinel; SweepStaging cleans partials on boot).
+// Safe to call multiple times and on a nil scheduler.
+func (s *SnapshotScheduler) Close() {
+	if s == nil {
+		return
+	}
+	s.stopOnce.Do(func() { close(s.stopIdle) })
 }
 
 // runTake is the goroutine body. It calls snapshot.Take, updates the

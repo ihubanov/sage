@@ -92,19 +92,24 @@ const (
 
 // MemoryResult is a memory record with computed confidence.
 type MemoryResult struct {
-	MemoryID        string     `json:"memory_id"`
-	SubmittingAgent string     `json:"submitting_agent"`
-	Content         string     `json:"content"`
-	ContentHash     string     `json:"content_hash"`
-	MemoryType      string     `json:"memory_type"`
-	DomainTag       string     `json:"domain_tag"`
-	ConfidenceScore float64    `json:"confidence_score"`
-	Classification  int        `json:"classification"`
-	Status          string     `json:"status"`
-	ParentHash      string     `json:"parent_hash,omitempty"`
-	TaskStatus      string     `json:"task_status,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
-	CommittedAt     *time.Time `json:"committed_at,omitempty"`
+	MemoryID        string  `json:"memory_id"`
+	SubmittingAgent string  `json:"submitting_agent"`
+	Content         string  `json:"content"`
+	ContentHash     string  `json:"content_hash"`
+	MemoryType      string  `json:"memory_type"`
+	DomainTag       string  `json:"domain_tag"`
+	ConfidenceScore float64 `json:"confidence_score"`
+	// CorroborationCount is the number of distinct corroborations backing this
+	// memory — the multiplier behind the corroboration boost in ConfidenceScore.
+	// Exposing it lets readers distinguish a low score caused by no corroboration
+	// (a fresh, untested belief) from one caused by time decay (a once-solid fact).
+	CorroborationCount int        `json:"corroboration_count"`
+	Classification     int        `json:"classification"`
+	Status             string     `json:"status"`
+	ParentHash         string     `json:"parent_hash,omitempty"`
+	TaskStatus         string     `json:"task_status,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	CommittedAt        *time.Time `json:"committed_at,omitempty"`
 }
 
 // MemoryDetailResponse is a memory record with votes and corroborations.
@@ -665,18 +670,19 @@ func (s *Server) handleQueryMemory(w http.ResponseWriter, r *http.Request) {
 		currentConf := memory.ComputeConfidence(rec.ConfidenceScore, rec.CreatedAt, now, len(corrs), rec.DomainTag)
 
 		results = append(results, &MemoryResult{
-			MemoryID:        rec.MemoryID,
-			SubmittingAgent: rec.SubmittingAgent,
-			Content:         rec.Content,
-			ContentHash:     hex.EncodeToString(rec.ContentHash),
-			MemoryType:      string(rec.MemoryType),
-			DomainTag:       rec.DomainTag,
-			ConfidenceScore: currentConf,
-			Classification:  int(memClass),
-			Status:          string(rec.Status),
-			ParentHash:      rec.ParentHash,
-			CreatedAt:       rec.CreatedAt,
-			CommittedAt:     rec.CommittedAt,
+			MemoryID:           rec.MemoryID,
+			SubmittingAgent:    rec.SubmittingAgent,
+			Content:            rec.Content,
+			ContentHash:        hex.EncodeToString(rec.ContentHash),
+			MemoryType:         string(rec.MemoryType),
+			DomainTag:          rec.DomainTag,
+			ConfidenceScore:    currentConf,
+			CorroborationCount: len(corrs),
+			Classification:     int(memClass),
+			Status:             string(rec.Status),
+			ParentHash:         rec.ParentHash,
+			CreatedAt:          rec.CreatedAt,
+			CommittedAt:        rec.CommittedAt,
 		})
 	}
 
@@ -882,18 +888,19 @@ func (s *Server) handleSearchMemory(w http.ResponseWriter, r *http.Request) {
 		currentConf := memory.ComputeConfidence(rec.ConfidenceScore, rec.CreatedAt, now, len(corrs), rec.DomainTag)
 
 		results = append(results, &MemoryResult{
-			MemoryID:        rec.MemoryID,
-			SubmittingAgent: rec.SubmittingAgent,
-			Content:         rec.Content,
-			ContentHash:     hex.EncodeToString(rec.ContentHash),
-			MemoryType:      string(rec.MemoryType),
-			DomainTag:       rec.DomainTag,
-			ConfidenceScore: currentConf,
-			Classification:  int(memClass),
-			Status:          string(rec.Status),
-			ParentHash:      rec.ParentHash,
-			CreatedAt:       rec.CreatedAt,
-			CommittedAt:     rec.CommittedAt,
+			MemoryID:           rec.MemoryID,
+			SubmittingAgent:    rec.SubmittingAgent,
+			Content:            rec.Content,
+			ContentHash:        hex.EncodeToString(rec.ContentHash),
+			MemoryType:         string(rec.MemoryType),
+			DomainTag:          rec.DomainTag,
+			ConfidenceScore:    currentConf,
+			CorroborationCount: len(corrs),
+			Classification:     int(memClass),
+			Status:             string(rec.Status),
+			ParentHash:         rec.ParentHash,
+			CreatedAt:          rec.CreatedAt,
+			CommittedAt:        rec.CommittedAt,
 		})
 	}
 
@@ -1093,18 +1100,19 @@ func (s *Server) handleHybridSearchMemory(w http.ResponseWriter, r *http.Request
 		currentConf := memory.ComputeConfidence(rec.ConfidenceScore, rec.CreatedAt, now, len(corrs), rec.DomainTag)
 
 		results = append(results, &MemoryResult{
-			MemoryID:        rec.MemoryID,
-			SubmittingAgent: rec.SubmittingAgent,
-			Content:         rec.Content,
-			ContentHash:     hex.EncodeToString(rec.ContentHash),
-			MemoryType:      string(rec.MemoryType),
-			DomainTag:       rec.DomainTag,
-			ConfidenceScore: currentConf,
-			Classification:  int(memClass),
-			Status:          string(rec.Status),
-			ParentHash:      rec.ParentHash,
-			CreatedAt:       rec.CreatedAt,
-			CommittedAt:     rec.CommittedAt,
+			MemoryID:           rec.MemoryID,
+			SubmittingAgent:    rec.SubmittingAgent,
+			Content:            rec.Content,
+			ContentHash:        hex.EncodeToString(rec.ContentHash),
+			MemoryType:         string(rec.MemoryType),
+			DomainTag:          rec.DomainTag,
+			ConfidenceScore:    currentConf,
+			CorroborationCount: len(corrs),
+			Classification:     int(memClass),
+			Status:             string(rec.Status),
+			ParentHash:         rec.ParentHash,
+			CreatedAt:          rec.CreatedAt,
+			CommittedAt:        rec.CommittedAt,
 		})
 	}
 

@@ -582,6 +582,49 @@ func TestQueryMemory(t *testing.T) {
 	assert.Equal(t, "test-id", resp.Results[0].MemoryID)
 }
 
+// TestQueryMemory_ExposesCorroborationCount verifies recall surfaces the number of
+// corroborations backing a memory — the signal that lets a reader tell a fresh,
+// uncorroborated belief apart from a once-solid fact that has merely decayed.
+func TestQueryMemory_ExposesCorroborationCount(t *testing.T) {
+	srv, memStore, _ := newTestServer(t, "")
+
+	memStore.memories["corr-id"] = &memory.MemoryRecord{
+		MemoryID:        "corr-id",
+		SubmittingAgent: "agent-1",
+		Content:         "Corroborated fact",
+		ContentHash:     []byte{4, 5, 6},
+		MemoryType:      memory.TypeFact,
+		DomainTag:       "crypto",
+		ConfidenceScore: 0.9,
+		Status:          memory.StatusCommitted,
+		CreatedAt:       time.Now().Add(-24 * time.Hour),
+	}
+	// Two distinct agents corroborate this memory.
+	memStore.corroborations["corr-id"] = []*store.Corroboration{
+		{MemoryID: "corr-id", AgentID: "agent-2"},
+		{MemoryID: "corr-id", AgentID: "agent-3"},
+	}
+
+	embedding := make([]float32, 1536)
+	for i := range embedding {
+		embedding[i] = 0.1
+	}
+	body, _ := json.Marshal(QueryMemoryRequest{Embedding: embedding, TopK: 10})
+
+	req, _ := signedRequest(t, http.MethodPost, "/v1/memory/query", body)
+	rr := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	var resp QueryMemoryResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	require.Equal(t, 1, resp.TotalCount)
+	assert.Equal(t, "corr-id", resp.Results[0].MemoryID)
+	assert.Equal(t, 2, resp.Results[0].CorroborationCount,
+		"recall must surface the corroboration count backing the confidence score")
+}
+
 func TestGetMemory(t *testing.T) {
 	srv, memStore, _ := newTestServer(t, "")
 

@@ -144,7 +144,18 @@ components:
           format: double
           minimum: 0
           maximum: 1
-          description: Confidence score assigned by the proposing agent.
+          description: >-
+            Current confidence at query time: the agent-assigned score after
+            time decay and the corroboration boost are applied.
+        corroboration_count:
+          type: integer
+          minimum: 0
+          description: >-
+            Number of distinct corroborations backing this memory — the
+            multiplier behind the corroboration boost in confidence_score.
+            Returned on recall paths (/v1/memory/query, /search, /hybrid) so
+            readers can tell a low score caused by no corroboration (a fresh,
+            untested belief) from one caused by time decay (a once-solid fact).
         classification:
           type: integer
           minimum: 0

@@ -538,13 +538,14 @@ func (s *Server) toolRecall(ctx context.Context, params map[string]any) (any, er
 	memories := make([]map[string]any, 0, len(queryResp.Results))
 	for _, r := range queryResp.Results {
 		memories = append(memories, map[string]any{
-			"memory_id":  r.MemoryID,
-			"content":    r.Content,
-			"domain":     r.DomainTag,
-			"confidence": r.ConfidenceScore,
-			"type":       r.MemoryType,
-			"status":     r.Status,
-			"created_at": r.CreatedAt,
+			"memory_id":           r.MemoryID,
+			"content":             r.Content,
+			"domain":              r.DomainTag,
+			"confidence":          r.ConfidenceScore,
+			"corroboration_count": r.CorroborationCount,
+			"type":                r.MemoryType,
+			"status":              r.Status,
+			"created_at":          r.CreatedAt,
 		})
 	}
 
@@ -560,13 +561,14 @@ func (s *Server) toolRecall(ctx context.Context, params map[string]any) (any, er
 // belt-and-braces retry-on-vault-encryption branch in toolRecall.
 type recallResp struct {
 	Results []struct {
-		MemoryID        string  `json:"memory_id"`
-		Content         string  `json:"content"`
-		DomainTag       string  `json:"domain_tag"`
-		ConfidenceScore float64 `json:"confidence_score"`
-		MemoryType      string  `json:"memory_type"`
-		Status          string  `json:"status"`
-		CreatedAt       string  `json:"created_at"`
+		MemoryID           string  `json:"memory_id"`
+		Content            string  `json:"content"`
+		DomainTag          string  `json:"domain_tag"`
+		ConfidenceScore    float64 `json:"confidence_score"`
+		CorroborationCount int     `json:"corroboration_count"`
+		MemoryType         string  `json:"memory_type"`
+		Status             string  `json:"status"`
+		CreatedAt          string  `json:"created_at"`
 	} `json:"results"`
 	TotalCount int `json:"total_count"`
 }

@@ -57,15 +57,26 @@ Add agents, configure domain-level read/write permissions, manage clearance leve
 
 ---
 
-## What's New in v10.5.4
+## What's New in v10.6.0
+
+**Two read-side surfacings that let agents reason over their own memory graph — a corroboration signal on recall, and typed memory links from MCP.** v10.6.0 is a non-fork minor release: it adds no consensus rule, transaction handler, or AppHash surface, so a mixed v10.5.x / v10.6.0 cluster computes identical state. Both changes expose capability the node already held but never surfaced on read.
+
+- **Recall surfaces `corroboration_count`.** A low `confidence_score` was ambiguous from the number alone — a fresh, never-corroborated belief and a once-solid fact that has merely aged out under time decay can land on the same score. Each recall path (`/v1/memory/query`, `/search`, `/hybrid`) already fetched the corroboration count to *compute* that score, then discarded it; it's now returned alongside, and threaded through the MCP `recall` tool output. No new store read, no scoring change — `ComputeConfidence` is untouched. The stale OpenAPI `confidence_score` description is corrected to say it's the post-decay, post-corroboration value computed at query time, not the proposer's stored input. (#45)
+- **New `sage_link` MCP tool — typed memory relationships.** The `/v1/memory/link` endpoint always accepted a free-form `link_type`, but the only MCP path that created links (`sage_task`) hardcoded `related`, so agents could build a flat related-only mesh but never record that one memory *supports*, *contradicts*, *causes*, *precedes*, or *refines* another. `sage_link` is the MCP surface over that existing endpoint: a directional `source → target` edge with a caller-chosen `link_type` passed verbatim (defaulting to `related`). Agents can now build a typed knowledge graph over memory. (#46)
+
+Both are additive read-side/MCP-surface changes — no consensus-path code touched, replay is byte-identical, and the SDK is a lockstep bump. Thanks to @ihubanov for both (#45, #46). SDK 10.6.0.
+
+## Older releases
+
+<details>
+<summary>v10.5.4 — challenged-state dead-code cleanup</summary>
 
 **Dead-code cleanup: the memory lifecycle now states what the chain actually does.** Internal-only — no consensus rule, transaction handler, or AppHash surface changes; replay is byte-identical and the SDK is a lockstep bump.
 
 - **Dropped the unreachable `challenged` lifecycle transitions.** The `validTransitions` table advertised a `committed→challenged→committed` review/overturn path, but since v4.5.0 a challenge that passes BFT consensus is *decisive* — it deprecates the memory in one step (`committed→deprecated`), and nothing ever sets `challenged`. That table is descriptive (not on the consensus path), so it now reflects the real lifecycle instead of dangling a capability the chain doesn't provide. The `challenged` enum is retained for legacy pre-v4.5.0 on-disk rows, which the boot migration still sweeps to `deprecated`. (#44)
 
 Thanks to @ihubanov for the clean dead-code spot (#44). Challenge stays decisive by design. SDK 10.5.4 (lockstep, no SDK changes).
-
-## Older releases
+</details>
 
 <details>
 <summary>v10.5.3 — clearance:0 honored on add-member endpoints + SDK GovProposal created_at</summary>

@@ -28,76 +28,30 @@ This document covers the full multi-node BFT deployment, Python SDK, REST API, m
 
 ## Architecture Overview
 
-```mermaid
-graph TB
-    subgraph Agents["Agents (Python SDK / HTTP)"]
-        A1["Agent A"]
-        A2["Agent B"]
-        A3["Agent C"]
-    end
+![SAGE Architecture — Self-Governed, Byzantine Fault Tolerant Memory Infrastructure for AI Agents](sage_architecture-17062026.png)
 
-    subgraph ABCI["(S)AGE Application Layer"]
-        direction LR
-        AB0["ABCI 0<br/><small>:8080 REST</small><br/><small>:2112 metrics</small>"]
-        AB1["ABCI 1<br/><small>:8081 REST</small><br/><small>:2113 metrics</small>"]
-        AB2["ABCI 2<br/><small>:8082 REST</small><br/><small>:2114 metrics</small>"]
-        AB3["ABCI 3<br/><small>:8083 REST</small><br/><small>:2115 metrics</small>"]
-    end
-
-    subgraph Consensus["BFT Consensus Layer"]
-        direction LR
-        C0["CometBFT 0<br/><small>:26657 RPC</small>"]
-        C1["CometBFT 1<br/><small>:26757 RPC</small>"]
-        C2["CometBFT 2<br/><small>:26857 RPC</small>"]
-        C3["CometBFT 3<br/><small>:26957 RPC</small>"]
-        C0 <--> C1
-        C1 <--> C2
-        C2 <--> C3
-        C0 <--> C3
-    end
-
-    subgraph Storage["Shared Services"]
-        direction LR
-        PG[("PostgreSQL 16<br/>+ pgvector<br/><small>Off-chain data<br/>HNSW indexes</small>")]
-        OL["Ollama<br/><small>nomic-embed-text<br/>768-dim embeddings</small>"]
-    end
-
-    A1 & A2 & A3 --> AB0 & AB1 & AB2 & AB3
-
-    AB0 <--> C0
-    AB1 <--> C1
-    AB2 <--> C2
-    AB3 <--> C3
-
-    AB0 & AB1 & AB2 & AB3 --> PG
-    AB0 & AB1 & AB2 & AB3 --> OL
-
-    style Agents fill:#e8f4f8,stroke:#2196F3,color:#000
-    style ABCI fill:#fff3e0,stroke:#FF9800,color:#000
-    style Consensus fill:#fce4ec,stroke:#E91E63,color:#000
-    style Storage fill:#e8f5e9,stroke:#4CAF50,color:#000
-```
+*Editable Mermaid source lives at `docs/sage_architecture-17062026.mmd` (kept locally, not tracked). Regenerate this PNG after editing it with: `mmdc -i docs/sage_architecture-17062026.mmd -o docs/sage_architecture-17062026.png -s 2`. Verified against [`docs/reference/`](reference/INDEX.md) at v10.6.1.*
 
 ### How it works
 
 1. **Agents** connect to any ABCI node via the Python SDK (or raw HTTP)
 2. **ABCI nodes** (Go) process requests -- memory submissions become signed transactions
 3. Transactions are broadcast to **CometBFT** which runs BFT consensus across all 4 validators
-4. Once a block is committed, the state machine updates **PostgreSQL** (full content) and **BadgerDB** (hashes only)
-5. **Ollama** generates 768-dim embeddings locally -- zero cloud API calls
+4. Once a block is committed, the state machine writes **BadgerDB** (on-chain: content hashes, status, classification, votes, grants, appHash -- replicated to every node) and projects full content + embedding vectors to the **off-chain store** -- **SQLite** in personal/single-binary mode, **PostgreSQL + pgvector** in a cluster -- as a write-behind update inside `Commit` (never `FinalizeBlock`)
+5. **Embeddings** come from a pluggable provider -- **Ollama** (`nomic-embed-text`, 768-dim, fully local), an **OpenAI-compatible** endpoint (vLLM, LiteLLM), or a non-semantic **hash** fallback -- staged in a process-local cache before broadcast
 
 No tokens. No gas fees. No cryptocurrency. Just consensus-validated knowledge.
 
 | Layer | Technology |
 |-------|-----------|
-| Consensus | CometBFT v0.38.15 (ABCI 2.0, raw -- not Cosmos SDK) |
+| Consensus | CometBFT v0.38.23 (ABCI 2.0, raw -- not Cosmos SDK) |
 | State Machine | Go 1.22+ ABCI application |
-| On-chain State | BadgerDB v4 (hashes only) |
-| Off-chain Storage | PostgreSQL 16 + pgvector (HNSW indexes) |
+| On-chain State | BadgerDB v4.5.0 (content hash, status, classification, votes, grants, appHash) |
+| Off-chain Storage | SQLite (personal / single-binary) or PostgreSQL 16 + pgvector / HNSW (cluster) -- write-behind projection |
 | Tx Format | Protobuf (deterministic serialization) |
-| REST API | Go chi v5 (25+ endpoints, OpenAPI 3.1) |
+| REST API | Go chi v5.2.2 (62 endpoints, OpenAPI 3.1) |
 | Agent SDK | Python (httpx + PyNaCl + Pydantic v2) |
-| Embeddings | Ollama nomic-embed-text (768-dim, fully local) |
+| Embeddings | Pluggable: Ollama nomic-embed-text (768-dim) / OpenAI-compatible (vLLM, LiteLLM) / hash fallback |
 | Monitoring | Prometheus + Grafana (3 dashboards, 5 alert rules) |
 
 **Performance (verified under k6 load testing):**
@@ -1302,7 +1256,7 @@ sage/
 ├── papers/                           # Research papers (PDFs, CC BY 4.0)
 ├── .github/workflows/ci.yml          # CI: lint, test, build, docker, sdk-test
 ├── Makefile                          # Build/test/deploy targets
-├── go.mod                            # Go 1.22, CometBFT v0.38.15
+├── go.mod                            # Go 1.22, CometBFT v0.38.23 (library)
 └── .golangci.yml                     # Linter configuration
 ```
 

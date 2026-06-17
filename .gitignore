@@ -113,6 +113,8 @@ docs/*
 !docs/HOOKS.md
 # Agent-facing code reference (public)
 !docs/reference/
+# Architecture diagram (rendered PNG embedded in ARCHITECTURE.md; .mmd source kept local/untracked)
+!docs/sage_architecture-17062026.png
 
 # Node.js (Playwright e2e tests)
 node_modules/

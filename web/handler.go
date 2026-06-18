@@ -919,8 +919,40 @@ func (h *DashboardHandler) handleGraph(w http.ResponseWriter, r *http.Request) {
 	if !seeAll {
 		opts.SubmittingAgents = allowedAgents
 	}
+	// Drill-down: ?domain=X loads just that lobe's memories.
+	drillDomain := q.Get("domain")
+	if drillDomain != "" {
+		opts.DomainTag = drillDomain
+	}
 
-	records, _, err := h.store.ListMemories(r.Context(), opts)
+	// Scale aggregates — operator view only (no RBAC aggregate leak).
+	var grandTotal int
+	var domainCounts map[string]int
+	if seeAll {
+		if stats, sErr := h.store.GetStats(r.Context()); sErr == nil && stats != nil {
+			grandTotal = stats.TotalMemories
+			domainCounts = stats.ByDomain
+		}
+	}
+
+	// Node selection:
+	//   - drill-down: that domain, most-significant (highest-confidence) first;
+	//   - operator overview beyond the cap: a stratified importance sample — each
+	//     lobe gets a quota proportional to its true size, filled with its
+	//     highest-confidence memories, so lobe density stays faithful and the dots
+	//     shown are the meaningful ones;
+	//   - otherwise: newest within the cap.
+	var records []*memory.MemoryRecord
+	var err error
+	switch {
+	case drillDomain != "":
+		opts.Sort = "confidence"
+		records, _, err = h.store.ListMemories(r.Context(), opts)
+	case seeAll && grandTotal > limit && len(domainCounts) > 1:
+		records = h.stratifiedSample(r.Context(), opts, domainCounts, grandTotal, limit)
+	default:
+		records, _, err = h.store.ListMemories(r.Context(), opts)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1015,13 +1047,42 @@ func (h *DashboardHandler) handleGraph(w http.ResponseWriter, r *http.Request) {
 	// the brain can convey "showing N of M" and weight each lobe by its real size
 	// even when only a bounded sample of nodes is rendered. Operator view only —
 	// an RBAC-restricted agent must not see global aggregate counts.
-	if seeAll {
-		if stats, sErr := h.store.GetStats(r.Context()); sErr == nil && stats != nil {
-			resp["total"] = stats.TotalMemories
-			resp["domain_counts"] = stats.ByDomain
-		}
+	if seeAll && domainCounts != nil {
+		resp["total"] = grandTotal
+		resp["domain_counts"] = domainCounts
 	}
 	writeJSONResp(w, http.StatusOK, resp)
+}
+
+// stratifiedSample draws a representative, importance-ranked sample for the
+// overview brain: each domain gets a quota proportional to its share of the
+// total, filled with that domain's highest-confidence memories. Keeps lobe
+// density faithful to reality and surfaces the most significant memories, while
+// never exceeding the cap. One bounded ListMemories call per domain.
+func (h *DashboardHandler) stratifiedSample(ctx context.Context, base store.ListOptions, domainCounts map[string]int, total, cap int) []*memory.MemoryRecord {
+	out := make([]*memory.MemoryRecord, 0, cap)
+	for domain, cnt := range domainCounts {
+		if cnt <= 0 {
+			continue
+		}
+		quota := (cap*cnt + total/2) / total // round(cap * cnt/total)
+		if quota < 1 {
+			quota = 1
+		}
+		o := base
+		o.DomainTag = domain
+		o.Sort = "confidence"
+		o.Limit = quota
+		recs, _, err := h.store.ListMemories(ctx, o)
+		if err != nil {
+			continue
+		}
+		out = append(out, recs...)
+	}
+	if len(out) > cap {
+		out = out[:cap]
+	}
+	return out
 }
 
 // handleStats returns aggregate statistics.

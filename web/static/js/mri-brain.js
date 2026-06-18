@@ -232,6 +232,9 @@ export function mountMriBrain(container, opts = {}) {
 
   let Graph = null, controls = null, disposed = false, flow = true, scanning = true;
   let hullMat = null, brainMat = null, surfMat = null, curOpacity = 0.05;
+  let currentDomain = null;                 // drill-down lobe (null = overview)
+  const baseUrl = fetchUrl;
+  const urlFor = () => baseUrl + (currentDomain ? '&domain=' + encodeURIComponent(currentDomain) : '');
   const subs = [];
 
   function setHullOpacity(o){
@@ -245,14 +248,53 @@ export function mountMriBrain(container, opts = {}) {
     $('.nn').textContent = fmtN(d.total && d.total > d.nodes.length ? d.total : d.nodes.length);
     $('.ne').textContent = fmtN(d.links.length);
     $('.nc').textContent = fmtN(d.nodes.filter(n=>(n.corroboration_count||0)>=4 && n.status==='committed').length);
-    if (d.total && d.total > d.nodes.length) {
-      $('.flag').textContent = `showing ${d.nodes.length} of ${fmtN(d.total)} · most recent`;
+    const dom = currentDomain && d.domainCounts && d.domainCounts[currentDomain];
+    if (currentDomain) {
+      $('.flag').textContent = `${currentDomain} · showing ${d.nodes.length}${dom?` of ${fmtN(dom)}`:''}`;
+    } else if (d.total && d.total > d.nodes.length) {
+      $('.flag').textContent = `showing ${d.nodes.length} of ${fmtN(d.total)} · representative sample`;
     } else {
       $('.flag').textContent = d.live === false ? 'SYNTHETIC FALLBACK · no live data' : '';
     }
   }
 
-  loadGraph(fetchUrl).then(data => {
+  // Lobe legend with per-domain counts; click a lobe to drill into it, "← all
+  // lobes" to return. Built from the true domain set so every lobe stays
+  // navigable even while only a sample is shown.
+  function buildLobes(d){
+    const dc = d.domainCounts || {};
+    const doms = (Object.keys(dc).length ? Object.keys(dc) : [...new Set(d.nodes.map(n=>n.domain))]).sort();
+    const lobes = $('.lobes'); lobes.innerHTML = '';
+    if (currentDomain) {
+      const back = document.createElement('div');
+      back.className = 'row'; back.style.cursor = 'pointer';
+      back.innerHTML = '<span class="k">←</span><div class="t"><b>all lobes</b></div>';
+      back.onclick = () => { currentDomain = null; load(); };
+      lobes.appendChild(back);
+    }
+    doms.forEach(k => {
+      const row = document.createElement('div');
+      row.className = 'row'; row.style.cursor = 'pointer';
+      if (currentDomain === k) row.style.background = 'rgba(57,208,255,0.10)';
+      row.innerHTML = `<span class="dot" style="background:${domainColor(k)}"></span><div class="t"><b>${k}</b>${dc[k]?` <span style="color:#5d7395">· ${fmtN(dc[k])}</span>`:''}</div>`;
+      row.onclick = () => { if (currentDomain !== k) { currentDomain = k; load(); } };
+      lobes.appendChild(row);
+    });
+  }
+
+  // Re-fetch (respecting the drill domain) and re-render. Deterministic placement
+  // keeps existing nodes put; no re-heat.
+  function load(){
+    loadGraph(urlFor()).then(d => {
+      if (disposed || !Graph) return;
+      placeNodes(d.nodes);
+      Graph.graphData(d);
+      refreshCounts(d);
+      buildLobes(d);
+    });
+  }
+
+  loadGraph(urlFor()).then(data => {
     if (disposed) return;
     $('.boot').style.display = 'none';
     placeNodes(data.nodes);
@@ -299,9 +341,7 @@ export function mountMriBrain(container, opts = {}) {
       }).catch(()=>{ /* no override — keep the procedural brain */ });
     } catch(e){ /* hull optional */ }
 
-    const dc = data.domainCounts || {};
-    const lobes=$('.lobes'); [...new Set(data.nodes.map(n=>n.domain))].forEach(k=>lobes.insertAdjacentHTML('beforeend',
-      `<div class="row"><span class="dot" style="background:${domainColor(k)}"></span><div class="t"><b>${k}</b>${dc[k]?` <span style="color:#5d7395">· ${fmtN(dc[k])}</span>`:''}</div></div>`));
+    buildLobes(data);
     const lt=$('.linktypes'); Object.values(LINK_TYPES).filter(t=>t.typed).forEach(t=>lt.insertAdjacentHTML('beforeend',
       `<div class="row"><span class="bar" style="background:${t.color}"></span><div class="t"><span>${t.label}</span></div></div>`));
     refreshCounts(data);
@@ -318,14 +358,7 @@ export function mountMriBrain(container, opts = {}) {
     // re-heat, no reshuffle, no per-node position bookkeeping.
     if (opts.sse && typeof opts.sse.on === 'function') {
       let t = null;
-      const reload = () => { clearTimeout(t); t = setTimeout(() => {
-        loadGraph(fetchUrl).then(d => {
-          if (disposed || !Graph) return;
-          placeNodes(d.nodes);
-          Graph.graphData(d);
-          refreshCounts(d);
-        });
-      }, 450); };
+      const reload = () => { clearTimeout(t); t = setTimeout(load, 450); };
       subs.push(opts.sse.on('remember', reload));
       subs.push(opts.sse.on('forget', reload));
     }

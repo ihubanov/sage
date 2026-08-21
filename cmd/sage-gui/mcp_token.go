@@ -77,11 +77,22 @@ func runMCPTokenCreate() error {
 			}
 			name = args[i+1]
 			i++
+		case "--help", "-h", "help":
+			// `create` mints a real, irreversible credential, so an unrecognized
+			// arg must never be silently swallowed and fall through to the mint.
+			// Handle help here — the outer dispatcher only sees `--help` at the
+			// subcommand position, so `mcp-token create --help` reached this parser
+			// and used to mint a token instead of printing usage.
+			printMCPTokenUsage()
+			return nil
 		default:
-			if strings.HasPrefix(args[i], "--agent=") {
+			switch {
+			case strings.HasPrefix(args[i], "--agent="):
 				agentID = strings.TrimPrefix(args[i], "--agent=")
-			} else if strings.HasPrefix(args[i], "--name=") {
+			case strings.HasPrefix(args[i], "--name="):
 				name = strings.TrimPrefix(args[i], "--name=")
+			default:
+				return fmt.Errorf("unknown argument %q for 'mcp-token create'; run 'sage-gui mcp-token create --help'", args[i])
 			}
 		}
 	}

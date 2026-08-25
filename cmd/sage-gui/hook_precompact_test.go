@@ -1,0 +1,130 @@
+package main
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestExtractTurnText(t *testing.T) {
+	cases := []struct {
+		name     string
+		role     string
+		content  string
+		wantRole string
+		wantText string
+	}{
+		{"string content", "user", `"hello world"`, "user", "hello world"},
+		{"empty string skipped", "user", `"   "`, "", ""},
+		{"non-conversation role skipped", "system", `"x"`, "", ""},
+		{"text blocks joined", "assistant",
+			`[{"type":"text","text":"a"},{"type":"text","text":"b"}]`, "assistant", "a\nb"},
+		{"tool-only turn skipped", "assistant",
+			`[{"type":"tool_use","name":"Bash","input":{}}]`, "", ""},
+		{"tool_result-only turn skipped", "user",
+			`[{"type":"tool_result","content":"big output"}]`, "", ""},
+		{"text + tool_use keeps only text", "assistant",
+			`[{"type":"text","text":"doing it"},{"type":"tool_use","name":"Bash"}]`, "assistant", "doing it"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			role, text := extractTurnText(c.role, json.RawMessage(c.content))
+			if role != c.wantRole || text != c.wantText {
+				t.Fatalf("got (%q,%q), want (%q,%q)", role, text, c.wantRole, c.wantText)
+			}
+		})
+	}
+}
+
+func TestChunkTurns(t *testing.T) {
+	turns := []capturedTurn{
+		{Role: "user", Text: strings.Repeat("a", 40)},
+		{Role: "assistant", Text: strings.Repeat("b", 40)},
+		{Role: "user", Text: strings.Repeat("c", 40)},
+	}
+	// maxBytes small enough that each turn (~56 incl. overhead) is its own chunk.
+	chunks := chunkTurns(turns, 60)
+	if len(chunks) != 3 {
+		t.Fatalf("small maxBytes: got %d chunks, want 3", len(chunks))
+	}
+	// maxBytes large enough to hold all three.
+	if got := len(chunkTurns(turns, 10_000)); got != 1 {
+		t.Fatalf("large maxBytes: got %d chunks, want 1", got)
+	}
+	// an over-large single turn still becomes its own (one) chunk.
+	big := []capturedTurn{{Role: "user", Text: strings.Repeat("z", 5000)}}
+	if got := len(chunkTurns(big, 100)); got != 1 {
+		t.Fatalf("oversize turn: got %d chunks, want 1", got)
+	}
+	// no turns → no chunks.
+	if got := len(chunkTurns(nil, 100)); got != 0 {
+		t.Fatalf("empty: got %d chunks, want 0", got)
+	}
+	// total turns are preserved across chunking.
+	total := 0
+	for _, ch := range chunkTurns(turns, 60) {
+		total += len(ch)
+	}
+	if total != len(turns) {
+		t.Fatalf("turns lost in chunking: got %d, want %d", total, len(turns))
+	}
+}
+
+func TestLoadTranscriptTurns(t *testing.T) {
+	lines := []string{
+		`{"type":"user","message":{"role":"user","content":"first user turn"}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"assistant reply"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"x","content":"lots of output"}]}}`,
+		`{"type":"summary","summary":"a meta row with no message"}`,
+		``, // blank line
+		`not valid json`,
+		`{"type":"user","message":{"role":"user","content":"second user turn"}}`,
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "transcript.jsonl")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	turns, err := loadTranscriptTurns(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Expect exactly the 3 real conversation turns; tool-only, meta, blank and
+	// invalid rows are all dropped.
+	want := []capturedTurn{
+		{Role: "user", Text: "first user turn"},
+		{Role: "assistant", Text: "assistant reply"},
+		{Role: "user", Text: "second user turn"},
+	}
+	if len(turns) != len(want) {
+		t.Fatalf("got %d turns, want %d: %+v", len(turns), len(want), turns)
+	}
+	for i, w := range want {
+		if turns[i] != w {
+			t.Fatalf("turn %d: got %+v, want %+v", i, turns[i], w)
+		}
+	}
+}
+
+func TestHighWaterKeyedByTranscriptPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SAGE_HOME", home)
+
+	// distinct transcript paths get distinct state
+	writePreCompactHighWater("/a/session-1.jsonl", 5)
+	writePreCompactHighWater("/b/session-2.jsonl", 9)
+	if got := readPreCompactHighWater("/a/session-1.jsonl"); got != 5 {
+		t.Fatalf("path A: got %d, want 5", got)
+	}
+	if got := readPreCompactHighWater("/b/session-2.jsonl"); got != 9 {
+		t.Fatalf("path B: got %d, want 9", got)
+	}
+	// unknown path starts at zero
+	if got := readPreCompactHighWater("/never/seen.jsonl"); got != 0 {
+		t.Fatalf("unknown path: got %d, want 0", got)
+	}
+}

@@ -66,6 +66,12 @@ func runHook() error {
 			return fmt.Errorf("hook stop-check: unexpected arguments")
 		}
 		return runHookStopCheck()
+	case "pre-compact":
+		if len(args) > 1 && (args[1] == "--help" || args[1] == "-h") {
+			printHookUsage()
+			return nil
+		}
+		return runHookPreCompact()
 	default:
 		return fmt.Errorf("hook: unknown subcommand %q", args[0])
 	}
@@ -76,6 +82,7 @@ func printHookUsage() {
 	fmt.Fprintln(os.Stdout, "       sage-gui hook session-end")
 	fmt.Fprintln(os.Stdout, "       sage-gui hook inbox-status")
 	fmt.Fprintln(os.Stdout, "       sage-gui hook stop-check")
+	fmt.Fprintln(os.Stdout, "       sage-gui hook pre-compact")
 }
 
 func hookSessionStartDomain(args []string) (string, error) {

@@ -188,3 +188,44 @@ func TestKnobsClampToSafeCeilings(t *testing.T) {
 		t.Fatalf("default max-turns: got %d, want %d", got, preCompactDefaultMaxTurns)
 	}
 }
+
+func TestValidateTranscriptPath(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SAGE_NEVERCOMPACT_TRANSCRIPT_ROOT", dir)
+
+	// a regular file under the trusted root is accepted, returned as its abs path
+	good := filepath.Join(dir, "transcript.jsonl")
+	if err := os.WriteFile(good, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := validateTranscriptPath(good); err != nil || got != good {
+		t.Fatalf("valid path: got (%q, %v), want (%q, nil)", got, err, good)
+	}
+
+	// empty path
+	if _, err := validateTranscriptPath(""); err == nil {
+		t.Fatal("empty path must be rejected")
+	}
+
+	// a path outside the trusted root (a different temp dir)
+	outside := filepath.Join(t.TempDir(), "elsewhere.jsonl")
+	if err := os.WriteFile(outside, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateTranscriptPath(outside); err == nil {
+		t.Fatal("path outside the trusted root must be rejected")
+	}
+
+	// a directory is not a regular file
+	if _, err := validateTranscriptPath(dir); err == nil {
+		t.Fatal("a directory must be rejected")
+	}
+
+	// a symlink is refused (skip where the platform can't create one)
+	link := filepath.Join(dir, "link.jsonl")
+	if os.Symlink(good, link) == nil {
+		if _, err := validateTranscriptPath(link); err == nil {
+			t.Fatal("a symlink transcript must be rejected")
+		}
+	}
+}

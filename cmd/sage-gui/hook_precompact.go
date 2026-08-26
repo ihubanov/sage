@@ -35,14 +35,15 @@ import (
 //   - Soft-fail everywhere: a capture failure must never block compaction.
 
 const (
-	preCompactMaxContentBytes = 200_000                 // per record, well under the 1 MiB store cap
-	preCompactDefaultChunkB   = 6_000                   // ~1.5k tokens/chunk; embedder-friendly
-	preCompactMaxChunkB       = 60_000                  // hard ceiling on the env-tunable chunk size
-	preCompactDefaultMaxTurns = 200                     // safe per-invocation default, bounded to the hook budget
-	preCompactMaxTurnsCeiling = 2_000                   // hard ceiling on the env-tunable turn cap
-	preCompactBudget          = 3500 * time.Millisecond // stay well under the 5s installed-hook budget
-	preCompactMaxTotalBytes   = 1 << 20                 // total verbatim bytes submitted per invocation
-	preCompactDefaultClass    = 2                       // Confidential — own org + explicit cross-org grants (never Public)
+	preCompactMaxContentBytes    = 200_000                 // per record, well under the 1 MiB store cap
+	preCompactDefaultChunkB      = 6_000                   // ~1.5k tokens/chunk; embedder-friendly
+	preCompactMaxChunkB          = 60_000                  // hard ceiling on the env-tunable chunk size
+	preCompactDefaultMaxTurns    = 200                     // safe per-invocation default, bounded to the hook budget
+	preCompactMaxTurnsCeiling    = 2_000                   // hard ceiling on the env-tunable turn cap
+	preCompactBudget             = 3500 * time.Millisecond // stay well under the 5s installed-hook budget
+	preCompactMaxTotalBytes      = 1 << 20                 // total verbatim bytes submitted per invocation
+	preCompactDefaultClass       = 2                       // Confidential — own org + explicit cross-org grants (never Public)
+	preCompactMaxTranscriptBytes = 256 << 20               // hard cap on the transcript file size we will read
 )
 
 type preCompactInput struct {
@@ -76,8 +77,9 @@ func runHookPreCompact() error {
 	if raw, _ := io.ReadAll(io.LimitReader(os.Stdin, 256<<10)); len(bytes.TrimSpace(raw)) > 0 {
 		_ = json.Unmarshal(raw, &in)
 	}
-	if in.TranscriptPath == "" {
-		fmt.Fprintln(os.Stderr, "pre-compact: no transcript_path in hook payload; nothing to capture")
+	transcriptPath, err := validateTranscriptPath(in.TranscriptPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pre-compact: transcript rejected: %v\n", err)
 		return nil
 	}
 	sessionID := strings.TrimSpace(in.SessionID)
@@ -85,7 +87,7 @@ func runHookPreCompact() error {
 		sessionID = "unknown-session"
 	}
 
-	turns, err := loadTranscriptTurns(in.TranscriptPath)
+	turns, err := loadTranscriptTurns(transcriptPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pre-compact: read transcript: %v\n", err)
 		return nil
@@ -95,7 +97,7 @@ func runHookPreCompact() error {
 	// stable across --resume/--continue (so no re-capture), while a fork gets a
 	// new file (so it captures cleanly). session_id can mint fresh on resume, so
 	// keying on it would re-capture the whole conversation.
-	hw := readPreCompactHighWater(in.TranscriptPath)
+	hw := readPreCompactHighWater(transcriptPath)
 	if hw > len(turns) {
 		// Transcript shrank/rotated below the mark. Recapturing from 0 can create
 		// duplicate governed records — crash-safe, lifecycle-reconciled idempotency
@@ -143,7 +145,7 @@ func runHookPreCompact() error {
 		chunksWritten++
 	}
 
-	writePreCompactHighWater(in.TranscriptPath, hw+turnsWritten)
+	writePreCompactHighWater(transcriptPath, hw+turnsWritten)
 	msg := fmt.Sprintf("pre-compact: captured %d turns in %d chunks (of %d pending) → domain %s, thread %s",
 		turnsWritten, chunksWritten, len(pending), domain, sessionID)
 	if stopped != "" && turnsWritten < len(pending) {
@@ -338,6 +340,58 @@ func chunkByteLen(chunk []capturedTurn) int {
 		n += len(t.Text) + len(t.Role) + 24
 	}
 	return n
+}
+
+// validateTranscriptPath refuses anything but a regular, current-user-owned file
+// of bounded size under a trusted root. A malformed or hostile hook payload must
+// not be able to point verbatim capture at a symlink, a device, or a file outside
+// the user's own space. Returns the cleaned absolute path on success.
+func validateTranscriptPath(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("empty transcript path")
+	}
+	abs, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return "", fmt.Errorf("resolve path: %w", err)
+	}
+	if root, rootErr := preCompactTranscriptRoot(); rootErr == nil && root != "" {
+		rel, relErr := filepath.Rel(root, abs)
+		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			return "", fmt.Errorf("transcript %q is outside the trusted root %q", abs, root)
+		}
+	}
+	// Lstat does NOT follow a symlink, so a symlinked transcript is caught here.
+	fi, err := os.Lstat(abs)
+	if err != nil {
+		return "", fmt.Errorf("stat transcript: %w", err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("transcript is a symlink; refusing")
+	}
+	if !fi.Mode().IsRegular() {
+		return "", fmt.Errorf("transcript is not a regular file")
+	}
+	if fi.Size() > preCompactMaxTranscriptBytes {
+		return "", fmt.Errorf("transcript is %d bytes, over the %d cap; refusing", fi.Size(), int64(preCompactMaxTranscriptBytes))
+	}
+	if err := fileOwnedByCurrentUser(fi); err != nil {
+		return "", err
+	}
+	return abs, nil
+}
+
+// preCompactTranscriptRoot is the directory the transcript must live under.
+// Defaults to the user's home directory (Claude/Codex transcripts live under it);
+// SAGE_NEVERCOMPACT_TRANSCRIPT_ROOT sets a stricter root.
+func preCompactTranscriptRoot() (string, error) {
+	if r := strings.TrimSpace(os.Getenv("SAGE_NEVERCOMPACT_TRANSCRIPT_ROOT")); r != "" {
+		return filepath.Clean(r), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(home), nil
 }
 
 func preCompactMaxTurns() int {

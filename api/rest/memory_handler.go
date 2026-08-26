@@ -3807,6 +3807,121 @@ func (s *Server) handleLinkMemories(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// maxLinkReadBatch bounds the per-id authorization work of a single link read.
+const maxLinkReadBatch = 256
+
+// handleGetLinksAmong handles POST /v1/memory/links — a batch, read-only lookup of
+// typed links among a set of memory IDs. It returns only links whose BOTH endpoints
+// the caller may read: the request IDs are first filtered to the caller-readable
+// subset, then GetLinksAmong (which requires both endpoints in the input set) can
+// only return links between two readable memories. A link therefore never discloses
+// the existence of a memory the caller cannot see.
+func (s *Server) handleGetLinksAmong(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		MemoryIDs []string `json:"memory_ids"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeProblem(w, http.StatusBadRequest, "Invalid request body", err.Error())
+		return
+	}
+	if len(req.MemoryIDs) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"links": []any{}})
+		return
+	}
+	if len(req.MemoryIDs) > maxLinkReadBatch {
+		req.MemoryIDs = req.MemoryIDs[:maxLinkReadBatch]
+	}
+
+	credentialID := middleware.ContextAgentID(r.Context())
+	if credentialID == "" || s.agentStore == nil || s.badgerStore == nil {
+		writeProblem(w, http.StatusForbidden, "Active agent required", "A registered active agent identity is required.")
+		return
+	}
+	agentID := credentialID
+	if s.isPostV23ForNextTx() {
+		var policyErr error
+		agentID, policyErr = appV23PolicyPrincipal(s.badgerStore, credentialID)
+		if policyErr != nil {
+			writeProblem(w, http.StatusServiceUnavailable, "Authorization unavailable", "Current Root policy state could not be resolved.")
+			return
+		}
+	}
+	agent, err := s.agentStore.GetAgent(r.Context(), agentID)
+	onChainAgent, onChainErr := s.badgerStore.GetRegisteredAgent(agentID)
+	if err != nil || agent == nil || agent.Status != "active" || agent.RemovedAt != nil ||
+		onChainErr != nil || onChainAgent == nil {
+		writeProblem(w, http.StatusForbidden, "Active agent required", "A registered active agent identity is required.")
+		return
+	}
+
+	allowedSubmitters, seeAll := s.resolveVisibleAgents(credentialID)
+	isAdmin := onChainAgent.Role == "admin"
+
+	readable := make([]string, 0, len(req.MemoryIDs))
+	for _, id := range req.MemoryIDs {
+		rec, getErr := s.store.GetMemory(r.Context(), id)
+		if getErr != nil || rec == nil {
+			continue
+		}
+		if !seeAll && !containsAgentID(allowedSubmitters, rec.SubmittingAgent) {
+			continue
+		}
+		ok, authErr := s.linkReadRecordDisclosable(r.Context(), credentialID, isAdmin, rec)
+		if authErr != nil {
+			writeProblem(w, http.StatusServiceUnavailable, "Authorization unavailable",
+				"Memory authorization could not be verified; retry later.")
+			return
+		}
+		if ok {
+			readable = append(readable, id)
+		}
+	}
+
+	links, err := s.store.GetLinksAmong(r.Context(), readable)
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, "Link read failed", err.Error())
+		return
+	}
+	out := make([]map[string]string, 0, len(links))
+	for _, l := range links {
+		out = append(out, map[string]string{
+			"source_id": l.SourceID,
+			"target_id": l.TargetID,
+			"link_type": l.LinkType,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"links": out})
+}
+
+// linkReadRecordDisclosable mirrors the per-record READ gate in handleLinkMemories:
+// domain read access, then app-v23 record disclosure when post-v23, else the classic
+// classification check with the admin bypass. Any error is surfaced (not treated as
+// allow); a plain denial returns (false, nil).
+func (s *Server) linkReadRecordDisclosable(ctx context.Context, credentialID string, isAdmin bool, rec *memory.MemoryRecord) (bool, error) {
+	if accessErr := s.checkDomainAccess(ctx, credentialID, rec.DomainTag, "read"); accessErr != nil {
+		return false, nil
+	}
+	if s.isPostV23ForNextTx() {
+		disclosure, disclosureErr := s.evaluateAppV23RecordDisclosure(credentialID, rec, time.Now())
+		if disclosureErr != nil {
+			return false, disclosureErr
+		}
+		return disclosure.Allowed, nil
+	}
+	if isAdmin {
+		return true, nil
+	}
+	classification, classErr := s.badgerStore.GetMemoryClassification(rec.MemoryID)
+	if classErr != nil {
+		return false, classErr
+	}
+	allowed, accessErr := s.hasMemoryReadAccess(rec.DomainTag, credentialID, classification, time.Now())
+	if accessErr != nil {
+		return false, accessErr
+	}
+	return allowed, nil
+}
+
 func containsAgentID(agentIDs []string, target string) bool {
 	for _, agentID := range agentIDs {
 		if agentID == target {

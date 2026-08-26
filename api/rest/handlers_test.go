@@ -73,6 +73,9 @@ type mockMemoryStore struct {
 	// task on a specific readback attempt without changing production timing.
 	getOpenTasksHook func()
 	getOpenTasksErr  error
+	// getLinksAmongHook lets link-read tests inject links and capture the ids the
+	// handler passed, proving unreadable ids were filtered before the store call.
+	getLinksAmongHook func([]string) ([]memory.MemoryLink, error)
 }
 
 func newMockMemoryStore() *mockMemoryStore {
@@ -395,7 +398,10 @@ func (m *mockMemoryStore) GetCorroborationCounts(_ context.Context, ids []string
 	return out, nil
 }
 
-func (m *mockMemoryStore) GetLinksAmong(_ context.Context, _ []string) ([]memory.MemoryLink, error) {
+func (m *mockMemoryStore) GetLinksAmong(_ context.Context, ids []string) ([]memory.MemoryLink, error) {
+	if m.getLinksAmongHook != nil {
+		return m.getLinksAmongHook(ids)
+	}
 	return nil, nil
 }
 

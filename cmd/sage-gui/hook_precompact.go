@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // PreCompact capture — the recall-backed-compaction write path.
@@ -34,9 +35,14 @@ import (
 //   - Soft-fail everywhere: a capture failure must never block compaction.
 
 const (
-	preCompactMaxContentBytes = 200_000 // per record, well under the 1 MiB store cap
-	preCompactDefaultChunkB   = 6_000   // ~1.5k tokens/chunk; embedder-friendly
-	preCompactDefaultMaxTurns = 2_000   // per-invocation ceiling; rest wait for next PreCompact
+	preCompactMaxContentBytes = 200_000                 // per record, well under the 1 MiB store cap
+	preCompactDefaultChunkB   = 6_000                   // ~1.5k tokens/chunk; embedder-friendly
+	preCompactMaxChunkB       = 60_000                  // hard ceiling on the env-tunable chunk size
+	preCompactDefaultMaxTurns = 200                     // safe per-invocation default, bounded to the hook budget
+	preCompactMaxTurnsCeiling = 2_000                   // hard ceiling on the env-tunable turn cap
+	preCompactBudget          = 3500 * time.Millisecond // stay well under the 5s installed-hook budget
+	preCompactMaxTotalBytes   = 1 << 20                 // total verbatim bytes submitted per invocation
+	preCompactDefaultClass    = 2                       // Confidential — own org + explicit cross-org grants (never Public)
 )
 
 type preCompactInput struct {
@@ -60,7 +66,9 @@ type capturedTurn struct {
 // runHookPreCompact captures the evicted conversation into SAGE. Always returns
 // nil (soft-fail): compaction proceeds regardless of any error here.
 func runHookPreCompact() error {
-	if strings.TrimSpace(os.Getenv("SAGE_NEVERCOMPACT")) == "0" {
+	// Durable verbatim transcript retention requires EXPLICIT consent. Default OFF
+	// (opt-in): capture runs only when SAGE_NEVERCOMPACT is explicitly enabled.
+	if !neverCompactEnabled() {
 		return nil
 	}
 
@@ -89,7 +97,10 @@ func runHookPreCompact() error {
 	// keying on it would re-capture the whole conversation.
 	hw := readPreCompactHighWater(in.TranscriptPath)
 	if hw > len(turns) {
-		hw = 0 // transcript truncated/rotated — recapture (server dedups identical content_hash)
+		// Transcript shrank/rotated below the mark. Recapturing from 0 can create
+		// duplicate governed records — crash-safe, lifecycle-reconciled idempotency
+		// is a required follow-up before this is mergeable (see RFC #275).
+		hw = 0
 	}
 	pending := turns[hw:]
 	if len(pending) == 0 {
@@ -106,19 +117,39 @@ func runHookPreCompact() error {
 	}
 
 	chunks := chunkTurns(pending, preCompactChunkBytes())
-	turnsWritten, chunksWritten := 0, 0
+	// Bound the whole capture to a wall-clock budget and a total-byte cap so it can
+	// never blow the installed hook's 5s window or submit an unbounded number of
+	// records. Whatever doesn't fit is deferred to the next PreCompact.
+	deadline := time.Now().Add(preCompactBudget)
+	turnsWritten, chunksWritten, bytesWritten := 0, 0, 0
 	baseSeq := hw
+	stopped := ""
 	for _, ch := range chunks {
+		if time.Now().After(deadline) {
+			stopped = "time budget"
+			break
+		}
+		chBytes := chunkByteLen(ch)
+		if bytesWritten > 0 && bytesWritten+chBytes > preCompactMaxTotalBytes {
+			stopped = "byte budget"
+			break
+		}
 		if !submitCapturedChunk(domain, sessionID, baseSeq+turnsWritten, ch) {
-			break // stop at first failure; high-water advances only over written chunks
+			stopped = "submit error"
+			break // high-water advances only over written chunks
 		}
 		turnsWritten += len(ch)
+		bytesWritten += chBytes
 		chunksWritten++
 	}
 
 	writePreCompactHighWater(in.TranscriptPath, hw+turnsWritten)
-	fmt.Fprintf(os.Stderr, "pre-compact: captured %d turns in %d chunks (of %d pending) → domain %s, thread %s\n",
+	msg := fmt.Sprintf("pre-compact: captured %d turns in %d chunks (of %d pending) → domain %s, thread %s",
 		turnsWritten, chunksWritten, len(pending), domain, sessionID)
+	if stopped != "" && turnsWritten < len(pending) {
+		msg += fmt.Sprintf("; stopped on %s, %d turns deferred to next PreCompact", stopped, len(pending)-turnsWritten)
+	}
+	fmt.Fprintln(os.Stderr, msg)
 	return nil
 }
 
@@ -227,7 +258,11 @@ func submitCapturedChunk(domain, sessionID string, startSeq int, chunk []capture
 		"memory_type":      "observation",
 		"domain_tag":       domain,
 		"confidence_score": 0.8,
-		"tags":             []string{"nevercompact", "thread:" + sessionID},
+		// Verbatim transcript text can contain credentials, private instructions,
+		// and tool-derived secrets, so it is never stored Public (0). Defaults to
+		// Confidential; operator-tunable, clamped to [Internal..TopSecret].
+		"classification": neverCompactClassification(),
+		"tags":           []string{"nevercompact", "thread:" + sessionID},
 	})
 	if _, err := hookSignedRequest(http.MethodPost, "/v1/memory/submit", body); err != nil {
 		fmt.Fprintf(os.Stderr, "pre-compact: submit chunk @seq %d: %v\n", startSeq, err)
@@ -253,21 +288,69 @@ func preCompactHomeDomain() (string, error) {
 }
 
 func preCompactChunkBytes() int {
+	n := preCompactDefaultChunkB
 	if v := strings.TrimSpace(os.Getenv("SAGE_NEVERCOMPACT_CHUNK_BYTES")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
+		if p, err := strconv.Atoi(v); err == nil && p > 0 {
+			n = p
 		}
 	}
-	return preCompactDefaultChunkB
+	if n > preCompactMaxChunkB {
+		n = preCompactMaxChunkB
+	}
+	return n
+}
+
+// neverCompactEnabled reports whether the operator has explicitly opted in to
+// durable verbatim transcript capture. Default OFF: capturing a verbatim
+// conversation to durable governed storage requires explicit consent.
+func neverCompactEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("SAGE_NEVERCOMPACT"))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// neverCompactClassification returns the clearance level captured chunks are
+// stored at. Verbatim transcript text can contain secrets, so it is never
+// Public (0); defaults to Confidential (2), operator-tunable within
+// [Internal(1)..TopSecret(4)].
+func neverCompactClassification() int {
+	c := preCompactDefaultClass
+	if v := strings.TrimSpace(os.Getenv("SAGE_NEVERCOMPACT_CLASSIFICATION")); v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
+			c = p
+		}
+	}
+	if c < 1 {
+		c = 1
+	}
+	if c > 4 {
+		c = 4
+	}
+	return c
+}
+
+// chunkByteLen estimates the submitted size of a chunk, for the total-byte budget.
+func chunkByteLen(chunk []capturedTurn) int {
+	n := 48 // header overhead
+	for _, t := range chunk {
+		n += len(t.Text) + len(t.Role) + 24
+	}
+	return n
 }
 
 func preCompactMaxTurns() int {
+	n := preCompactDefaultMaxTurns
 	if v := strings.TrimSpace(os.Getenv("SAGE_NEVERCOMPACT_MAX_TURNS")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
+		if p, err := strconv.Atoi(v); err == nil && p > 0 {
+			n = p
 		}
 	}
-	return preCompactDefaultMaxTurns
+	if n > preCompactMaxTurnsCeiling {
+		n = preCompactMaxTurnsCeiling
+	}
+	return n
 }
 
 // preCompactHighWaterPath derives a stable state-file path from the transcript

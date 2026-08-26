@@ -128,3 +128,63 @@ func TestHighWaterKeyedByTranscriptPath(t *testing.T) {
 		t.Fatalf("unknown path: got %d, want 0", got)
 	}
 }
+
+func TestNeverCompactConsentDefaultOff(t *testing.T) {
+	// unset → OFF (durable verbatim capture is opt-in)
+	t.Setenv("SAGE_NEVERCOMPACT", "")
+	if neverCompactEnabled() {
+		t.Fatal("unset SAGE_NEVERCOMPACT must be OFF (opt-in consent)")
+	}
+	for _, off := range []string{"0", "no", "off", "false", "garbage"} {
+		t.Setenv("SAGE_NEVERCOMPACT", off)
+		if neverCompactEnabled() {
+			t.Fatalf("%q must be OFF", off)
+		}
+	}
+	for _, on := range []string{"1", "true", "TRUE", "yes", "on", "On"} {
+		t.Setenv("SAGE_NEVERCOMPACT", on)
+		if !neverCompactEnabled() {
+			t.Fatalf("%q must be ON", on)
+		}
+	}
+}
+
+func TestNeverCompactClassificationNeverPublic(t *testing.T) {
+	t.Setenv("SAGE_NEVERCOMPACT_CLASSIFICATION", "")
+	if got := neverCompactClassification(); got != 2 {
+		t.Fatalf("default classification: got %d, want 2 (Confidential)", got)
+	}
+	// explicit Public (0) or negative must clamp UP to Internal (1), never Public
+	for _, v := range []string{"0", "-1"} {
+		t.Setenv("SAGE_NEVERCOMPACT_CLASSIFICATION", v)
+		if got := neverCompactClassification(); got != 1 {
+			t.Fatalf("%q must clamp to 1 (never Public), got %d", v, got)
+		}
+	}
+	// above TopSecret clamps to 4
+	t.Setenv("SAGE_NEVERCOMPACT_CLASSIFICATION", "9")
+	if got := neverCompactClassification(); got != 4 {
+		t.Fatalf("9 must clamp to 4, got %d", got)
+	}
+	// a valid mid level passes through
+	t.Setenv("SAGE_NEVERCOMPACT_CLASSIFICATION", "3")
+	if got := neverCompactClassification(); got != 3 {
+		t.Fatalf("3 must pass through, got %d", got)
+	}
+}
+
+func TestKnobsClampToSafeCeilings(t *testing.T) {
+	t.Setenv("SAGE_NEVERCOMPACT_MAX_TURNS", "999999")
+	if got := preCompactMaxTurns(); got != preCompactMaxTurnsCeiling {
+		t.Fatalf("max-turns override must clamp to %d, got %d", preCompactMaxTurnsCeiling, got)
+	}
+	t.Setenv("SAGE_NEVERCOMPACT_CHUNK_BYTES", "999999")
+	if got := preCompactChunkBytes(); got != preCompactMaxChunkB {
+		t.Fatalf("chunk-bytes override must clamp to %d, got %d", preCompactMaxChunkB, got)
+	}
+	// unset → safe defaults
+	t.Setenv("SAGE_NEVERCOMPACT_MAX_TURNS", "")
+	if got := preCompactMaxTurns(); got != preCompactDefaultMaxTurns {
+		t.Fatalf("default max-turns: got %d, want %d", got, preCompactDefaultMaxTurns)
+	}
+}

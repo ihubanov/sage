@@ -484,6 +484,16 @@ var postgresTaskAssignmentSchema = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_agent_notifications_inbox ON agent_notifications(agent_id, state, created_at)`,
 	`CREATE INDEX IF NOT EXISTS idx_agent_notifications_task ON agent_notifications(task_id, assignment_version, state)`,
+	`CREATE TABLE IF NOT EXISTS agent_inbox_activity (
+		agent_id TEXT PRIMARY KEY,
+		seq BIGINT NOT NULL CHECK(seq >= 0)
+	)`,
+	`CREATE TABLE IF NOT EXISTS inbox_activity_meta (
+		singleton SMALLINT PRIMARY KEY CHECK(singleton=1),
+		epoch TEXT NOT NULL CHECK(length(epoch)=32)
+	)`,
+	`INSERT INTO inbox_activity_meta(singleton,epoch)
+		VALUES(1,md5(random()::text || clock_timestamp()::text)) ON CONFLICT(singleton) DO NOTHING`,
 }
 
 // ensureMemoriesSchema backfills memory columns on legacy Postgres deployments
@@ -870,7 +880,7 @@ func (s *PostgresStore) GetMemory(ctx context.Context, memoryID string) (*memory
 		&st, &parentHash, &r.CreatedAt, &r.CommittedAt, &r.DeprecatedAt, &taskStatus, &r.Assignee)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return nil, fmt.Errorf("memory not found: %s", memoryID)
+			return nil, fmt.Errorf("%w: %s", ErrMemoryNotFound, memoryID)
 		}
 		return nil, fmt.Errorf("get memory: %w", err)
 	}
@@ -2546,6 +2556,11 @@ func (s *PostgresStore) AssignTaskAndNotify(ctx context.Context, memoryID, assig
 		}
 		notificationCreated = result.RowsAffected() == 1
 	}
+	if notificationCreated {
+		if _, err := s.AdvanceInboxActivity(ctx, assignee); err != nil {
+			return nil, fmt.Errorf("advance task inbox activity: %w", err)
+		}
+	}
 	return &TaskAssignmentResult{
 		Changed: changed, Assignee: assignee, AssignmentVersion: version,
 		TaskStatus: taskStatus, NotificationCreated: notificationCreated,
@@ -2704,8 +2719,11 @@ var _ TaskAssignmentStore = (*PostgresStore)(nil)
 
 // LinkMemories creates a link between two memories.
 func (s *PostgresStore) LinkMemories(ctx context.Context, sourceID, targetID, linkType string) error {
+	// Re-linking an existing pair UPDATES its type rather than silently dropping the
+	// new type (see SQLiteStore.LinkMemories). Idempotent, last-write-wins upsert.
 	_, err := s.db.Exec(ctx,
-		`INSERT INTO memory_links (source_id, target_id, link_type) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+		`INSERT INTO memory_links (source_id, target_id, link_type) VALUES ($1, $2, $3)
+		 ON CONFLICT (source_id, target_id) DO UPDATE SET link_type = excluded.link_type`,
 		sourceID, targetID, linkType)
 	if err != nil {
 		return fmt.Errorf("link memories: %w", err)

@@ -33,7 +33,7 @@ import (
 //
 //	full      — default; full automation (sage_inception, sage_turn nudges)
 //	bookend   — only sage_reflect reminders; no per-turn nudges
-//	on-demand — silent; user drives SAGE manually
+//	on-demand — memory automation is silent; coordination polling remains on
 const sageSessionStartTemplate = `#!/bin/bash
 # SAGE SessionStart hook — pre-fetch recent committed memories from the local
 # SAGE node and emit them as context. Falls back to a soft nudge if the node
@@ -87,18 +87,13 @@ const sagePreCompactScript = `#!/bin/bash
 # SAGE PreCompact hook — fires right before Claude Code compacts the
 # conversation. Compaction discards turn-level detail; this is the last
 # chance to crystallise what was learned this session.
-SAGE_HOME="${SAGE_HOME:-$HOME/.sage}"
-MODE=$(cat "$SAGE_HOME/memory_mode" 2>/dev/null || echo "full")
-if [ "$MODE" = "on-demand" ]; then
-    exit 0
-fi
-echo "MANDATORY before compaction: Call sage_reflect with a concise summary of (dos, don'ts) from this session, then sage_remember for any durable facts you want to keep. Once the context compacts, the per-turn detail is gone — only what you've committed to SAGE will survive."
-`
-
-const sageUserPromptScript = `#!/bin/bash
-# SAGE UserPromptSubmit hook — fires when the user submits a new prompt.
-# Always surface payload-free coordination in automated modes. Memory cadence
-# remains mode-specific, but bookend must not hide newly delivered work.
+#
+# If recall-backed compaction is enabled (run: sage-gui nevercompact enable, or
+# set SAGE_NEVERCOMPACT=1 for headless/centrally-managed hosts), the evicted turns
+# are ALSO captured verbatim as governed memories so a later session can restore
+# them. Capture is DEFAULT-OFF, reads the PreCompact payload from stdin, is fully
+# silent, soft-fails, and never blocks compaction; the reflection nudge below
+# always fires regardless.
 SAGE_HOME="${SAGE_HOME:-$HOME/.sage}"
 MODE=$(cat "$SAGE_HOME/memory_mode" 2>/dev/null || echo "full")
 SAGE_GUI_BIN="${SAGE_GUI_BIN:-__SAGE_GUI_BIN__}"
@@ -109,11 +104,27 @@ if [ "$MODE" = "on-demand" ]; then
     exit 0
 fi
 if [ -x "$SAGE_GUI_BIN" ]; then
+    "$SAGE_GUI_BIN" hook pre-compact >/dev/null 2>&1 || true
+fi
+echo "MANDATORY before compaction: Call sage_reflect with a concise summary of (dos, don'ts) from this session, then sage_remember for any durable facts you want to keep. Once the context compacts, the per-turn detail is gone — only what you've committed to SAGE will survive."
+`
+
+const sageUserPromptScript = `#!/bin/bash
+# SAGE UserPromptSubmit hook — fires when the user submits a new prompt.
+# Always surface payload-free coordination. Memory cadence remains mode-specific,
+# but neither bookend nor on-demand may hide newly delivered work.
+SAGE_HOME="${SAGE_HOME:-$HOME/.sage}"
+MODE=$(cat "$SAGE_HOME/memory_mode" 2>/dev/null || echo "full")
+SAGE_GUI_BIN="${SAGE_GUI_BIN:-__SAGE_GUI_BIN__}"
+SAGE_PROVIDER="__SAGE_PROVIDER__"
+SAGE_IDENTITY_PATH="__SAGE_IDENTITY_PATH__"
+export SAGE_PROVIDER SAGE_IDENTITY_PATH
+if [ -x "$SAGE_GUI_BIN" ]; then
     if ! "$SAGE_GUI_BIN" hook inbox-status 2>/dev/null; then
         echo "SAGE inbox check unavailable — do not treat this as zero messages. Call sage_inbox directly."
     fi
 fi
-if [ "$MODE" = "bookend" ]; then
+if [ "$MODE" = "bookend" ] || [ "$MODE" = "on-demand" ]; then
     exit 0
 fi
 echo "Reminder: call sage_turn early in your response with the topic + an observation of what just happened. Memories you don't store don't survive."

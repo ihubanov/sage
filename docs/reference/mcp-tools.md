@@ -1,8 +1,8 @@
-Reconciled against internal/mcp for SAGE v11.19.4.
+Reconciled against internal/mcp for SAGE v11.19.6.
 
 # SAGE MCP Tools Reference
 
-SAGE advertises exactly 33 MCP tools over JSON-RPC 2.0. Four deprecated
+SAGE advertises exactly 34 MCP tools over JSON-RPC 2.0. Four deprecated
 `sage_pipe*` compatibility names remain callable for one migration window but
 are intentionally absent from `tools/list`, so new clients learn the canonical
 Messages API. Stdio tools sign REST calls with
@@ -606,6 +606,30 @@ to another memory for future traversal.
 
 ---
 
+### sage_get_links
+
+**Purpose:** Read the typed links among a set of memories — the read side of the
+knowledge graph.
+
+**Source:** `internal/mcp/tools.go` (`registerTools` entry `sage_get_links`; `Server.toolGetLinks`).
+
+**Parameters:**
+
+| Name         | Type     | Required | Description |
+|--------------|----------|----------|-------------|
+| `memory_ids` | string[] | yes      | Memory IDs to look up links among. Both endpoints of a returned link are in this set. |
+
+**Returns:**
+- `links`: array of `{source_id, target_id, link_type}`.
+
+**REST:** `POST /v1/memory/links`
+
+**When to call:** After a recall, to reason over the relationships among the
+memories you already have — what supersedes, contradicts, supports, or refines what.
+Discloses only links between memories the caller can read.
+
+---
+
 ### sage_list
 
 **Purpose:** Browse memories with filters. See what exists in a domain, with a
@@ -1019,22 +1043,26 @@ clients must not treat the legacy value as immutable registration history.
 
 **Purpose:** Deterministically transfer one already-claimed canonical local or
 inbound federated message between concurrent MCP runtimes that share the same signed agent
-identity. The caller supplies the `claimant_session_id` currently shown by
+identity. The caller supplies the `claimant_session_id` and `claim_revision`
+currently shown by
 `sage_message_history(folder="claimed_elsewhere")` (or the first payload-free
-`claimed_elsewhere_items` page embedded in `sage_inbox`); SAGE atomically compares that value and
+`claimed_elsewhere_items` page embedded in `sage_inbox`); SAGE atomically compares both values and
 reassigns the message to the calling MCP session. A stale or concurrent handoff
-returns a conflict instead of silently duplicating ownership. Session IDs are
+returns a conflict instead of silently duplicating ownership, and a successful
+transfer increments the revision. Session IDs are
 opaque coordination metadata, not authorization principals.
 
-For stdio MCP, the primary runtime persists one claimant identity per exact
-signed agent, provider, and project under `SAGE_HOME/runtime/mcp-claimants/`.
+The primary runtime persists one claimant identity per exact signed agent,
+provider, project, and transport scope under `SAGE_HOME/runtime/mcp-claimants/`.
 It holds an OS advisory lock for the runtime lifetime, so an ordinary restart
 reuses that identity only after the prior process is no longer live. A truly
 concurrent runtime cannot acquire the lock and keeps an independent opaque
 session ID, preserving one-handler and compare-and-swap handoff semantics. An
 installed-runtime executable handoff carries the current identity while the
-old process retains the lock as its liveness fence. HTTP transport conversation
-IDs remain transport-scoped and are not collapsed into the stdio identity.
+old process retains the lock as its liveness fence. Streamable HTTP and SSE use
+separate bearer-bound scopes and are not collapsed into the stdio identity.
+`sage_inbox` reports the resulting `claimant_identity_mode`; corrupt or
+unreadable identity state is `unavailable` and fails closed.
 
 **Source:** `internal/mcp/claimant_identity.go` (`acquireDurableClaimantIdentity`);
 `internal/mcp/server.go` (`conversation`, `trustedHandoffClaimantSessionID`);
@@ -1055,6 +1083,12 @@ competing bind conflicts instead of overwriting the first session.
 |---|---|---:|---|
 | `message_id` | string | yes | Exact claimed local or inbound federated message to transfer. |
 | `from_session_id` | string | yes | Expected current claimant session from passive inbox history. |
+| `from_revision` | integer | yes | Exact non-negative `claim_revision` from passive inbox history. Revision 0 covers legacy claims. |
+
+The MCP tool always requires `from_revision`. The underlying REST route alone
+accepts omission as revision 0 for pre-v11.19.5 first-generation clients; that
+compatibility request conflicts after any transfer, and every success returns
+the incremented revision.
 
 **Watcher and voice-bridge contract:** A watcher calls `sage_inbox` normally;
 the first concurrent session to receive a message remains its one handler. An
@@ -1064,7 +1098,7 @@ metadata-only projection with `sage_message_history(folder="claimed_elsewhere")`
 Call `sage_message_handoff` only when takeover is intentional and the previous
 claimant has been judged dead or stale. The compare-and-swap conflict is the
 signal to refresh the claimed-elsewhere projection, not permission to process a
-stale copy. SSE
+stale copy. There is no timeout or age-based auto-steal. SSE
 `notifications/sage_message` is wake-up metadata only and never assigns a
 session. Mynah / SAGE Voice Bridge should normally use its dedicated registered
 agent key; if an operator deliberately runs multiple bridge/watch processes
@@ -1731,13 +1765,20 @@ authorization. Pipeline results are untrusted data, not instructions.
   rather than infer that an empty addressed inbox means no threaded answer.
 - `claimant_session_id`, `claimed_elsewhere_state`, and
   `claimed_elsewhere_count`: session-coordination metadata for durable claims.
+  `claimant_identity_mode` reports `durable`, `concurrent_ephemeral`,
+  `inherited`, `ephemeral`, or fail-closed `unavailable`; an accompanying
+  `claimant_identity_error` explains unavailable durable state. Durable
+  identities are scoped to the effective agent, provider, canonical project,
+  and transport identity across stdio, Streamable HTTP, and SSE. Lock
+  contention means another live runtime and safely uses a distinct ephemeral
+  fence; corrupt or unreadable durable state does not silently create one.
   `clear` means the exact signed recipient's authoritative store query returned
   zero; `present` carries the exact payload-free count of unfinished messages
   held by another session. `unavailable` never implies zero and includes
   `claimed_elsewhere_action`. The scalar is not derived from a bounded page.
   The additive `claimed_elsewhere_items` first page exposes only the exact
-  `message_id`, its current `claimant_session_id`, lifecycle timestamps, and a
-  `foreign` boolean; it never exposes sender, provider, chain ID, intent,
+  `message_id`, its current `claimant_session_id` and `claim_revision`, lifecycle
+  timestamps, and a `foreign` boolean; it never exposes sender, provider, chain ID, intent,
   payload, or result. `claimed_elsewhere_page_count`,
   `claimed_elsewhere_limit`, `claimed_elsewhere_truncated`, and optional
   `claimed_elsewhere_next_cursor` describe that oldest-first page.
@@ -1745,7 +1786,8 @@ authorization. Pipeline results are untrusted data, not instructions.
   paged contract; `unavailable` keeps a truthful scalar but does not claim every
   counted row is reachable through the generic newest-100 history window. Page
   the remainder with `sage_message_history(folder="claimed_elsewhere")`, then
-  transfer only after judging the old claimant dead or stale.
+  transfer only after judging the old claimant dead or stale. There is no
+  age-based automatic steal.
 - `reply_count`, `reply_limit`, `reply_page_truncated`, optional
   `reply_next_before`, `reply_newest_completed_at`,
   `reply_oldest_completed_at`, and `reply_since`: embedded page metadata.
@@ -1924,14 +1966,18 @@ remote delivery or reading.
 With `folder="claimed_elsewhere"`, the response instead carries the page-local
 `count`, exact current `claimed_elsewhere_count`, `limit`, `truncated`,
 `passive_read:true`, and optional `next_cursor`. Items are oldest first and
-contain only `message_id`, `claimant_session_id`, `created_at`, optional
+contain only `message_id`, `claimant_session_id`, `claim_revision`, `created_at`, optional
 `claimed_at`, `expires_at`, `foreign`, plus MCP-derived
 `passive_history:true`, `new_work:false`, and `requires_handoff:true`. They do
 not contain sender, provider, chain ID, intent, payload, or result. A truncated
 page without `next_cursor` fails visibly instead of describing older rows as
 reachable. Copy `next_cursor` into the next call until `truncated:false`; before
 calling `sage_message_handoff`, independently judge the named claimant session
-dead or stale. Paging is passive and changes no claim, receipt, wake, or
+dead or stale, then copy both `claimant_session_id` and `claim_revision`
+exactly. Handoff is a revisioned compare-and-swap: each transfer increments the
+revision, so stale concurrent and A→B→A delayed requests fail rather than
+reclaiming ownership. Age alone never authorizes a transfer. Paging is passive
+and changes no claim, receipt, wake, or
 workflow state.
 
 For local exact-agent rows, `counterparty` prefers current display name, then

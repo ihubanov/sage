@@ -1,6 +1,6 @@
 # SAGE Roadmap
 
-**Status (2026-08):** **v11.19.4 is the current release.** It keeps the
+**Status (2026-08):** **v11.19.6 is the current release.** It keeps the
 pairwise exported-agent federation model, safe registered-name addressing and
 reply-event visibility, the three-tab Access Controls redesign, five-minute
 JOIN route discovery, complete stopped-node backup/restore/preflight tooling,
@@ -114,6 +114,17 @@ unsupported targets still stop before executable mutation.
 v11.19.4 closes the v11.19.3 validation-to-fence race: it interrogates the
 replacement binary for its actual app-version ceiling and validates governance,
 height, and AppHash under one uninterrupted runtime fence.
+v11.19.5 repairs exact-local compatibility receipts, extends durable claimant
+identity across stdio, Streamable HTTP, and SSE, and revision-fences every
+explicit claim handoff. Its separate payload-free inbox activity sequence lets
+host hooks notice fresh task assignments and replies without changing message
+wake or Stop semantics.
+v11.19.6 exposes typed memory relationships through one bounded REST projection
+and the `sage_get_links` MCP tool. It filters both endpoints through the
+caller's domain and record disclosure policy before querying the graph, and
+surfaces unavailable authorization state instead of returning a false complete
+empty graph. Personal-node upgrades remain automatic and updater-owned; manual
+stopped-node preflight is scoped to quorum or externally managed governance.
 v11.18.19 prevents Codex project-hook
 self-healing from ever targeting the user-global `~/.codex` scope and removes
 the Connectome's competing DOM/ForceGraph click paths while bounding raw access
@@ -124,6 +135,52 @@ ceiling is app-v27.
 upgrade in place across all future releases. Routine personal-node upgrades
 remain automatic; the exceptional legacy-lineage repair is deliberately an
 explicit, reviewed operator ceremony rather than a silent mutation.
+
+## v11.19.6 release
+
+`POST /v1/memory/links` accepts up to 256 memory IDs and returns only typed
+links whose two endpoints are both requested and readable by the caller. The
+new `sage_get_links` MCP tool exposes the same batched projection, allowing a
+recall result to be followed by explicit `supports`, `contradicts`,
+`supersedes`, and `refines` reasoning without N+1 reads.
+
+Domain and record-level authorization run before the link-store query, so an
+unreadable endpoint cannot leak through an edge. Malformed or unavailable
+legacy visibility policy is an explicit operational failure, never a false
+complete graph. The feature is read-only and off-consensus; app-v27 remains the
+ceiling.
+
+The personal desktop upgrade contract is explicitly one-click: SAGE performs
+the compatibility proof, recovery and stopped-state snapshots, coordinated
+shutdown, install, rollback on failure, and restart. Manual preflight remains
+an operator procedure for quorum or externally mutable governance only.
+
+## v11.19.5 release
+
+Both exact-local compatibility claim paths—`GET /v1/pipe/inbox` and explicit
+`PUT /v1/pipe/{pipe_id}/claim`—now bind the runtime claimant and create its
+session receipt in the same transaction as ownership. Durable claimant identities are scoped to
+the effective agent, provider, canonical project, and transport identity across
+stdio, Streamable HTTP, and SSE. MCP exposes `claimant_identity_mode` so a
+caller can distinguish durable ownership from concurrent-ephemeral fallback or
+a fail-closed unavailable identity.
+
+Claim ownership never expires merely with age. Passive claim projections carry
+`claim_revision`; `sage_message_handoff` requires that revision with the exact
+source session, and the store increments it on transfer so stale and A→B→A
+delayed handoffs fail visibly. For pre-v11.19.5 REST clients only, omitted
+`from_revision` means revision 0; it cannot move a claim that has ever advanced.
+
+Signed `GET /v1/inbox/activity-state` returns exactly `{version,epoch,seq}` and
+advances for fresh task-assignment and reply activity. Its opaque 32-character
+database-incarnation epoch survives restart and backup restore but changes for
+a fresh database, preventing a preserved host cursor from suppressing cues
+after reinitialization. It is deliberately
+separate from unfinished work: task/reply activity never changes the exact
+three-field v1 message-wake contract or blocks Stop, and a prompt hook cannot
+resurrect a host task that is already idle.
+
+Consensus behavior and the app-v27 ceiling are unchanged.
 
 ## v11.19.4 release
 
@@ -137,8 +194,12 @@ verification and executable mutation.
 This closes the v11.19.3 TOCTOU window where Commit could publish newer
 governance state after validation but before snapshot fencing. The snapshot was
 coherent, but its compatibility verdict could be stale. The v11.19.3-to-v11.19.4
-transition must therefore use the documented stopped-node procedure; once
-v11.19.4 is running, future live updates use the corrected proof.
+transition remains automatic for personal single-node installs because both
+releases have the same app-v27 ceiling and personal-node automation cannot
+introduce an unsupported next-app transition. The documented stopped-node
+procedure is limited to quorum or externally managed deployments where
+governance can be mutated concurrently; once v11.19.4 is running, future live
+updates use the corrected proof.
 
 Consensus behavior and the app-v27 ceiling are unchanged.
 

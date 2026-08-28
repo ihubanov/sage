@@ -1,8 +1,8 @@
-<!-- Core document reconciled through SAGE v11.19.4/app-v27, including consensus-backed Access Group authority, Root continuity, linked federated readers, and the quorum/state-sync/governance-gateway sections. -->
+<!-- Core document reconciled through SAGE v11.19.6/app-v27, including consensus-backed Access Group authority, Root continuity, linked federated readers, and the quorum/state-sync/governance-gateway sections. -->
 
 # RBAC, Organizations, and Federation
 
-Verified against SAGE v11.19.4. Legacy organization/federation sections retain
+Verified against SAGE v11.19.6. Legacy organization/federation sections retain
 their historical context; app-v23 roles, Root, Access Groups, and app-v25
 historical writer continuity are the current local-control model.
 
@@ -384,7 +384,7 @@ A `POST /v1/memory/query` request passes through these gates in order (`memory_h
 
 ### Gate 1: checkDomainAccess (DomainAccess policy)
 
-`checkDomainAccess` (`memory_handler.go:339-342`) reads the agent's `DomainAccess` JSON field (on-chain BadgerDB first, SQLite fallback):
+`checkDomainAccess` (`memory_handler.go:349-352`) reads the agent's `DomainAccess` JSON field (on-chain BadgerDB first, SQLite fallback):
 
 - `role == "admin"` → bypass all checks, full access
 - `role == "observer"` → write operations blocked
@@ -406,7 +406,7 @@ Applied when `domainAccessApproved == false` and the domain has a registered own
 - `agentID == nodeOperatorID` → `seeAll = true` (node operator bypass)
 - `role == "admin"` → `seeAll = true`
 - `visible_agents == "*"` → `seeAll = true`
-- **Any org member with clearance=4 (TOP SECRET)** → `seeAll = true` (`agentHasTopSecretClearance` check, `memory_handler.go:1074`)
+- **Any org member with clearance=4 (TOP SECRET)** → `seeAll = true` (`agentHasTopSecretClearance` check, `memory_handler.go:1160`)
 - Otherwise: agent sees memories from `[agentID] + parsed(visible_agents)` list
 
 If `seeAll == false`, `opts.SubmittingAgents` is set to the allowed list, which `QuerySimilar` uses to filter at the PostgreSQL level.

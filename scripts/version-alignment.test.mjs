@@ -6,6 +6,10 @@ const root = new URL('../', import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), 'utf8');
 const server = JSON.parse(read('server.json'));
 const version = server.version;
+const federationProjectVersion = version
+  .split('.')
+  .map((part, index) => index === 0 ? part : part.padStart(2, '0'))
+  .join('');
 
 test('release-facing version metadata stays aligned', () => {
   assert.match(
@@ -25,6 +29,7 @@ test('release-facing version metadata stays aligned', () => {
     ['sdk/python/pyproject.toml', `version = "${version}"`],
     ['sdk/python/src/sage_sdk/__init__.py', `__version__ = "${version}"`],
     ['api/openapi.yaml', `version: ${version}`],
+    ['api/openapi.yaml', 'required: [version, epoch, seq]'],
     ['desktop/sage-shell/Cargo.toml', `version = "${version}"`],
     ['desktop/sage-shell/Cargo.lock', `name = "sage-shell"\nversion = "${version}"`],
     ['desktop/sage-shell/tauri.conf.json', `"version": "${version}"`],
@@ -46,13 +51,14 @@ test('release-facing version metadata stays aligned', () => {
     ['docs/reference/mcp-tools.md', `internal/mcp for SAGE v${version}`],
     ['docs/reference/python-sdk.md', `Version:** ${version}`],
     ['docs/reference/rest-api.md', `Reconciled through SAGE v${version}`],
+    ['docs/reference/rest-api.md', 'returning exactly `{version,epoch,seq}`'],
     ['docs/reference/concepts/rbac-orgs-federation.md', `reconciled through SAGE v${version}`],
     ['docs/reference/app-v23-access-control-design.md', `SAGE v${version}`],
     ['docs/reference/upgrade-lineage-repair.md', `SAGE v${version}`],
     ['docs/ADMIN_BOOTSTRAP.md', `Reconciled through SAGE v${version}/app-v27`],
     ['docs/GETTING_STARTED.md', 'From Source (Go 1.25.13+)'],
     ['docs/GETTING_STARTED.md', `# sage-gui v${version}`],
-    ['docs/GETTING_STARTED.md', `SAGE v${version} advertises 33 MCP tools`],
+    ['docs/GETTING_STARTED.md', `SAGE v${version} advertises 34 MCP tools`],
     ['docs/ARCHITECTURE.md', 'Go 1.25.13+ ABCI application'],
     ['docs/ARCHITECTURE.md', '| Go | 1.25.13+ |'],
     ['docs/reference/concepts/signer-nonce-fence.md', `Status: v${version}.`],
@@ -60,13 +66,13 @@ test('release-facing version metadata stays aligned', () => {
     ['deploy/federation-acceptance/README.md', `# v${version} federation Docker acceptance`],
     ['docs/FEDERATION.md', `Verified against SAGE v${version} federation behavior`],
     ['docs/reference/concepts/message-reply-lifecycle.md', `SAGE v${version} code`],
-    ['docs/UPGRADING.md', `| v${version} | Replacement capability is read from the exact candidate binary`],
+    ['docs/UPGRADING.md', `| v${version} | Typed memory-link reads over REST and \`sage_get_links\``],
     ['docs/ROADMAP.md', `## v${version} release`],
     ['docs/UPGRADING.md', 'The recovery commands in this guide require SAGE v11.18.0 or later.'],
     ['docs/UPGRADING.md', '`backup --full`, `restore --from`,'],
     ['docs/UPGRADING.md', '`upgrade lineage status|doctor|verify`'],
     ['deploy/federation-acceptance/Dockerfile.node', `ARG VERSION=v${version}-acceptance`],
-    ['deploy/federation-acceptance/docker-compose.yml', 'name: sage-v111904-federation'],
+    ['deploy/federation-acceptance/docker-compose.yml', `name: sage-v${federationProjectVersion}-federation`],
     ['deploy/federation-acceptance/docker-compose.yml', `VERSION: v${version}-acceptance`],
     ['docs/reference/app-v23-access-control-design.md', '## App-v24 readiness and memory-write barrier'],
     ['docs/reference/mcp-tools.md', 'A level-2 grant is never a remedy for a hard'],
@@ -142,7 +148,7 @@ test('v11.18 user, recovery, federation, and SDK guides stay aligned', () => {
   assert.match(read('docs/FEDERATION.md'), /15 minutes/);
   assert.match(read('docs/UPGRADING.md'), /sage-gui upgrade lineage verify --json --manifest repair\.json/);
   assert.match(roadmap, /helper outside the replaceable bundle/);
-  assert.match(gettingStarted, /advertises 33 MCP tools/);
+  assert.match(gettingStarted, /advertises 34 MCP tools/);
   assert.match(gettingStarted, /Deprecated `sage_pipe\*`\s+compatibility/);
   assert.match(sdkReadme, /Compatibility pipeline/);
 });

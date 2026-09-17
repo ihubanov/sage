@@ -1459,6 +1459,7 @@ func (h *DashboardHandler) RegisterRoutes(r chi.Router) {
 
 			// Governance routes
 			h.RegisterGovernanceRoutes(r)
+			h.RegisterUpgradeRoutes(r)
 
 			// ChatGPT setup wizard — orchestrates the OpenAI tunnel-client setup
 			// from CEREBRUM so non-power-users can wire SAGE up to ChatGPT's

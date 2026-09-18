@@ -51,9 +51,10 @@ func SupportsAppVersion(version uint64) bool {
 	}
 }
 
-// supportedAppVersionList renders the allowlist for operator-facing errors, so
-// the message cannot drift from what SupportsAppVersion actually accepts.
-func supportedAppVersionList() string {
+// SupportedAppVersionList renders the allowlist for operator-facing errors, so
+// a message can never drift from what SupportsAppVersion actually accepts.
+// Exported because the boot state-sync runtime reports the same fact.
+func SupportedAppVersionList() string {
 	versions := []string{strconv.FormatUint(RequiredAppVersion, 10)}
 	for version := RequiredAppVersion + 1; version <= LatestSupportedAppVersion; version++ {
 		versions = append(versions, strconv.FormatUint(version, 10))
@@ -448,7 +449,7 @@ func validateJoinAuthorization(config JoinAuthorizationConfig, now time.Time) (*
 	if !SupportsAppVersion(config.AppVersion) {
 		return nil, fmt.Errorf(
 			"state sync join authorization requires a supported app version (%s)",
-			supportedAppVersionList(),
+			SupportedAppVersionList(),
 		)
 	}
 	if config.ExpiresAt.IsZero() || !now.Before(config.ExpiresAt) {

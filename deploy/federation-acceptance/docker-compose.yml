@@ -1,4 +1,4 @@
-name: sage-v112200-federation
+name: sage-v112201-federation
 
 services:
   relay:
@@ -27,7 +27,7 @@ services:
       context: ../..
       dockerfile: deploy/federation-acceptance/Dockerfile.node
       args:
-        VERSION: v11.22.0-acceptance
+        VERSION: v11.22.1-acceptance
         COMMIT: docker-acceptance
     environment:
       SAGE_HOME: /root/.sage

@@ -48,7 +48,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.22.0`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.22.1`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -207,6 +207,22 @@ software updates, and encryption controls. Ordinary agent identity replacement
 uses re-enrollment; historical memory authorship is preserved.
 
 ---
+
+## What's New in v11.22.1
+
+**App-v28 stays dormant in this release.** v11.22.0 shipped the public-memory commitment and the consensus-side co-commit tombstone rule as one compiled gate, with the auto-vote ceiling deliberately held at 27 until its evidence existed. That evidence is nearly complete — the four-validator determinism ladder crosses every seam to app-v28 with byte-identical AppHash, and the upgrade gate drives the whole ladder with auto-votes — but the contract's last item, a promoted node surviving state-sync and restore, currently fails: a v28 node restarted by the real-process state-sync gate comes back, serves, and then stops answering. The ceiling bump ships in the release that turns that green, so app-v27 remains the ceiling here and the deliberate path (propose plus explicit votes) is unchanged.
+
+**The Federation page now leads with your connections.** Managing a link used to mean scrolling past a status rail, the master switch, a network-name editor, a connectome for every agent, an always-open pairing wizard and only then the connections themselves, and per-agent discovery hid behind a Save button inside an expanded panel. The page opens on Your trusted SAGEs instead. Each connection row states its own discovery posture — all agents visible, N agents visible, or no agents visible — from one bounded read per link, so the row answers without expanding. The connectome and sharing groups move into collapsed Explore agents and Sharing groups sections at the bottom, and the pairing wizard appears only when there are no connections or when Connect a SAGE is used.
+
+**Agent visibility is a switch, not a form.** Every eligible agent on a connection's roster carries a Visible/Not-visible switch that saves immediately under the connection's revision-bound agreement. The switch works on the full roster, so hidden agents never vanish from the operator's list, and Show all agents / Hide all agents move the whole roster at once. The Save-then-Saved form is gone, and copy-address is demoted to a quiet secondary action on peer cards.
+
+**The SDK can set an agent's enrollment clearance.** `set_agent_access_policy(agent_id, role, profile, clearance, capabilities=0, home_domain=None)` writes the atomic app-v23 policy endpoint, and `get_access_state()` reads the consensus-authoritative snapshot back, so a script verifies the write landed instead of inferring it. This closes a gap that reads as a bug: the memory-write gate compares a submission's classification against the agent's *enrollment* clearance, not its organization or department membership clearance, so an operator who granted clearance through membership saw every classification ≥ 2 write refused while `get_profile()` still reported clearance 1.
+
+**CEREBRUM's App version panel renders on every node.** The panel (chain rung, both ceilings, the Propose button) was nested behind the governance-scope list, so it never rendered on a personal node — scope records only exist once a `scope_action` commits, and most nodes have none. It now renders on its own, and only the scope cards stay gated.
+
+No consensus change and no chain reset. `maxSupportedAppVersion` stays 27.
+
+Container: `ghcr.io/l33tdawg/sage:11.22.1`. SDK 11.22.1.
 
 ## What's New in v11.22.0
 

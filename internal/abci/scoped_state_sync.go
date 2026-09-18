@@ -328,7 +328,19 @@ func inspectAppV20StateSyncStore(ctx context.Context, badgerStore *store.BadgerS
 		applied.AppliedHeight <= 0 || state.Height <= applied.AppliedHeight {
 		return 0, nil, errors.New("state sync state is not from an active post-app-v20 height")
 	}
-	computed, hashErr := badgerStore.ComputeAppHashExcludingBookkeeping()
+	// The persisted AppHash was produced by the rule in force at this height,
+	// which on a post-app-v28 chain is the composite public-memory root rather
+	// than the app-v13 narrow hash. Select the rule instead of assuming the
+	// pre-v28 one: recomputing the wrong rule here makes every v28 provider
+	// refuse to serve and read as an RPC stall at the caller.
+	ruleInputs, ruleErr := appHashRuleInputsForOfflineState(badgerStore)
+	if ruleErr != nil {
+		return 0, nil, fmt.Errorf("select %s AppHash rule: %w", label, ruleErr)
+	}
+	computed, hashErr := computeAppHashForRule(
+		badgerStore,
+		selectAppHashRule(state.Height, ruleInputs),
+	)
 	if hashErr != nil {
 		return 0, nil, hashErr
 	}

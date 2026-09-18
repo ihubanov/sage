@@ -187,17 +187,19 @@ other side can address them without a domain share. That is convenient with one
 or two agents and confusing with a dozen: the other operator sees names they do
 not recognise, picks one, and sends work to the wrong agent.
 
-Open the connection and use **Agent discovery on <peer>**:
+Open the connection. Under **Viewing this node**, every eligible agent on this
+SAGE carries a **Visible** switch that applies to this connection alone:
 
-- **All agents** (the default) - every eligible ordinary agent here can be found
-  by the other side's listing and search.
-- **Only the ones I pick** - tick an agent and this connection becomes an
-  explicit list. Ticking the first one selects only that agent, so a single
-  click never means "expose everything"; tick more to add them.
-- **None** - the other side can find no agent here at all.
+- Flipping an agent to **Not visible** removes it from this peer's listing and
+  search; flipping it back restores it.
+- **Show all agents** and **Hide all agents** move the whole roster at once.
+  A connection nobody has configured is all agents visible.
+- Each switch saves immediately under the connection's revision-bound
+  agreement, so there is no Save button.
 
-Then press **Save discovery policy**. The change applies to their next listing,
-search, or `sage_find_agent` lookup; nothing already delivered is affected.
+The change applies to their next listing, search, or `sage_find_agent` lookup;
+nothing already delivered is affected. Every connection keeps its own roster,
+so hiding an agent from one peer never hides it from another.
 
 This control is discovery only. It grants no memory access (that is the
 agent-export and manual domain lanes above) and it authorises no delivery (a

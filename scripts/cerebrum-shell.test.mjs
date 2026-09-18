@@ -1884,3 +1884,36 @@ test('the app-version panel renders without governance scopes', () => {
     assert.ok(appSource.indexOf('${govScopes.map(scope => html`', scopesGate) > scopesGate,
         'the scope cards must stay inside the scopes gate');
 });
+
+test('agent visibility is a live per-agent switch, not a buried save form', async () => {
+    const directorySource = await readFile(new URL('../web/static/js/federation-directory.js', import.meta.url), 'utf8');
+    assert.doesNotMatch(appSource, /Save discovery policy/,
+        'discovery must not require hunting for a Save button');
+    assert.doesNotMatch(appSource, /Unsaved discovery changes/);
+    assert.match(appSource, /const setAgentVisibility = \(agentID, visible\) =>/,
+        'visibility must be set one exact agent at a time');
+    assert.match(appSource, /expected_revision: Number\(agentExposure\.revision \|\| 0\)/,
+        'each switch must carry the revision it read');
+    assert.match(appSource, /const setAllAgentsVisible = visible =>/,
+        'bulk all/none must remain available for recovery');
+    assert.match(appSource, /automaticNodeMessaging !== false && html`<section class="fed-perm-section fed-agent-section"/,
+        'discovery switches only render for peers that support automatic discovery');
+    assert.match(directorySource, /role="switch"/,
+        'each local agent card must expose a visible switch');
+    assert.match(directorySource, /Not visible to \$\{node\.name\}/,
+        'the card must say what the switch means for this peer');
+});
+
+test('federation page leads with connections and folds exploration away', () => {
+    const page = appSource.slice(appSource.indexOf('function FederationPage('), appSource.indexOf('// PAGE_LABELS'));
+    assert.match(page, /class="fed-page-head"/,
+        'status and the master switch belong in one compact header');
+    assert.ok(page.indexOf('class="fed-conns"') > 0 && page.indexOf('class="fed-conns"') < page.indexOf('class="fed-collapsible"'),
+        'your connections must come before exploration and groups');
+    assert.match(page, /liveConns\.length === 0 \|\| showConnect/,
+        'the pairing wizard is behind the connect action once links exist');
+    assert.match(page, /fed-conn-badge/,
+        'each connection row states its discovery posture without expanding');
+    assert.match(page, /Explore agents[\s\S]*FederationConnectome/,
+        'the connectome lives in the collapsible exploration section');
+});

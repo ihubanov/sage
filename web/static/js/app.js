@@ -17246,59 +17246,58 @@ function FedPermissionsPanel({ conn, connectionStatus, onRevoke, revokeBusy, loc
 		}
 	};
 
-	// Agent-discovery narrowing. The shipped default is "all", so the first
-	// click on an individual agent has to mean "only this one" rather than
-	// "add to an empty list": that is what makes the control safe to use on a
-	// connection nobody has configured yet. Later clicks toggle membership, and
-	// unchecking the last agent is the explicit deny-all mode instead of an
-	// invalid empty allow list.
-	const toggleExposureAgent = agentID => {
-		if (exposureBusy) return;
-		const id = String(agentID || '').trim().toLowerCase();
-		if (!id) return;
-		setExposureErr('');
-		const next = exposureMode === 'selected' ? new Set(exposureSelection) : new Set();
-		if (next.has(id)) next.delete(id); else next.add(id);
-		setExposureSelection(next);
-		setExposureMode(next.size === 0 ? 'none' : 'selected');
-	};
-
-	const chooseExposureMode = mode => {
-		if (exposureBusy) return;
-		setExposureErr('');
-		if (mode === 'selected') {
-			setExposureMode('selected');
-			return;
-		}
-		setExposureSelection(new Set());
-		setExposureMode(mode === 'none' ? 'none' : 'all');
-	};
-
-	const saveAgentExposure = async () => {
+	// Agent discovery is a live switch, not a draft: every change commits
+	// under the revision-bound connection policy the moment it is made, so
+	// there is no Save button to hunt for and no "Saved" state to decode.
+	// The complete eligible roster comes from the local agent directory —
+	// never from the bounded, exposure-filtered directory page — so narrowing
+	// "all" cannot silently drop agents that page did not show.
+	const applyAgentExposure = async (mode, agentIDs) => {
 		if (exposureBusy || agentExposure === null) return;
-		const mode = exposureMode === 'selected' && exposureSelection.size === 0 ? 'none' : exposureMode;
-		const agentIDs = mode === 'selected' ? Array.from(exposureSelection).slice().sort() : [];
+		const canonicalMode = mode === 'selected' && agentIDs.length === 0 ? 'none' : mode;
+		const ids = canonicalMode === 'selected' ? Array.from(new Set(agentIDs)).slice().sort() : [];
 		setExposureBusy(true); setExposureErr('');
 		try {
 			const response = await fedAgentExposureSet(chain, {
-				mode,
-				agent_ids: agentIDs,
+				mode: canonicalMode,
+				agent_ids: ids,
 				expected_revision: Number(agentExposure.revision || 0),
 			});
 			const next = normalizeFedAgentExposure(response && response.exposure);
 			setAgentExposure(next);
 			setExposureMode(next.mode);
 			setExposureSelection(next.mode === 'selected' ? new Set(next.agent_ids) : new Set());
-			showToast(mode === 'all'
-				? `${peerName} can discover every eligible agent on this SAGE`
-				: (mode === 'none'
-					? `${peerName} can no longer discover any agent here`
-					: `${peerName} can discover ${agentIDs.length} chosen agent${agentIDs.length === 1 ? '' : 's'}`), 'success');
 		} catch (e) {
 			setExposureErr(String(e.message || e));
 		} finally {
 			setExposureBusy(false);
 		}
+	};
+
+	const exposureVisibleIDs = () => {
+		if (exposureMode === 'all') return new Set(exposureCandidates.map(agent => agent.agent_id));
+		if (exposureMode === 'selected') return new Set(exposureSelection);
+		return new Set();
+	};
+
+	const setAgentVisibility = (agentID, visible) => {
+		const id = String(agentID || '').trim().toLowerCase();
+		if (!id || exposureBusy || agentExposure === null) return;
+		if (!visible && exposureMode === 'all' && exposureCandidates.length === 0) {
+			setExposureErr('The local agent list is still loading. Refresh this connection and try again.');
+			return;
+		}
+		const next = exposureVisibleIDs();
+		if (visible) next.add(id); else next.delete(id);
+		const mode = next.size === 0
+			? 'none'
+			: (next.size === exposureCandidates.length ? 'all' : 'selected');
+		applyAgentExposure(mode, Array.from(next));
+	};
+
+	const setAllAgentsVisible = visible => {
+		if (exposureBusy || agentExposure === null) return;
+		applyAgentExposure(visible ? 'all' : 'none', []);
 	};
 
 	const removeLocalAgentExport = async contact => {
@@ -17570,16 +17569,6 @@ function FedPermissionsPanel({ conn, connectionStatus, onRevoke, revokeBusy, loc
 		.filter(agent => agent && agent.agent_id && agent.status === 'active' && !agent.removed_at)
 		.map(agent => ({ ...agent, agent_id: String(agent.agent_id).toLowerCase() }))
 		.sort((a, b) => fedFriendlyLocalAgentLabel(a).localeCompare(fedFriendlyLocalAgentLabel(b)));
-	const savedExposureMode = agentExposure ? agentExposure.mode : 'all';
-	const savedExposureSelection = agentExposure && agentExposure.mode === 'selected'
-		? agentExposure.agent_ids.slice().sort()
-		: [];
-	const exposureSelectionKey = (exposureMode === 'selected' ? Array.from(exposureSelection) : []).slice().sort().join(',');
-	const exposureDirty = agentExposure !== null &&
-		(exposureMode !== savedExposureMode || exposureSelectionKey !== savedExposureSelection.join(','));
-	const exposureVisibleCount = exposureMode === 'all'
-		? exposureCandidates.length
-		: (exposureMode === 'selected' ? exposureSelection.size : 0);
 	const showOutgoing = roleKnown;
     const outboxCounts = syncStatus && syncStatus.outbox_counts && typeof syncStatus.outbox_counts === 'object'
         ? syncStatus.outbox_counts
@@ -17634,6 +17623,7 @@ function FedPermissionsPanel({ conn, connectionStatus, onRevoke, revokeBusy, loc
             peerName=${peerName} localName=${localName} local=${localNodeContacts} remote=${remotePipeContacts}
             automatic=${automaticNodeMessaging}
             copyAddress=${copyPipeContact} catalog=${catalog || {}} draft=${draft} disabled=${busy || !draft}
+            visibility=${{ agents: exposureCandidates, mode: exposureMode, selected: exposureSelection, busy: exposureBusy || agentExposure === null, setVisible: setAgentVisibility }}
             stageDomains=${(domains, permission) => setDraft(current => stageFederationDomains(current, catalog || {}, domains, permission))}
             loadMore=${async (side, cursor) => {
                 const page = await fedPipeContactsGet(chain, side === 'remote', '', { [side]: cursor });
@@ -17678,57 +17668,28 @@ function FedPermissionsPanel({ conn, connectionStatus, onRevoke, revokeBusy, loc
 			</div>`}
 		</section>`}
 
-		${roleKnown && html`<section class="fed-perm-section fed-agent-section" aria-labelledby=${`fed-discovery-heading-${chain}`}>
+		${roleKnown && automaticNodeMessaging !== false && html`<section class="fed-perm-section fed-agent-section" aria-labelledby=${`fed-discovery-heading-${chain}`}>
 			<div class="fed-perm-section-head">
 				<div>
 					<h4 id=${`fed-discovery-heading-${chain}`}>Agent discovery on ${peerName}</h4>
-					<p>Who ${peerName} can find when it lists or searches for an agent on this SAGE. This is listing and search only: it never grants memory access, and a discovered agent still has to accept before anything is delivered. ${exposureMode === 'all'
-						? `Every eligible agent here is discoverable (${exposureCandidates.length}).`
-						: `${exposureVisibleCount} of ${exposureCandidates.length} eligible agents are discoverable.`}</p>
+					<p>Who ${peerName} can find when it lists or searches for an agent on this SAGE. Flip the Visible switch on any agent in the directory above, or use these two buttons to move all of them at once. This is listing and search only: it never grants memory access, and a discovered agent still has to accept before anything is delivered.</p>
 				</div>
+				<span class="fed-discovery-summary" role="status" aria-live="polite">${agentExposure === null
+					? 'Loading…'
+					: (exposureMode === 'all'
+						? `All ${exposureCandidates.length} agents visible`
+						: (exposureMode === 'none'
+							? 'No agents visible'
+							: `${exposureSelection.size} of ${exposureCandidates.length} agents visible`))}${exposureBusy ? ' · saving…' : ''}</span>
 			</div>
-			<div class="fed-exposure-modes" role="radiogroup" aria-label=${`Agent discovery mode for ${peerName}`}>
-				<label class=${`fed-exposure-mode ${exposureMode === 'all' ? 'active' : ''}`}>
-					<input type="radio" name=${`fed-exposure-${chain}`} checked=${exposureMode === 'all'}
-						disabled=${exposureBusy || agentExposure === null}
-						onChange=${() => chooseExposureMode('all')} />
-					<span><strong>All agents</strong><small>Default. Every eligible agent is listed and searchable.</small></span>
-				</label>
-				<label class=${`fed-exposure-mode ${exposureMode === 'selected' ? 'active' : ''}`}>
-					<input type="radio" name=${`fed-exposure-${chain}`} checked=${exposureMode === 'selected'}
-						disabled=${exposureBusy || agentExposure === null}
-						onChange=${() => chooseExposureMode('selected')} />
-					<span><strong>Only the ones I pick</strong><small>Unticked agents disappear from ${peerName}’s listing and search.</small></span>
-				</label>
-				<label class=${`fed-exposure-mode ${exposureMode === 'none' ? 'active' : ''}`}>
-					<input type="radio" name=${`fed-exposure-${chain}`} checked=${exposureMode === 'none'}
-						disabled=${exposureBusy || agentExposure === null}
-						onChange=${() => chooseExposureMode('none')} />
-					<span><strong>None</strong><small>${peerName} can find no agent here at all.</small></span>
-				</label>
-			</div>
-			${exposureCandidates.length === 0 && html`<div class="fed-agent-empty muted">No active local agents to choose from.</div>`}
-			${exposureCandidates.length > 0 && html`<div class="fed-exposure-list" role="group" aria-label=${`Agents ${peerName} may discover`}>
-				${exposureCandidates.map(agent => {
-					const checked = exposureMode === 'all' || (exposureMode === 'selected' && exposureSelection.has(agent.agent_id));
-					return html`<label class=${`fed-exposure-row ${checked ? 'on' : ''}`} key=${agent.agent_id}>
-						<input type="checkbox" checked=${checked} disabled=${exposureBusy || agentExposure === null}
-							onChange=${() => toggleExposureAgent(agent.agent_id)} />
-						<span class="fed-agent-identity">
-							<strong>${fedFriendlyLocalAgentLabel(agent).split(' · ')[0]}</strong>
-							<code>${agent.agent_id.slice(0, 12)}…</code>
-						</span>
-					</label>`;
-				})}
-				<span class="muted fed-exposure-hint">Ticking one agent switches this connection to “Only the ones I pick” with just that agent exposed; tick more to add them, or clear them all to expose nobody.</span>
-			</div>`}
 			<div class="fed-exposure-actions">
-				<button class="btn btn-primary" disabled=${exposureBusy || agentExposure === null || !exposureDirty}
-					onClick=${saveAgentExposure}>${exposureBusy ? 'Saving…' : 'Save discovery policy'}</button>
-				<span class="muted" role="status">${agentExposure === null
-					? 'Loading agent discovery…'
-					: (exposureDirty ? 'Unsaved discovery changes' : (agentExposure.configured ? 'Saved' : 'Default: all agents discoverable'))}</span>
+				<button class="btn" disabled=${exposureBusy || agentExposure === null || exposureMode === 'all'}
+					onClick=${() => setAllAgentsVisible(true)}>Show all agents</button>
+				<button class="btn" disabled=${exposureBusy || agentExposure === null || exposureMode === 'none'}
+					onClick=${() => setAllAgentsVisible(false)}>Hide all agents</button>
+				<span class="muted">Changes apply immediately. Being visible only lets ${peerName} find and ask; it grants nothing.</span>
 			</div>
+			${exposureCandidates.length === 0 && agentExposure !== null && html`<div class="fed-agent-empty muted">No active local agents to choose from.</div>`}
 			${exposureErr && html`<div class="fed-err fed-perm-error" role="alert">${exposureErr}</div>`}
 		</section>`}
 
@@ -18461,6 +18422,8 @@ function FederationPage() {
     const [err, setErr] = useState('');
     const [remoteNotice, setRemoteNotice] = useState(null);
     const [connectionReachability, setConnectionReachability] = useState({});
+    const [showConnect, setShowConnect] = useState(false);
+    const [fedSummaries, setFedSummaries] = useState({});
     const [hiddenPastConnections, setHiddenPastConnections] = useState(() => {
         try {
             const saved = JSON.parse(localStorage.getItem('sage-fed-hidden-past-connections') || '[]');
@@ -18652,20 +18615,53 @@ function FederationPage() {
         setMode('landing');
     };
 
-    if (mode === 'guest') return html`<div class="page fed-page"><${GuestJoinWizard} recoveryPeer=${recoveryPeer} onExit=${exitJoinWizard} /></div>`;
-    if (mode === 'host') return html`<div class="page fed-page"><${HostJoinWizard} onExit=${() => setMode('landing')} /></div>`;
-
     const liveConns = (conns || []).filter(c => c.status === 'active' && !c.expired);
     const pastConns = (conns || []).filter(c => c.status !== 'active' || c.expired);
     const visiblePastConns = pastConns.filter(c => !hiddenPastConnections.includes(pastConnectionKey(c)));
     const hiddenPastCount = pastConns.length - visiblePastConns.length;
+    const liveChainKey = liveConns.map(c => c.remote_chain_id).sort().join(',');
+
+    // Per-connection at-a-glance summary for the connection rows. Discovery
+    // posture is one operator decision per link, so the row states it without
+    // expanding the whole management panel: one bounded read per live
+    // connection, and a failed read leaves the badge absent rather than
+    // guessing at a posture the node did not confirm.
+    useEffect(() => {
+        if (!fedOn || liveConns.length === 0) { setFedSummaries({}); return; }
+        let live = true;
+        Promise.allSettled(liveConns.map(async conn => {
+            const result = await fedAgentExposureGet(conn.remote_chain_id);
+            return [conn.remote_chain_id, result && result.exposure ? result.exposure : null];
+        })).then(results => {
+            if (!live) return;
+            const next = {};
+            results.forEach(result => {
+                if (result.status === 'fulfilled' && result.value[1]) {
+                    next[result.value[0]] = result.value[1];
+                }
+            });
+            setFedSummaries(next);
+        });
+        return () => { live = false; };
+    }, [fedOn, liveChainKey, openChain]);
+
+    if (mode === 'guest') return html`<div class="page fed-page"><${GuestJoinWizard} recoveryPeer=${recoveryPeer} onExit=${exitJoinWizard} /></div>`;
+    if (mode === 'host') return html`<div class="page fed-page"><${HostJoinWizard} onExit=${() => setMode('landing')} /></div>`;
 
     return html`<div class="page fed-page">
         <div class="fed-landing">
-            <h1>Federation</h1>
-            <p class="fed-landing-sub muted">Connect independent SAGE nodes so their agents can find and message each other. Memory sharing stays optional and explicitly configured.</p>
-            <${FedGreenRail} />
-            <${FederationMasterSwitch} onChange=${setFedOn} />
+            <header class="fed-page-head">
+                <div class="fed-page-title">
+                    <h1>Federation</h1>
+                    <p class="fed-landing-sub muted">Connect independent SAGE nodes so their agents can find and message each other. Memory sharing stays optional and explicitly configured.</p>
+                    <${FedGreenRail} />
+                </div>
+                <div class="fed-page-actions">
+                    <${FederationMasterSwitch} onChange=${setFedOn} />
+                    ${fedOn && liveConns.length > 0 && html`<button class="btn ${showConnect ? '' : 'btn-primary'}"
+                        onClick=${() => setShowConnect(current => !current)}>${showConnect ? 'Close' : 'Connect a SAGE'}</button>`}
+                </div>
+            </header>
             ${fedOn && html`<${NetworkNameEditor} />`}
             ${err && html`<div class="fed-err" role="alert">Couldn't load connections: ${err}</div>`}
             ${remoteNotice && html`<div class="fed-peer-revoke-notice" role="status">
@@ -18680,26 +18676,6 @@ function FederationPage() {
             </div>`}
             ${fedOn === false && html`<div class="fed-off-note muted">Federation is off, so joining or hosting a connection is unavailable. Turn it on above to connect.</div>`}
             ${html`<${FederationWarmup} onState=${(ready) => setWarming(!ready)} />`}
-            ${liveConns.length > 0 && html`<${FederationConnectome}
-                connections=${liveConns} statuses=${connectionReachability} localChain=${localChain} localName=${localName}
-                enabled=${fedOn === true} busyChain=${busyChain} onPause=${pause} onRevoke=${revoke}
-                onManage=${conn => { setOpenChain(conn.remote_chain_id); setTimeout(() => document.getElementById(`fed-connection-${conn.remote_chain_id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100); }} />`}
-            ${fedOn && !warming && html`<section class="fed-onboarding" aria-label="Connect another SAGE">
-                <h2>Connect another SAGE</h2><p>Open Federation on both computers. Create a code on one, then scan or paste it on the other.</p>
-                <ol class="fed-onboarding-steps"><li><span>1</span><div><strong>Exchange codes</strong><small>Introduce the two computers.</small></div></li><li><span>2</span><div><strong>Verify together</strong><small>Each person confirms a short number.</small></div></li><li><span>3</span><div><strong>Explore agents</strong><small>Find agents. Choose memory sharing separately.</small></div></li></ol>
-                <div class="fed-roles">
-                <button class="fed-role-card" onClick=${() => setMode('guest')}>
-                    <div class="fed-role-glyph">${icons.federation}</div>
-                    <div class="fed-role-title">I have a connection code</div>
-                    <div class="fed-role-desc">Scan or paste the code from the other computer to begin.</div>
-                </button>
-                <button class="fed-role-card" onClick=${() => setMode('host')}>
-                    <div class="fed-role-glyph">${icons.federation}</div>
-                    <div class="fed-role-title">Create a connection code</div>
-                    <div class="fed-role-desc">Start here if neither computer has a code yet. Show it to the other SAGE.</div>
-                </button>
-                </div><p class="fed-onboarding-note">Already paired? Use your existing connection above. A laptop can move between networks without pairing again.</p>
-            </section>`}
             ${(fedOn || (conns && conns.length > 0)) && html`<div class="fed-conns">
                 <h3>Your trusted SAGEs <${HelpTip} text="A trusted SAGE is a live, approved link to another SAGE. Its sharing and sync controls only work while this link is active." /></h3>
                 ${liveConns.length > 0 && html`<div class="fed-conns-explain muted">The scan and spoken code establish <strong>trust</strong>. Open a connection to manage domain permissions. <strong>Pause</strong> temporarily stops sharing and work requests without losing the pairing; permanent revocation lives inside the connection details.</div>`}
@@ -18726,6 +18702,15 @@ function FederationPage() {
                         ? `Last check: ${routeView.label} · checking again in the background`
                         : `${routeView.label} · ${routeView.detail}`;
                     const role = c.local_role === 'host' ? 'connection code created here' : (c.local_role === 'guest' ? 'connection code scanned here' : 'older direct relationship');
+                    const summary = fedSummaries[c.remote_chain_id];
+                    const summaryCount = summary && Array.isArray(summary.agent_ids) ? summary.agent_ids.length : 0;
+                    const discoveryLabel = !summary
+                        ? ''
+                        : (summary.mode === 'none'
+                            ? 'No agents visible'
+                            : (summary.mode === 'all'
+                                ? 'All agents visible'
+                                : `${summaryCount} agent${summaryCount === 1 ? '' : 's'} visible`));
                     return html`<div class="fed-conn-wrap" key=${c.remote_chain_id}>
                     <div class="fed-conn-row">
                         <button class="fed-conn-main fed-conn-expand" aria-expanded=${openChain === c.remote_chain_id}
@@ -18733,6 +18718,7 @@ function FederationPage() {
                             onClick=${() => setOpenChain(openChain === c.remote_chain_id ? '' : c.remote_chain_id)}>
                             <span class="fed-conn-status ${routeUsable ? (c.sharing_paused ? 'paused' : 'on') : (routeView.tone === 'danger' ? 'blocked' : 'off')}"></span>
                             <span class="fed-conn-name">${c.peer_name || 'Other SAGE'}</span>
+                            ${discoveryLabel && html`<span class="fed-conn-badge ${summary.mode === 'all' ? '' : 'narrowed'}">${discoveryLabel}</span>`}
                             <span class="fed-conn-role">${role}</span>
                             <span class="fed-conn-meta muted">${c.sharing_paused && routeUsable ? 'sharing paused · pairing preserved' : routeDetail}</span>
                             <span class="fed-conn-chev">${openChain === c.remote_chain_id ? '▾' : '▸'}</span>
@@ -18771,7 +18757,39 @@ function FederationPage() {
                     </div>`}
                 </div>`}
             </div>`}
-            ${fedOn && html`<${SharingSyncGroupsPanel} connections=${liveConns} reachability=${connectionReachability} />`}
+            ${fedOn && !warming && (liveConns.length === 0 || showConnect) && html`<section class="fed-onboarding" aria-label="Connect another SAGE">
+                <h2>Connect another SAGE</h2><p>Open Federation on both computers. Create a code on one, then scan or paste it on the other.</p>
+                <ol class="fed-onboarding-steps"><li><span>1</span><div><strong>Exchange codes</strong><small>Introduce the two computers.</small></div></li><li><span>2</span><div><strong>Verify together</strong><small>Each person confirms a short number.</small></div></li><li><span>3</span><div><strong>Explore agents</strong><small>Find agents. Choose memory sharing separately.</small></div></li></ol>
+                <div class="fed-roles">
+                <button class="fed-role-card" onClick=${() => setMode('guest')}>
+                    <div class="fed-role-glyph">${icons.federation}</div>
+                    <div class="fed-role-title">I have a connection code</div>
+                    <div class="fed-role-desc">Scan or paste the code from the other computer to begin.</div>
+                </button>
+                <button class="fed-role-card" onClick=${() => setMode('host')}>
+                    <div class="fed-role-glyph">${icons.federation}</div>
+                    <div class="fed-role-title">Create a connection code</div>
+                    <div class="fed-role-desc">Start here if neither computer has a code yet. Show it to the other SAGE.</div>
+                </button>
+                </div><p class="fed-onboarding-note">Already paired? Use your existing connection above. A laptop can move between networks without pairing again.</p>
+            </section>`}
+
+            ${liveConns.length > 0 && html`<details class="fed-collapsible">
+                <summary>
+                    <span><strong>Explore agents</strong><small class="muted">Every agent across this federation, who they belong to, and what they can reach.</small></span>
+                </summary>
+                <${FederationConnectome}
+                    connections=${liveConns} statuses=${connectionReachability} localChain=${localChain} localName=${localName}
+                    enabled=${fedOn === true} busyChain=${busyChain} onPause=${pause} onRevoke=${revoke}
+                    onManage=${conn => { setOpenChain(conn.remote_chain_id); setTimeout(() => document.getElementById(`fed-connection-${conn.remote_chain_id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100); }} />
+            </details>`}
+
+            ${fedOn && html`<details class="fed-collapsible">
+                <summary>
+                    <span><strong>Sharing groups</strong><small class="muted">Share one set of topics with more than one trusted SAGE at once.</small></span>
+                </summary>
+                <${SharingSyncGroupsPanel} connections=${liveConns} reachability=${connectionReachability} />
+            </details>`}
         </div>
     </div>`;
 }

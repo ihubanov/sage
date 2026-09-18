@@ -4905,6 +4905,25 @@ input[type="range"]::-moz-range-thumb {
 }
 .fed-page .fed-landing { max-width: 1100px; margin: 0 auto; }
 .fed-landing h1 { margin: 0 0 16px; }
+.fed-page-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px; align-items: start; margin-bottom: 18px; }
+.fed-page-title h1 { margin: 0 0 6px; }
+.fed-page-title .fed-landing-sub { margin: 0; max-width: 760px; }
+.fed-page-title .fed-green-rail { margin: 10px 0 0; }
+.fed-page-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; flex-wrap: wrap; }
+.fed-page-actions .fed-master { margin: 0; max-width: 430px; }
+@media (max-width: 900px) {
+    .fed-page-head { grid-template-columns: 1fr; }
+    .fed-page-actions { justify-content: flex-start; }
+}
+.fed-collapsible { margin-top: 24px; border: 1px solid var(--border); border-radius: 16px; background: var(--bg-secondary); }
+.fed-collapsible > summary { display: flex; align-items: center; gap: 10px; padding: 14px 18px; cursor: pointer; list-style: none; }
+.fed-collapsible > summary::-webkit-details-marker { display: none; }
+.fed-collapsible > summary::before { content: '▸'; color: var(--text-muted); font-size: 12px; flex: none; }
+.fed-collapsible[open] > summary::before { content: '▾'; }
+.fed-collapsible[open] > summary { border-bottom: 1px solid var(--border); }
+.fed-collapsible > summary > span { display: grid; gap: 2px; }
+.fed-collapsible > summary small { font-weight: 400; }
+.fed-collapsible > :not(summary) { padding: 0 18px 18px; }
 
 .fed-green-rail {
     display: flex; align-items: center; gap: 10px;
@@ -4958,6 +4977,8 @@ input[type="range"]::-moz-range-thumb {
 .fed-conn-status.off { background: var(--text-muted); }
 .fed-conn-status.blocked { background: var(--danger); box-shadow: 0 0 6px rgba(239, 68, 68, 0.55); }
 .fed-conn-name { font-weight: 600; }
+.fed-conn-badge { padding: 2px 8px; border-radius: 999px; background: rgba(16,185,129,.12); color: var(--accent); font-size: 10px; font-weight: 700; white-space: nowrap; }
+.fed-conn-badge.narrowed { background: rgba(245,158,11,.14); color: var(--warning); }
 .fed-conn-role { padding: 2px 6px; border-radius: 999px; background: rgba(59,130,246,.12); color: var(--info, #60a5fa); font-size: 10px; font-weight: 700; white-space: nowrap; }
 .fed-conn-meta { font-size: 12px; }
 .fed-conn-off { flex: none; }
@@ -7582,6 +7603,12 @@ input[type="range"]::-moz-range-thumb {
 .fed-directory-agents { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .7rem; max-height: 440px; overflow: auto; }
 .fed-directory-agent { display: grid; gap: .4rem; padding: .85rem; border: 1px solid var(--border); border-radius: 16px; overflow-wrap: anywhere; }
 .fed-directory-agent small, .fed-directory-agent > span { font-size: .75rem; color: var(--text-muted); }
+.fed-directory-agent .fed-agent-visible { margin-top: 2px; }
+.fed-directory-agent .fed-agent-visible span { font-size: 10.5px; }
+.fed-address-copy { justify-self: start; background: none; border: 0; padding: 0; color: var(--text-muted); font-size: 10.5px; text-decoration: underline; cursor: pointer; }
+.fed-address-copy:hover { color: var(--text); }
+.fed-address-copy:disabled { opacity: .5; cursor: not-allowed; }
+.fed-discovery-summary { flex: none; color: var(--text-muted); font-size: 11px; font-weight: 600; white-space: nowrap; }
 .fed-directory-sharing { border-top: 1px solid var(--border); padding-top: 1rem; }
 .fed-directory-sharing summary { cursor: pointer; font-weight: 600; }
 .fed-directory-domains, .fed-directory-domain-actions { display: flex; flex-wrap: wrap; gap: .6rem; margin: .8rem 0; }

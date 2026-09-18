@@ -4753,18 +4753,14 @@ func (app *SageApp) finalizeBlockUncommitted(_ context.Context, req *abcitypes.R
 	//     the original issue-#40 behavior, kept for pre-v12 replay).
 	// Each activation block H_act itself still hashes under the previous
 	// rule (strict-> gates), so the flip lands at H_act+1.
-	var appHash []byte
-	var err error
-	switch {
-	case app.postAppV28Rules(req.Height):
-		appHash, err = app.badgerStore.ComputePublicMemoryAppHash()
-	case app.postAppV13Rules(req.Height):
-		appHash, err = app.badgerStore.ComputeAppHashExcludingBookkeeping()
-	case app.postAppV12Rules(req.Height):
-		appHash, err = app.badgerStore.ComputeAppHashExcludingState()
-	default:
-		appHash, err = ComputeAppHash(app.badgerStore)
-	}
+	// The precedence itself lives in selectAppHashRule so this path and the
+	// state-sync verification paths cannot disagree about which rule is in
+	// force at a height; the predicate helpers above remain the readable
+	// names for the individual gates.
+	appHash, err := computeAppHashForRule(
+		app.badgerStore,
+		selectAppHashRule(req.Height, app.appHashRuleInputsFromApp()),
+	)
 	if err != nil {
 		// A node that cannot compute the canonical hash MUST NOT invent one:
 		// the old computeBlockHash fallback committed a per-node hash that

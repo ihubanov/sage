@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,8 +20,10 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"github.com/stretchr/testify/require"
 
 	sageabci "github.com/l33tdawg/sage/internal/abci"
+	"github.com/l33tdawg/sage/internal/auth"
 	"github.com/l33tdawg/sage/internal/tx"
 )
 
@@ -454,6 +457,109 @@ func TestUpgradeStatusReportsAuthoritativePlanAndBallot(t *testing.T) {
 			t.Errorf("output missing %q:\n%s", want, output)
 		}
 	}
+}
+
+// TestUpgradeVoteCastsExplicitVoteOnDormantBallot pins the deliberate-vote path.
+// The upgrade auto-voter abstains on any target above the readiness ceiling, so
+// a compiled-but-dormant gate can only advance when a validator votes here (or
+// through CEREBRUM's governance surface). This drives the real command against a
+// fake CometBFT RPC and asserts the transaction that reaches the wire.
+func TestUpgradeVoteCastsExplicitVoteOnDormantBallot(t *testing.T) {
+	target := uint64(28)
+	statusValue, err := json.Marshal(upgradeGovernanceRPCStatus{
+		Schema:            "sage-upgrade-governance-status/v1",
+		CurrentAppVersion: 27,
+		ActiveProposal: &upgradeGovernanceRPCActiveProposal{
+			ProposalID: "proposal-28", Operation: "upgrade", TargetID: "app-v28",
+			Status: "voting", TargetAppVersion: &target,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, priv, err := auth.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("generate voting key: %v", err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "validator.key")
+	if writeErr := os.WriteFile(keyPath, priv, 0o600); writeErr != nil {
+		t.Fatalf("write voting key: %v", writeErr)
+	}
+
+	var votedProposal string
+	var votedDecision tx.VoteDecision
+	var handlerErr error
+	mux := http.NewServeMux()
+	mux.HandleFunc("/abci_query", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"response": map[string]any{
+			"code": 0, "value": base64.StdEncoding.EncodeToString(statusValue),
+		}}})
+	})
+	mux.HandleFunc("/broadcast_tx_commit", func(w http.ResponseWriter, r *http.Request) {
+		encoded, decodeErr := hex.DecodeString(strings.TrimPrefix(r.URL.Query().Get("tx"), "0x"))
+		if decodeErr != nil {
+			handlerErr = decodeErr
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		parsed, parseErr := tx.DecodeTx(encoded)
+		if parseErr != nil {
+			handlerErr = parseErr
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if parsed.GovVote == nil {
+			handlerErr = fmt.Errorf("broadcast tx type %v carries no governance vote", parsed.Type)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		votedProposal = parsed.GovVote.ProposalID
+		votedDecision = parsed.GovVote.Decision
+		// CometBFT's commit response is checked against the submitted bytes: a
+		// reply about a different transaction is treated as no proof of this
+		// one's fate, so the fake must answer with the real hash.
+		sum := tx.CometTxHash(encoded)
+		_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{
+			"hash": strings.ToUpper(hex.EncodeToString(sum[:])), "height": "77",
+			"check_tx":  map[string]any{"code": 0},
+			"tx_result": map[string]any{"code": 0},
+		}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		if runErr := runUpgradeVote([]string{"--rpc", server.URL, "--yes", "--agent-key", keyPath}); runErr != nil {
+			t.Fatalf("runUpgradeVote: %v", runErr)
+		}
+	})
+	require.NoError(t, handlerErr)
+	require.Equal(t, "proposal-28", votedProposal, "the vote must name the active upgrade ballot")
+	require.Equal(t, tx.VoteDecisionAccept, votedDecision, "the default decision is accept")
+	require.Contains(t, output, "Vote accept recorded on proposal-28")
+	require.Contains(t, output, "dormant in this binary")
+}
+
+// TestParseUpgradeVoteDecision keeps the operator-facing words and the tx
+// decisions in lockstep.
+func TestParseUpgradeVoteDecision(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want tx.VoteDecision
+	}{
+		{"accept", tx.VoteDecisionAccept},
+		{"ACCEPT", tx.VoteDecisionAccept},
+		{" yes ", tx.VoteDecisionAccept},
+		{"reject", tx.VoteDecisionReject},
+		{"abstain", tx.VoteDecisionAbstain},
+	} {
+		got, err := parseUpgradeVoteDecision(tc.in)
+		require.NoError(t, err, "decision %q", tc.in)
+		require.Equal(t, tc.want, got, "decision %q", tc.in)
+	}
+	_, err := parseUpgradeVoteDecision("maybe")
+	require.ErrorContains(t, err, "not accept, reject, or abstain")
 }
 
 // TestBuildUpgradeProposeTx_Parameterized proves the builder now honors an

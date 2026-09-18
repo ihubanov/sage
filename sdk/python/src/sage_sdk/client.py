@@ -1420,6 +1420,60 @@ class SageClient:
         resp = self._request("POST", f"/v1/org/{org_id}/clearance", json=body)
         return resp.json()
 
+    # --- Access policy (app-v23+) -----------------------------------------------
+
+    def get_access_state(self) -> dict:
+        """Read the node's consensus-authoritative access state.
+
+        Operator surface: it returns the enrolled agents' role, profile and
+        clearance as consensus holds them, plus the access-group records and
+        the revisions an update must be compared against. Use it to confirm a
+        policy write landed rather than inferring it from an agent's own view.
+        """
+        resp = self._request("GET", "/v1/dashboard/network/access")
+        return resp.json()
+
+    def set_agent_access_policy(
+        self,
+        agent_id: str,
+        role: str,
+        profile: str,
+        clearance: int,
+        capabilities: int = 0,
+        home_domain: str | None = None,
+    ) -> dict:
+        """Set an agent's app-v23 enrollment policy (role, profile, clearance).
+
+        This is the clearance the write gate actually reads: a memory whose
+        classification exceeds the target agent's *enrollment* clearance is
+        refused at submission (``internal/abci/app.go``), and an org or
+        department membership clearance does not feed that gate — setting
+        membership alone leaves a designated writer unable to submit classified
+        records. Use this to give a writer the clearance its records need.
+
+        Operator-only by construction. The route is loopback-gated and requires
+        the current CEREBRUM control actor, so call it from the node host with
+        the operator/Root key material; a plain agent cannot elevate itself and
+        the attempt is refused rather than silently ignored.
+
+        ``role``/``profile``/``clearance``/``capabilities`` must form a valid
+        app-v23 policy: members and managers may hold Standard, and only the
+        Standard profile with Top Secret clearance (4) and the read-all
+        capability may hold ``role="admin"``.
+        """
+        body: dict[str, Any] = {
+            "role": role,
+            "profile": profile,
+            "clearance": clearance,
+            "capabilities": capabilities,
+        }
+        if home_domain is not None:
+            body["home_domain"] = home_domain
+        resp = self._request(
+            "PUT", f"/v1/dashboard/network/access/agents/{agent_id}/policy", json=body
+        )
+        return resp.json()
+
     # --- Federation -------------------------------------------------------------
 
     def propose_federation(

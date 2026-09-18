@@ -701,6 +701,58 @@ complete ownership set is required.
 
 ---
 
+### Access policy (app-v23+)
+
+#### `get_access_state()`
+
+```python
+get_access_state() -> dict
+```
+
+`GET /v1/dashboard/network/access`
+
+Operator surface: the enrolled agents' role, profile and clearance as consensus
+holds them, plus the Access Group records and the revisions an update must be
+compared against. Read it to confirm a policy write landed rather than
+inferring the outcome from an agent's own view. Loopback-only, and it requires
+the current CEREBRUM control actor, so call it from the node host.
+
+#### `set_agent_access_policy()`
+
+```python
+set_agent_access_policy(
+    agent_id: str,
+    role: str,
+    profile: str,
+    clearance: int,
+    capabilities: int = 0,
+    home_domain: str | None = None,
+) -> dict
+```
+
+`PUT /v1/dashboard/network/access/agents/{id}/policy`
+
+Sets an agent's app-v23 **enrollment** policy. The enrollment clearance is the
+value the write gate reads: a memory whose classification exceeds it is refused
+at submission (`internal/abci/app.go`), and an org or department membership
+clearance does not feed that gate — raising membership alone leaves a
+designated writer unable to submit classified records. Use this to give a
+writer the clearance its records need, for example clearance 4 for an audit
+corpus that legitimately escalates to CONFIDENTIAL and above.
+
+Operator-only: the route is loopback-gated and requires the current CEREBRUM
+control actor, so call it from the node host with the operator/Root key
+material. An ordinary agent cannot elevate itself, and the attempt is refused
+rather than silently ignored. On an app-v23 node the legacy
+`PATCH /v1/dashboard/network/agents/{id}` route refuses permission changes with
+`410 legacy_permission_route_retired`, which is why this endpoint exists.
+
+A valid combination is required: members and managers may hold the Standard
+profile, and only `role="admin"` needs Top Secret clearance (4) with the
+read-all capability.
+
+---
+
 ### Validator
 
 #### `get_pending()`

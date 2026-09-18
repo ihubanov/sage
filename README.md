@@ -48,7 +48,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.22.1`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.0`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -207,6 +207,18 @@ software updates, and encryption controls. Ordinary agent identity replacement
 uses re-enrollment; historical memory authorship is preserved.
 
 ---
+
+## What's New in v11.23.0
+
+**App-v28 activates.** `maxSupportedAppVersion` moves 27 → 28 and converges with the compiled ceiling, so the gate v11.22.0 shipped dormant becomes an automatic rung: a personal node now advances its own chain across the seam on upgrade with no governance ceremony, the same path every earlier rung took. What activates is the sparse public-memory Merkle commitment over committed `PUBLIC=0` records — AppHash-covered through a composite rule that hashes the legacy tree without the index nodes and composes it with the index root — and the co-commit tombstone rule, now enforced by the consensus path behind a content-hash reverse index maintained by every memory write and backfilled at activation.
+
+**The state-sync item that blocked it is fixed, and the contract's evidence is complete.** A v28 provider used to die on its state-sync serving boot: the verification family recomputed the pre-v28 AppHash rule unconditionally, so the composite root could never match, the process exited with `persisted AppHash does not match Badger state`, and the caller waited on a Comet RPC that never became ready. The rule is now selected in one function shared by the commit path and the verification path, so the two cannot disagree about which rule is in force. `TestAppHashDeterminism_AppV28Activation` walks a fresh four-validator devnet app-v2 → app-v28 one rung at a time with byte-identical AppHash at H-1/H/H+1 of every seam; both Consensus Fault Gates pass on this change; and the real-process state-sync gate drives its provider through app-v28 (`TARGET_APP_VERSION=28`), so a pristine receiver restores from the provider snapshot and both sides report exact app-v28 state with converging AppHash. The gate's receiver pre-publication SIGKILL and provider SIGKILL phases, plus the replay family that pins historical blocks to their original app versions, cover restart and replay equivalence across H.
+
+**The native shell rides this release.** A minor bump is the release that widens the shipped shell's SSCP compatibility range, which now admits v11.23 daemons — so fixes after this one ship as patch releases under the same shell.
+
+No chain reset and no transaction-type change; historical blocks keep replaying under their original app versions.
+
+Container: `ghcr.io/l33tdawg/sage:11.23.0`. SDK 11.23.0.
 
 ## What's New in v11.22.1
 

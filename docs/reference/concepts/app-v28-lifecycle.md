@@ -1,4 +1,4 @@
-<!-- Design contract for the app-v28 fork. ACTIVATED: the evidence below landed with the v11.22.1 ceiling bump, which is what turned the compiled gate into an automatic rung. -->
+<!-- Design contract for the app-v28 fork. ACTIVATED: the evidence below landed with the v11.23.0 ceiling bump, which is what turned the compiled gate into an automatic rung. -->
 
 # App-v28 public-memory commitment
 
@@ -94,7 +94,7 @@ its own chain to the new version on upgrade with no governance ceremony,
 writing AppHash-covered state. The gate can ship dormant; the bump belongs in
 the change that carries the evidence. That is how app-v28 shipped: the gate and
 its applied-height refresh were compiled in v11.22.0 with the ceiling still at
-27, and v11.22.1 raises it to 28 in the change that carries the evidence below,
+27, and v11.23.0 raises it to 28 in the change that carries the evidence below,
 so a personal node now advances itself across the seam exactly as it did for
 every earlier rung.
 

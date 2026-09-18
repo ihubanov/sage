@@ -10,15 +10,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The v28 gate is compiled ahead of its activation evidence: the ladder and the
-// applied-height refresh exist so the fork can be exercised, while the
-// auto-vote ceiling stays at 27 so no personal node advances itself into it.
-func TestAppV28GateShipsDormantBeneathTheAutoVoteCeiling(t *testing.T) {
+// The v28 gate shipped compiled ahead of its activation evidence, and the
+// release that carried the evidence raised the auto-vote ceiling to meet it: the
+// compiled and auto-vote ceilings are converged at 28, so a personal node
+// advances itself across the seam the same way it did for every earlier rung.
+func TestAppV28GateConvergesWithTheAutoVoteCeilingAfterItsEvidence(t *testing.T) {
 	require.Equal(t, tx.CanonicalUpgradeName(28), appV28UpgradeName)
 	require.Equal(t, uint64(28), maxCompiledAppVersion)
-	require.Equal(t, uint64(27), MaxSupportedAppVersion())
-	require.Greater(t, maxCompiledAppVersion, MaxSupportedAppVersion(),
-		"a dormant gate is compiled without raising the auto-vote ceiling")
+	require.Equal(t, uint64(28), MaxSupportedAppVersion())
+	require.Equal(t, maxCompiledAppVersion, MaxSupportedAppVersion(),
+		"the ceiling bump is the activation switch; it lands with the evidence")
 }
 
 func TestAppV28ConstantsRefreshAndStrictBoundary(t *testing.T) {

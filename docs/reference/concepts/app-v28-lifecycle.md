@@ -1,4 +1,4 @@
-<!-- Design contract for the app-v28 fork. NOT YET ACTIVATED: app-v27 remains the ceiling until the evidence below is in hand. -->
+<!-- Design contract for the app-v28 fork. ACTIVATED: the evidence below landed with the v11.22.1 ceiling bump, which is what turned the compiled gate into an automatic rung. -->
 
 # App-v28 public-memory commitment
 
@@ -92,14 +92,30 @@ auto-voter will not vote past, and `currentAppVersion`
 that ceiling, so bumping it is not a constant update: a personal node advances
 its own chain to the new version on upgrade with no governance ceremony,
 writing AppHash-covered state. The gate can ship dormant; the bump belongs in
-the change that carries the evidence.
+the change that carries the evidence. That is how app-v28 shipped: the gate and
+its applied-height refresh were compiled in v11.22.0 with the ceiling still at
+27, and v11.22.1 raises it to 28 in the change that carries the evidence below,
+so a personal node now advances itself across the seam exactly as it did for
+every earlier rung.
 
-## Evidence required before the ceiling bump
+## Evidence that landed with the ceiling bump
 
-- `make determinism`: byte-identical AppHash across a 4-node devnet crossing H
-- both Consensus Fault Gates
-- a promoted node surviving state-sync and restore (the app-v20 precedent)
-- restart and replay equivalence across H
+- `TestAppHashDeterminism_AppV28Activation`
+  (`test/integration/apphash_determinism_appv28_test.go`), run through
+  `deploy/scripts/run-determinism.sh`: a fresh four-validator devnet walks
+  app-v2 → app-v28 one rung at a time, asserting byte-identical AppHash at
+  H-1/H/H+1 of every seam. The final rung casts explicit validator votes only
+  while the target sits above the auto-vote ceiling, so the same test covers the
+  dormant build and this converged one.
+- Both Consensus Fault Gates on the change that carries the bump.
+- A promoted node surviving state-sync and restore: the real-process state-sync
+  gate now drives its provider through app-v28
+  (`deploy/scripts/run-v11.9-state-sync.sh`, `TARGET_APP_VERSION=28`) and
+  requires the pristine receiver and the provider to report exact app-v28 state
+  with converging AppHash after the snapshot transfer.
+- Restart and replay equivalence across H: the same gate's receiver
+  pre-publication SIGKILL and provider SIGKILL phases, plus the replay family
+  that pins historical blocks to their original app versions.
 
 ## Not in this fork
 

@@ -2690,23 +2690,25 @@ func (app *SageApp) currentAppVersion() uint64 {
 }
 
 // maxSupportedAppVersion is the readiness ceiling for upgrade auto-voting
-// (currently app-v27): a validator must never vote to activate an upgrade it
+// (currently app-v28): a validator must never vote to activate an upgrade it
 // cannot execute — doing so would commit consensus version.app=N while the
 // binary still runs at N-1, halting the chain on the next CometBFT handshake
 // (the maxSupportedAppVersion footgun). Bump this in lockstep with every new
 // appV<N>UpgradeName fork gate, EXCEPT for a gate that deliberately ships
-// dormant: app-v28's gate and applied-height refresh are compiled ahead of its
-// activation evidence (see docs/reference/concepts/app-v28-lifecycle.md), and
-// the auto-voter must abstain on it until the evidence lands, exactly as
-// app-v7 is governance-activated only.
-const maxSupportedAppVersion uint64 = 27
+// dormant: a gate may be compiled ahead of its activation evidence, in which
+// case the auto-voter must abstain on it and only the quorum-approved explicit
+// path can activate it, until this ceiling is raised in the change that carries
+// the evidence (app-v28 travelled exactly that path; see
+// docs/reference/concepts/app-v28-lifecycle.md).
+const maxSupportedAppVersion uint64 = 28
 
 // maxCompiledAppVersion is the highest app version this binary has a compiled
-// fork gate for (currently app-v28). It bounds what Info() may report and what
-// an explicitly approved, quorum-decided upgrade plan may activate; it is
-// deliberately allowed to run one step ahead of maxSupportedAppVersion so a
-// gate can be reviewed and tested before the auto-voter is willing to fire on
-// it. The two converge in the change that carries the activation evidence.
+// fork gate for (currently app-v28, converged with maxSupportedAppVersion). It
+// bounds what Info() may report and what an explicitly approved, quorum-decided
+// upgrade plan may activate. It is deliberately allowed to run ahead of
+// maxSupportedAppVersion while a gate awaits its activation evidence — the two
+// are equal at 28 today, and the next gate that ships dormant will separate
+// them again.
 const maxCompiledAppVersion uint64 = 28
 
 // MaxSupportedAppVersion returns the auto-vote readiness ceiling, which is the
@@ -4658,10 +4660,11 @@ func (app *SageApp) finalizeBlockUncommitted(_ context.Context, req *abcitypes.R
 		// Two diagnostics for the two ceilings, in the order they diverge.
 		//
 		// 1. Above the auto-vote ceiling but within what this binary can execute:
-		// a deliberate dormant gate (app-v28 today) activated through an explicit
-		// quorum-approved plan. Nothing halts — currentAppVersion() reports the
-		// gate — but every node's auto-voter abstains from here on, so surface
-		// the state instead of leaving it to be discovered from vote silence.
+		// a deliberately dormant gate activated through an explicit
+		// quorum-approved plan (the path app-v28 took while its evidence was
+		// pending). Nothing halts — currentAppVersion() reports the gate — but
+		// every node's auto-voter abstains from here on, so surface the state
+		// instead of leaving it to be discovered from vote silence.
 		//
 		// 2. Above maxCompiledAppVersion: this activation commits an app version
 		// this binary has no compiled fork gate for, and the node WILL halt on

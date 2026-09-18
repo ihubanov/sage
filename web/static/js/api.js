@@ -822,6 +822,29 @@ export async function submitGovVote(proposalId, decision) {
     return res.json();
 }
 
+// fetchAppUpgradeStatus reports the chain's app version, its next rung, the
+// pending plan and the active ballot, plus the two ceilings: what this binary
+// can execute and how far its auto-voter goes on its own. A target above the
+// auto-vote ceiling is deliberately dormant and can only advance on explicit
+// votes.
+export async function fetchAppUpgradeStatus() {
+    const res = await fetch(`${API_BASE}/v1/dashboard/governance/upgrade-status`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+}
+
+// submitAppUpgradePropose sends the dedicated UpgradePropose transaction — the
+// generic governance-propose route refuses app-version upgrades by design.
+export async function submitAppUpgradePropose(targetAppVersion, reason) {
+    const res = await fetch(`${API_BASE}/v1/dashboard/governance/upgrade-propose`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target_app_version: targetAppVersion, reason }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+}
+
 export async function fetchMemoryReanchorPlan() {
     const res = await fetch(`${API_BASE}/v1/dashboard/memory-reanchor/plan`);
     if (!res.ok) {

@@ -20,6 +20,7 @@ import { refreshTaskSnapshot } from './task-refresh.js';
 import { createFederationJoinScanLifecycle, normalizeFederationJoinState } from './federation-flow.js';
 import { buildBrainDomainInventory } from './domain-inventory.js';
 import { enqueueGovernedTransfer, runWithGovernanceCooldown } from './governance-retry.js';
+import { fetchAppUpgradeStatus, submitAppUpgradePropose } from './api.js';
 import {
     appV23PolicyDraft,
     appV23NormalizeAccessState,
@@ -11157,6 +11158,11 @@ function NetworkPage({ sse, accessMode = false }) {
     const [memoryRepairPlan, setMemoryRepairPlan] = useState(null);
     const [memoryRepairError, setMemoryRepairError] = useState('');
     const [memoryRepairSubmitting, setMemoryRepairSubmitting] = useState(false);
+    // App-version upgrade surface: the chain's rung, the pending plan, the
+    // active ballot, and the two ceilings (what this binary can execute vs how
+    // far its auto-voter goes on its own).
+    const [appUpgrade, setAppUpgrade] = useState(null);
+    const [appUpgradeBusy, setAppUpgradeBusy] = useState(false);
 
     const loadAgents = useCallback(async () => {
         try {
@@ -11201,6 +11207,15 @@ function NetworkPage({ sse, accessMode = false }) {
         } catch (e) { /* governance endpoint may not exist yet */ }
     }, []);
 
+    // Reads the authoritative upgrade status (same query the CLI uses), so
+    // CEREBRUM and `sage-gui upgrade status` can never disagree about the rung
+    // the chain is on or which fork is next.
+    const loadAppUpgrade = useCallback(async () => {
+        try {
+            setAppUpgrade(await fetchAppUpgradeStatus());
+        } catch (e) { /* older node or endpoint unavailable */ }
+    }, []);
+
     const loadMemoryRepairPlan = useCallback(async () => {
         try {
             const plan = await fetchMemoryReanchorPlan();
@@ -11227,6 +11242,7 @@ function NetworkPage({ sse, accessMode = false }) {
         loadUnregistered();
         loadGovProposals();
         loadMemoryRepairPlan();
+        loadAppUpgrade();
         fetchStats().then(data => {
             if (data?.by_domain) setAllDomains(Object.keys(data.by_domain).sort());
         }).catch(() => {});
@@ -11572,6 +11588,39 @@ function NetworkPage({ sse, accessMode = false }) {
     }, [loadAgents, loadUnregistered]);
 
     // Governance handlers
+    // Proposes the chain's next app-version rung through the dedicated
+    // UpgradePropose transaction. The generic governance-propose route refuses
+    // app-version upgrades by design, so this is the only way CEREBRUM can
+    // start one. When the target is dormant (above this binary's auto-vote
+    // ceiling) the confirmation says so, because the plan then cannot pass
+    // without explicit votes from validators.
+    const handleAppUpgradePropose = useCallback(async () => {
+        if (!appUpgrade) return;
+        const target = appUpgrade.next_target_app_version;
+        const dormant = target > (appUpgrade.auto_vote_ceiling || 0);
+        const proceed = await showConfirmation(
+            dormant
+                ? `Propose activation of app-v${target}? This gate is DORMANT in this binary: every node's upgrade auto-voter abstains, so the plan only activates if validators cast explicit votes.`
+                : `Propose activation of app-v${target}? Validators auto-vote accept when their binary supports the target.`,
+            { title: `Propose app-v${target}`, confirmLabel: 'Propose' },
+        );
+        if (!proceed) return;
+        setAppUpgradeBusy(true);
+        try {
+            const result = await submitAppUpgradePropose(target, `CEREBRUM: activate app-v${target}`);
+            showToast(
+                result.dormant
+                    ? `app-v${target} proposed — dormant, so every validator must vote explicitly before it activates.`
+                    : `app-v${target} proposed (activates at height ${result.activation_height}).`,
+                'success', 10000,
+            );
+            await Promise.all([loadAppUpgrade(), loadGovProposals()]);
+        } catch (e) {
+            showToast('Upgrade propose failed: ' + e.message, 'error', 10000);
+        }
+        setAppUpgradeBusy(false);
+    }, [appUpgrade, loadAppUpgrade, loadGovProposals]);
+
     const handleGovVote = useCallback(async (proposalId, decision) => {
         setGovVoting(true);
         try {
@@ -11857,7 +11906,41 @@ function NetworkPage({ sse, accessMode = false }) {
                     ${!activeProposal && html`<button class="gov-new-btn" onClick=${() => setShowGovModal(true)}>+ New Proposal</button>`}
 				</div>
 
-				${govScopes.length > 0 && html`
+                ${govScopes.length > 0 && html`
+                ${appUpgrade && html`
+                    <div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--surface);margin:10px 0 14px;">
+                        <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;">
+                            <div>
+                                <strong>App version app-v${appUpgrade.status?.current_app_version ?? '?'}</strong>
+                                <span style="color:var(--text-muted);font-size:11px;"> · binary executes up to app-v${appUpgrade.compiled_app_version} · auto-vote ceiling app-v${appUpgrade.auto_vote_ceiling}</span>
+                            </div>
+                            ${appUpgrade.proposable && html`
+                                <button class="gov-new-btn" disabled=${appUpgradeBusy} onClick=${handleAppUpgradePropose}>
+                                    ${appUpgradeBusy ? 'Proposing…' : `Propose app-v${appUpgrade.next_target_app_version}`}
+                                </button>
+                            `}
+                        </div>
+                        ${appUpgrade.status?.pending_plan && html`
+                            <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">
+                                Pending plan: ${appUpgrade.status.pending_plan.name} · target app-v${appUpgrade.status.pending_plan.target_app_version} · activation height ${appUpgrade.status.pending_plan.activation_height}
+                            </div>
+                        `}
+                        ${appUpgrade.status?.active_proposal && html`
+                            <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">
+                                Active ballot: ${appUpgrade.status.active_proposal.proposal_id}${appUpgrade.status.active_proposal.target_app_version ? ` · target app-v${appUpgrade.status.active_proposal.target_app_version}` : ''}
+                            </div>
+                        `}
+                        ${appUpgrade.explicit_vote_required_now && html`
+                            <div style="font-size:11px;color:var(--warning);margin-top:6px;font-weight:600;">
+                                This target is above the auto-vote ceiling — every validator must vote explicitly on the ballot below before it can activate.
+                            </div>
+                        `}
+                        ${appUpgrade.dormant_below_ceiling_gap && !appUpgrade.explicit_vote_required_now && html`
+                            <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">${appUpgrade.dormant_note}</div>
+                        `}
+                    </div>
+                `}
+
 					<div style="display:grid;gap:8px;margin:10px 0 14px;">
 						${govScopes.map(scope => html`
 							<div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--surface);">

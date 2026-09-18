@@ -23,6 +23,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	sageabci "github.com/l33tdawg/sage/internal/abci"
 	"github.com/l33tdawg/sage/internal/governance"
 	"github.com/l33tdawg/sage/internal/tx"
 )
@@ -125,18 +126,21 @@ func climbRung(t *testing.T, rpcs []string, adminKey ed25519.PrivateKey, target 
 	activation := res.Height + appV28ActivationFloorBlocks
 
 	// From app-v8 on the propose runs the governance ballot; each node's
-	// auto-voter accepts every target at or below its auto-vote ceiling
-	// (app-v27), so the ladder itself needs no explicit votes. The final rung is
-	// the deliberate case: the auto-voter abstains on the dormant app-v28 gate,
-	// so quorum is cast explicitly — one validator vote per node — which is
-	// exactly what the operator vote surfaces exist for.
-	if target == 28 {
+	// auto-voter accepts every target at or below its auto-vote ceiling. While
+	// app-v28's gate was dormant that ceiling sat at 27, so the final rung was
+	// the deliberate case: the auto-voter abstained and quorum was cast
+	// explicitly — one validator vote per node — which is exactly what the
+	// operator vote surfaces exist for. The release that carries the fork's
+	// evidence raises the ceiling to meet the gate, so the harness follows the
+	// binary it is built with: explicit votes only while the target sits above
+	// the auto-vote ceiling.
+	if target > sageabci.MaxSupportedAppVersion() {
 		proposalID := governance.ComputeProposalID(agentIDFor(adminKey), res.Height, governance.OpUpgrade, name)
-		t.Logf("app-v28 ballot %s opened at height %d; casting explicit accept votes (auto-voter abstains on a dormant gate)", proposalID, res.Height)
+		t.Logf("app-v%d ballot %s opened at height %d; casting explicit accept votes (target is above the auto-vote ceiling %d)", target, proposalID, res.Height, sageabci.MaxSupportedAppVersion())
 		for node := 1; node < cometRPCCount; node++ {
 			vote := castValidatorUpgradeVote(t, rpcs[node], loadDevnetValidatorKey(t, node), proposalID)
-			require.Equalf(t, uint32(0), vote.CheckCode, "node%d app-v28 vote rejected in CheckTx: %s", node, vote.CheckLog)
-			require.Equalf(t, uint32(0), vote.TxCode, "node%d app-v28 vote rejected at execution: %s", node, vote.TxLog)
+			require.Equalf(t, uint32(0), vote.CheckCode, "node%d app-v%d vote rejected in CheckTx: %s", node, target, vote.CheckLog)
+			require.Equalf(t, uint32(0), vote.TxCode, "node%d app-v%d vote rejected at execution: %s", node, target, vote.TxLog)
 			t.Logf("node%d accept vote committed at height %d", node, vote.Height)
 		}
 	}

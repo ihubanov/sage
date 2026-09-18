@@ -135,20 +135,20 @@ func TestUpgradeGovernanceStatusValidatesAutomaticBinaryReplacement(t *testing.T
 		},
 		{
 			name:       "current chain exceeds support",
-			status:     &UpgradeGovernanceStatus{CurrentAppVersion: 28},
-			maxSupport: 27,
-			wantError:  "current app version 28",
+			status:     &UpgradeGovernanceStatus{CurrentAppVersion: 29},
+			maxSupport: 28,
+			wantError:  "current app version 29",
 		},
 		{
 			name: "pending target exceeds support",
 			status: &UpgradeGovernanceStatus{
-				CurrentAppVersion: 27,
+				CurrentAppVersion: 28,
 				PendingPlan: &UpgradeGovernancePendingPlan{
-					Name: "app-v28", TargetAppVersion: 28, ActivationHeight: 900,
+					Name: "app-v29", TargetAppVersion: 29, ActivationHeight: 900,
 				},
 			},
-			maxSupport: 27,
-			wantError:  "targets app-v28",
+			maxSupport: 28,
+			wantError:  "targets app-v29",
 		},
 		{
 			name: "active upgrade target must be decoded",
@@ -165,15 +165,15 @@ func TestUpgradeGovernanceStatusValidatesAutomaticBinaryReplacement(t *testing.T
 		{
 			name: "active upgrade target exceeds support",
 			status: &UpgradeGovernanceStatus{
-				CurrentAppVersion: 27,
+				CurrentAppVersion: 28,
 				ActiveProposal: &UpgradeGovernanceActiveProposal{
-					ProposalID: "proposal-28", Operation: "upgrade",
+					ProposalID: "proposal-29", Operation: "upgrade",
 					OperationCode:    uint8(governance.OpUpgrade),
-					TargetAppVersion: func() *uint64 { value := uint64(28); return &value }(),
+					TargetAppVersion: func() *uint64 { value := uint64(29); return &value }(),
 				},
 			},
-			maxSupport: 27,
-			wantError:  "targets app-v28",
+			maxSupport: 28,
+			wantError:  "targets app-v29",
 		},
 	}
 	for _, tt := range tests {
@@ -211,11 +211,11 @@ func TestAcquireVerifiedUpgradeSnapshotFenceReleasesOnIncompatibleGovernance(t *
 	app.state.Height = 42
 	app.state.AppHash = []byte("committed-app-hash")
 	require.NoError(t, app.badgerStore.SetUpgradePlan(&store.UpgradePlanRecord{
-		Name: "app-v28", TargetAppVersion: 28, ActivationHeight: 900,
+		Name: "app-v29", TargetAppVersion: 29, ActivationHeight: 900,
 	}))
 
-	status, height, appHash, release, err := app.AcquireVerifiedUpgradeSnapshotFence(27)
-	require.ErrorContains(t, err, "targets app-v28")
+	status, height, appHash, release, err := app.AcquireVerifiedUpgradeSnapshotFence(28)
+	require.ErrorContains(t, err, "targets app-v29")
 	require.Nil(t, status)
 	require.Zero(t, height)
 	require.Nil(t, appHash)

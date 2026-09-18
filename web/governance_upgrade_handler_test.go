@@ -32,8 +32,10 @@ func upgradeStatusServer(t *testing.T, status sageabci.UpgradeGovernanceStatus) 
 }
 
 // The dashboard reads the same authoritative status the CLI does, and reports
-// the two ceilings so an operator can see when a target is deliberately dormant.
-func TestDashboardUpgradeStatusReportsCeilingsAndDormancy(t *testing.T) {
+// the two ceilings. With the app-v28 evidence landed the ceilings are converged,
+// so a ballot at the ceiling is a normal one; a ballot above it still has to be
+// carried by explicit votes.
+func TestDashboardUpgradeStatusReportsCeilingsAndExplicitVoteRequirement(t *testing.T) {
 	target := uint64(28)
 	server := upgradeStatusServer(t, sageabci.UpgradeGovernanceStatus{
 		Schema:            upgradeGovernanceStatusSchema,
@@ -54,10 +56,30 @@ func TestDashboardUpgradeStatusReportsCeilingsAndDormancy(t *testing.T) {
 	require.Equal(t, float64(28), body["next_target_app_version"], "next rung is current+1")
 	require.Equal(t, float64(sageabci.MaxSupportedAppVersion()), body["auto_vote_ceiling"])
 	require.Equal(t, float64(sageabci.MaxCompiledAppVersion()), body["compiled_app_version"])
+	require.Equal(t, false, body["explicit_vote_required_now"],
+		"a ballot at the converged ceiling is carried by the auto-voter")
+	require.Equal(t, false, body["dormant_below_ceiling_gap"])
+	require.NotContains(t, body, "dormant_note",
+		"the note describes a compiled-ahead gate; the ceilings are converged")
+
+	aboveCeiling := uint64(29)
+	server = upgradeStatusServer(t, sageabci.UpgradeGovernanceStatus{
+		Schema:            upgradeGovernanceStatusSchema,
+		CurrentAppVersion: 28,
+		ActiveProposal: &sageabci.UpgradeGovernanceActiveProposal{
+			ProposalID: "proposal-29", Operation: "upgrade", TargetID: "app-v29",
+			Status: "voting", TargetAppVersion: &aboveCeiling,
+		},
+	})
+	handler = &DashboardHandler{CometBFTRPC: server.URL}
+	recorder = httptest.NewRecorder()
+	handler.handleUpgradeStatus(recorder, httptest.NewRequest(http.MethodGet, "/v1/dashboard/governance/upgrade-status", nil))
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
 	require.Equal(t, true, body["explicit_vote_required_now"],
 		"a ballot above the auto-vote ceiling can only move on explicit votes")
-	require.Equal(t, true, body["dormant_below_ceiling_gap"])
-	require.Contains(t, body["dormant_note"], "dormant")
+	require.Equal(t, false, body["dormant_below_ceiling_gap"],
+		"no compiled-ahead gate exists once the ceilings converge")
 }
 
 // A chain with no ballot still reports the rung it is on and what comes next,

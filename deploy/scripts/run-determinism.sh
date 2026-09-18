@@ -38,7 +38,10 @@ COMPOSE=(docker compose -p "${PROJECT}"
 
 cleanup() {
   echo "--- tearing down ${PROJECT} ---"
-  "${COMPOSE[@]}" down -v --remove-orphans || true
+  # The password is required at interpolation time even for `down`; without it
+  # the teardown aborts and every container and volume of the run is left
+  # behind. It is the same throwaway value `up` used, never a real secret.
+  POSTGRES_PASSWORD=ci_test_password "${COMPOSE[@]}" down -v --remove-orphans || true
 }
 trap cleanup EXIT
 

@@ -1867,3 +1867,20 @@ test('CEREBRUM recommends canonical Messages instead of deprecated pipeline tool
     assert.doesNotMatch(appSource, /sage_pipe/);
     assert.match(appSource, /sends a message through SAGE/);
 });
+
+test('the app-version panel renders without governance scopes', () => {
+    // A personal node has no scope records until a scope_action commits, so
+    // gating the app-version card (and its Propose button) on the scope list
+    // hides the chain's only deliberate upgrade path exactly where an operator
+    // needs it. The card must render on its own; only the scope cards stay gated.
+    const governanceStart = appSource.indexOf('<h3>Governance');
+    assert.ok(governanceStart >= 0, 'the governance section must exist');
+    const scopesGate = appSource.indexOf('${govScopes.length > 0 && html`', governanceStart);
+    const appVersionPanel = appSource.indexOf('App version app-v${appUpgrade.status?.current_app_version', governanceStart);
+    assert.ok(scopesGate > governanceStart, 'the governance scope grid must stay gated on scopes');
+    assert.ok(appVersionPanel > governanceStart, 'the app-version panel must render in the governance section');
+    assert.ok(appVersionPanel < scopesGate,
+        'the app-version panel must render even when no governance scopes exist');
+    assert.ok(appSource.indexOf('${govScopes.map(scope => html`', scopesGate) > scopesGate,
+        'the scope cards must stay inside the scopes gate');
+});

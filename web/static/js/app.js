@@ -11906,7 +11906,6 @@ function NetworkPage({ sse, accessMode = false }) {
                     ${!activeProposal && html`<button class="gov-new-btn" onClick=${() => setShowGovModal(true)}>+ New Proposal</button>`}
 				</div>
 
-                ${govScopes.length > 0 && html`
                 ${appUpgrade && html`
                     <div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--surface);margin:10px 0 14px;">
                         <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;">
@@ -11941,6 +11940,7 @@ function NetworkPage({ sse, accessMode = false }) {
                     </div>
                 `}
 
+                ${govScopes.length > 0 && html`
 					<div style="display:grid;gap:8px;margin:10px 0 14px;">
 						${govScopes.map(scope => html`
 							<div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--surface);">

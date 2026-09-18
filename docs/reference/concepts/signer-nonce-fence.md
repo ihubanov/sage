@@ -1,6 +1,6 @@
 # The signer fence — same-key nonce ordering, and the hole that is still open
 
-**Status: v11.21.0. This document describes a fence that survives the process
+**Status: v11.22.0. This document describes a fence that survives the process
 that raised it: the residual it used to state — an in-process fence lost to a
 restart — is closed by durable intent plus an operator recovery that lifts only
 on a proven fate. Read "What the fence still cannot do" for the limits that
@@ -222,7 +222,7 @@ A `kill -9`, a power cut, or a crash during the original RPC can still lose the
 fence. **Closing that needs durable pre-broadcast intent** — the exact bytes and
 hash recorded *before* the send, cleared only on a proven fate, reloaded and
 reconciled *before* any nonce is allocated on startup. That is persistence work
-and is **not in v11.21.0**.
+and is **not in v11.22.0**.
 
 The residual is covered by an executable test:
 `TestRestartWhileFencedLosesTheTransaction` in

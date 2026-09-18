@@ -48,7 +48,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.21.0`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.22.0`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -207,6 +207,20 @@ software updates, and encryption controls. Ordinary agent identity replacement
 uses re-enrollment; historical memory authorship is preserved.
 
 ---
+
+## What's New in v11.22.0
+
+**App-v28 ships compiled and dormant, on purpose.** Two consensus-visible changes now exist behind one gate. The sparse public-memory Merkle index over committed `PUBLIC=0` records becomes AppHash-covered at the activation height, through a composite rule that hashes the legacy tree without the index nodes and composes it with the index root. The co-commit tombstone rule stops being a check at the local REST submission boundary and becomes a rule the consensus path enforces. Neither one is active: `maxSupportedAppVersion` stays 27, so every node's upgrade auto-voter abstains on v28 and a personal node cannot advance itself into the fork. Activation waits for the evidence the contract names — byte-identical AppHash across the seam on a four-validator devnet, both Consensus Fault Gates, a promoted node surviving state-sync and restore, and replay equivalence — and ships in the release that carries it. An explicitly proposed, quorum-approved plan can still activate it; nothing does so on its own.
+
+**The tombstone rule is a consensus rule now.** A co-commit never consults the voter — block inclusion is decisive — so the content-hash dedup that keeps a rejected memory's exact bytes out of the store never ran on that path, and a directly broadcast envelope never met the REST guard at all. The predicate needs data consensus state did not carry: `memory:<id>` is a content hash plus status, so "did these exact bytes already leave `proposed` under a different id" had no reverse lookup. The fork adds one — an entry per content hash and id that has left proposed — maintained by every memory write, backfilled from existing records at activation, and consulted from H+1 with the candidate's own id excluded so an idempotent re-send is decided by its own record.
+
+**The binary now states two ceilings instead of one.** What it can execute (app-v28, compiled) and what it will auto-vote (app-v27) are different numbers while a gate awaits its evidence, and the surfaces say which is which: `upgrade status` and `upgrade preflight` print both, the version banner and full-backup stamp follow the compiled ceiling, and state sync accepts a restore up to it, so a promoted node can be rebuilt from a snapshot. The acceptance gate and the authorization ceiling moved with them, and the invariant that used to require all three numbers to be equal now states what each one means.
+
+**Upgrades can be proposed and voted on from CEREBRUM, and voted on from the terminal.** The Governance view gains an App version panel — the chain's rung, both ceilings, the pending plan, the active ballot, a Propose button for the next rung — and `sage-gui upgrade vote` casts an explicit accept, reject or abstain. That path matters because a dormant gate is designed so nothing auto-votes: reaching quorum is a deliberate act by validators, which is what the panel and the command exist for. The generic governance-propose route still refuses `OpUpgrade` by design; the dashboard speaks the dedicated `UpgradePropose` transaction instead.
+
+No chain reset, no transaction-type change, and historical blocks keep replaying under their original app versions. app-v27 remains the ceiling until v11.22.0's dormant gate gets its evidence.
+
+Container: `ghcr.io/l33tdawg/sage:11.22.0`. SDK 11.22.0.
 
 ## What's New in v11.21.0
 

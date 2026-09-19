@@ -60,6 +60,45 @@ func memoryReassignLogFingerprint(agentID string) string {
 	return hex.EncodeToString(digest[:12])
 }
 
+// appV23OperatorHandlerPair returns the app-v23 access-control pair: the
+// consensus-authoritative state read that exposes role and enrollment
+// revisions, and the atomic policy write that is the only producer of
+// TxTypeAgentRoleChange.
+func (h *DashboardHandler) appV23OperatorHandlerPair(agentStore store.AgentStore) (get, put http.HandlerFunc) {
+	return h.handleAppV23AccessState(agentStore), h.handleAppV23AgentPolicy()
+}
+
+// registerAppV23OperatorRoutes mounts the pair on the CEREBRUM dashboard
+// router, whose enclosing group already runs authMiddleware over every request.
+func (h *DashboardHandler) registerAppV23OperatorRoutes(r chi.Router, agentStore store.AgentStore) {
+	get, put := h.appV23OperatorHandlerPair(agentStore)
+	r.With(h.cerebrumOperatorGate).Get("/v1/dashboard/network/access", get)
+	r.With(h.cerebrumOperatorGate).Put("/v1/dashboard/network/access/agents/{id}/policy", put)
+}
+
+// RegisterAmidOperatorRoutes mounts exactly that pair on an amid REST router.
+// An amid-only validator fleet has no CEREBRUM SPA: its operator reaches these
+// routes with a request signed by the current Root or an active same-machine
+// Admin, and the broker key configured on the node countersigns a promoted
+// Admin's action. It is the same pair CEREBRUM serves — same handlers, same
+// gate, same transaction — and nothing else from the dashboard router is
+// exposed.
+//
+// authMiddleware is required here because the amid mount has no equivalent of
+// CEREBRUM's enclosing group: it verifies a signed request exactly once and
+// binds the authenticated principal to the context, so the operator gate and
+// the handler resolve the same actor. Without it both would verify the same
+// signature and the dashboard replay fence would reject the second check.
+func (h *DashboardHandler) RegisterAmidOperatorRoutes(r chi.Router) {
+	agentStore, ok := h.store.(AgentStoreProvider)
+	if !ok {
+		return
+	}
+	get, put := h.appV23OperatorHandlerPair(agentStore)
+	r.With(h.authMiddleware, h.cerebrumOperatorGate).Get("/v1/dashboard/network/access", get)
+	r.With(h.authMiddleware, h.cerebrumOperatorGate).Put("/v1/dashboard/network/access/agents/{id}/policy", put)
+}
+
 // RegisterNetworkRoutes registers all /v1/dashboard/network/ routes.
 func (h *DashboardHandler) RegisterNetworkRoutes(r chi.Router) {
 	agentStore, ok := h.store.(AgentStoreProvider)
@@ -93,8 +132,7 @@ func (h *DashboardHandler) RegisterNetworkRoutes(r chi.Router) {
 	r.With(h.cerebrumOperatorGate).
 		Get("/v1/dashboard/network/agents/{id}/domains", h.handleAgentDomains(agentStore))
 	r.Post("/v1/dashboard/network/reassign-domain-ownership", h.handleReassignDomainOwnership(agentStore))
-	r.With(h.cerebrumOperatorGate).Get("/v1/dashboard/network/access", h.handleAppV23AccessState(agentStore))
-	r.With(h.cerebrumOperatorGate).Put("/v1/dashboard/network/access/agents/{id}/policy", h.handleAppV23AgentPolicy())
+	h.registerAppV23OperatorRoutes(r, agentStore)
 	r.With(h.cerebrumOperatorGate).Put("/v1/dashboard/network/access/agents/{id}/name", h.handleAppV26AgentDisplayName())
 	r.With(h.cerebrumOperatorGate).Put("/v1/dashboard/network/access/groups/{groupID}", h.handleAppV23AccessGroupPut())
 	r.With(h.cerebrumOperatorGate).Delete("/v1/dashboard/network/access/groups/{groupID}", h.handleAppV23AccessGroupDelete())

@@ -1032,6 +1032,18 @@ action; Admin actions also carry a fresh, single-use Root elevation
 countersignature. Capability bits are returned only as diagnostics derived
 from the selected named profile.
 
+An amid-only validator fleet has no CEREBRUM SPA. `amid` mounts exactly two of
+these routes on its own REST listener — `GET /v1/dashboard/network/access` and
+`PUT /v1/dashboard/network/access/agents/{id}/policy` — with the same handlers
+and operator gate that CEREBRUM serves, so a policy write produces the
+identical `TxTypeAgentRoleChange`. The caller signs the exact request as the
+current Root, using the operator key material the host already holds; that
+same configured broker key (`--cerebrum-root-key-file` /
+`SAGE_CEREBRUM_ROOT_KEY_FILE`) is what produces the elevation countersignature
+on the promoted-Admin path. Nothing else from the dashboard router is mounted
+on amid, and a node without a broker key answers `root_key_unavailable`
+instead of degrading open.
+
 The Add Agent wizard is identity/connection enrollment only. It creates a
 restricted pending Member and deliberately does not collect, stage, or persist
 a requested role, clearance, or domain list that `AgentRegister` would discard.
@@ -3243,6 +3255,7 @@ domain/group/grant, and clearance decision for every returned record.
 | `SAGE_TX_COMMIT_TIMEOUT_MS` | 60000 | `broadcast_tx_commit` client timeout |
 | `VALIDATOR_KEY_FILE` | — | Path to CometBFT `priv_validator_key.json`; `amid` injects this concrete key into REST in socket mode, while in-process runtimes inject the key under `--home`. Governance is disabled rather than using the compatibility random key when unavailable. |
 | `SAGE_GOVERNANCE_OPERATOR_ID` | — | `amid` only: canonical hex Ed25519 identity allowed to authorize this validator's REST governance mutations. Equivalent flag: `--governance-operator-id`. Empty disables governance mutations. `sage-gui` wires its local `agent.key` identity directly. |
+| `SAGE_CEREBRUM_ROOT_KEY_FILE` | — | `amid` only: raw 32-byte seed or 64-byte Ed25519 CEREBRUM Root key that authenticates local Root-signed operator requests and countersigns promoted-Admin actions on the mounted app-v23 access pair. Equivalent flag: `--cerebrum-root-key-file`. Empty keeps those routes mounted but failing closed with `root_key_unavailable`. |
 | `CORS_ALLOWED_ORIGINS` | `*` | Comma-separated allowed origins |
 
 ---

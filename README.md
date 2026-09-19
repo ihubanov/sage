@@ -48,7 +48,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.0`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.1`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -207,6 +207,16 @@ software updates, and encryption controls. Ordinary agent identity replacement
 uses re-enrollment; historical memory authorship is preserved.
 
 ---
+
+## What's New in v11.23.1
+
+**An amid-only fleet can set an agent's enrollment clearance.** A validator fleet with no CEREBRUM SPA could not raise an existing agent's clearance: the only producer of `TxTypeAgentRoleChange` is the dashboard policy route, the legacy PATCH route is retired post-app-v23, and `amid` served neither. `amid` now mounts exactly two dashboard routes on its own REST listener — `GET /v1/dashboard/network/access` and `PUT /v1/dashboard/network/access/agents/{id}/policy` — with the same handlers and the same operator gate CEREBRUM serves, so the transaction is identical. The caller signs the exact request as the current Root; the node's configured broker key (`--cerebrum-root-key-file` / `SAGE_CEREBRUM_ROOT_KEY_FILE`) is that credential, and a node without it answers `root_key_unavailable` instead of degrading open.
+
+**Enrollment clearance is the one the memory-write gate reads.** Membership clearance is a different record and never satisfies the gate that compares a submission's classification against the agent's *enrollment* clearance; this is the surface that writes it, with the role and enrollment revisions the read route exposes.
+
+No transaction-type change, no consensus change, and no chain reset. A patch release inside the 11.23 line: the shipped native shell already admits v11.23 daemons, so no shell range moves.
+
+Container: `ghcr.io/l33tdawg/sage:11.23.1`. SDK 11.23.1.
 
 ## What's New in v11.23.0
 

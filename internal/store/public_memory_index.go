@@ -157,6 +157,34 @@ func publicLeafFromCanonical(reader *BadgerStore, identifier string) (*PublicMem
 	if state.Classification != 0 {
 		return nil, nil
 	}
+	// A PUBLIC record whose historical lifecycle transition erased its canonical
+	// content hash has nothing to commit: a leaf encodes a 32-byte content hash,
+	// so there is no canonical form to fold into the tree. Treating one such
+	// record as a build error is what makes an app-v28 activation block
+	// unreplayable — the stage is prepared OUTSIDE the consensus transaction, so
+	// the error aborts the same block on every replay and the node can never
+	// start again. Quarantine it instead, exactly as the co-commit tombstone
+	// index already does by skipping a record whose decoded hash is not 32 bytes
+	// (internal/store/cocommit_tombstone.go). The record joins the committed
+	// public set in the block that re-anchors its hash, because
+	// SyncPublicMemoryChanges folds every changed memory back into the promoted
+	// index.
+	//
+	// Deliberately narrow. Only a record accepted before app-v25 lacks a
+	// submission-height marker, and only those could have their hash erased by a
+	// legacy lifecycle transition. A record born under app-v25 or later must
+	// carry a complete canonical envelope, so a missing hash there is still a
+	// hard inconsistency that refuses the build.
+	if len(state.ContentHash) == 0 {
+		_, bornUnderAppV25, markerErr := reader.GetMemorySubmissionHeight(identifier)
+		if markerErr != nil {
+			return nil, markerErr
+		}
+		if !bornUnderAppV25 {
+			return nil, nil
+		}
+		return nil, ErrPublicMemoryIndex
+	}
 	if !state.DomainRecorded || !state.AuthorRecorded || !state.AuthorPrincipalRecorded || len(state.ContentHash) != 32 || state.CoCommitRecorded {
 		return nil, ErrPublicMemoryIndex
 	}

@@ -24,6 +24,7 @@ import (
 	"github.com/cometbft/cometbft/p2p"
 	"github.com/cometbft/cometbft/privval"
 	"github.com/cometbft/cometbft/proxy"
+	"github.com/go-chi/chi/v5"
 	"github.com/rs/zerolog"
 
 	"github.com/l33tdawg/sage/api/rest"
@@ -31,9 +32,11 @@ import (
 	"github.com/l33tdawg/sage/internal/auth"
 	"github.com/l33tdawg/sage/internal/embedding"
 	"github.com/l33tdawg/sage/internal/metrics"
+	"github.com/l33tdawg/sage/internal/store"
 	"github.com/l33tdawg/sage/internal/tlsca"
 	"github.com/l33tdawg/sage/internal/tx"
 	"github.com/l33tdawg/sage/internal/voter"
+	"github.com/l33tdawg/sage/web"
 )
 
 // Set via ldflags at build time.
@@ -252,6 +255,29 @@ func wireRESTForkAccessors(server restForkAccessorSetter, app appForkAccessorSou
 	server.SetPostV22ForNextTxAccessor(app.IsAppV22ActiveForNextTx)
 	server.SetPostV23ForNextTxAccessor(app.IsAppV23ActiveForNextTx)
 	server.SetPostV27ForNextTxAccessor(app.IsAppV27ActiveForNextTx)
+}
+
+// wireAmidOperatorRoutes mounts the app-v23 access-control pair on the amid REST
+// router: the consensus-authoritative state read that exposes role and
+// enrollment revisions, and the atomic policy write that is the only producer
+// of TxTypeAgentRoleChange. The handlers, gate, and control-actor resolution
+// are exactly the ones CEREBRUM serves (web.RegisterAmidOperatorRoutes), with
+// resolveRootKey providing the local countersignature broker for a promoted
+// Admin and the signer for a Root-signed request.
+func wireAmidOperatorRoutes(
+	r chi.Router,
+	pgStore store.OffchainStore,
+	badgerStore *store.BadgerStore,
+	cometRPC, version string,
+	appV23Active func() bool,
+	resolveRootKey func(string) (ed25519.PrivateKey, bool),
+) {
+	operator := web.NewDashboardHandler(pgStore, version)
+	operator.BadgerStore = badgerStore
+	operator.CometBFTRPC = cometRPC
+	operator.AppV23ActiveFn = appV23Active
+	operator.ResolveAgentKeyFn = resolveRootKey
+	operator.RegisterAmidOperatorRoutes(r)
 }
 
 const (
@@ -542,18 +568,29 @@ func startServices(ctx context.Context, app *sageabci.SageApp, restAddr, metrics
 	} else if operatorErr := restServer.SetGovernanceOperatorID(governanceOperatorID); operatorErr != nil {
 		logger.Error().Err(operatorErr).Msg("REST governance disabled: governance operator identity is invalid")
 	}
+	var resolveCEREBRUMRootKey func(string) (ed25519.PrivateKey, bool)
 	if cerebrumRootKeyFile == "" {
 		logger.Warn().Msg("promoted-Admin REST actions disabled: set --cerebrum-root-key-file / SAGE_CEREBRUM_ROOT_KEY_FILE")
 	} else {
-		restServer.SetAppV23RootKeyResolver(func(credentialID string) (ed25519.PrivateKey, bool) {
+		resolveCEREBRUMRootKey = func(credentialID string) (ed25519.PrivateKey, bool) {
 			key, keyErr := loadCEREBRUMRootKey(cerebrumRootKeyFile)
 			if keyErr != nil {
 				return nil, false
 			}
 			public, ok := key.Public().(ed25519.PublicKey)
 			return key, ok && auth.PublicKeyToAgentID(public) == credentialID
-		})
+		}
+		restServer.SetAppV23RootKeyResolver(resolveCEREBRUMRootKey)
 	}
+	// app-v23 operator surface. An amid-only fleet has no CEREBRUM SPA, so the
+	// two access-control routes (read state, set enrollment policy) are mounted
+	// here with the same handlers and the same gate CEREBRUM uses. The broker
+	// key above countersigns promoted-Admin actions; without it the mounted
+	// routes fail closed with root_key_unavailable.
+	wireAmidOperatorRoutes(
+		restServer.Router(), pgStore, badgerStore, cometRPC, version,
+		app.IsAppV23ActiveForNextTx, resolveCEREBRUMRootKey,
+	)
 	restServer.StartEmbeddingRepair(ctx)
 	restServer.SetSuppCache(app.SuppCache)
 	// v8.0: wire the off-consensus fork-gate accessor so REST handlers

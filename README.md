@@ -48,7 +48,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.1`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.2`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -207,6 +207,16 @@ software updates, and encryption controls. Ordinary agent identity replacement
 uses re-enrollment; historical memory authorship is preserved.
 
 ---
+
+## What's New in v11.23.2
+
+**A chain whose public corpus predates app-v28 can open the fork.** The public-memory stage is built by `BuildPublicMemoryMigration`, which refused to produce a leaf for any `PUBLIC=0` record it could not canonically encode — and a real chain carried 53 legacy records whose canonical content hash had been erased by a historical lifecycle transition. Because the stage is prepared outside the consensus transaction, that refusal aborted the activation block on **every** replay: CometBFT re-entered "replay last block using real app" and the node could not start at all, so `upgrade cancel` could not help either — it is itself a consensus transaction. Those records are now quarantined out of the committed public set instead of failing the build, exactly as the co-commit tombstone index already treats a record whose decoded hash is not 32 bytes, and a record joins the set in the block that re-anchors its hash.
+
+**Narrow by design.** Only a record accepted before app-v25 lacks a submission-height marker, and only those could have had their hash erased by a legacy lifecycle transition, so a missing hash on a record born under app-v25 or later is still a hard inconsistency that refuses the build. Nothing about the commitment itself changes: this decides whether an activation succeeds, not what the fork commits.
+
+No transaction-type change, no upgrade height, and no chain reset.
+
+Container: `ghcr.io/l33tdawg/sage:11.23.2`. SDK 11.23.2.
 
 ## What's New in v11.23.1
 

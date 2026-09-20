@@ -10,7 +10,7 @@ import {
 
 const workflow = readFileSync(new URL('../.github/workflows/pages-download-snapshot.yml', import.meta.url), 'utf8');
 const at = Date.parse('2026-09-20T00:30:00Z');
-const snapshot = { version: 1, count: 8803, latest: 'v11.23.4', updatedAt: '2026-09-20T00:30:00.000Z' };
+const snapshot = { version: 1, count: 8803, latest: 'v11.23.5', updatedAt: '2026-09-20T00:30:00.000Z' };
 const index = `<!doctype html>
 <html>
   <body>
@@ -57,7 +57,7 @@ test('the fallback rewrite leaves no hand-baked number behind and is idempotent'
   assert.ok(patched.includes('data-updated-at="2026-09-20T00:30:00.000Z"'));
   assert.ok(patched.includes('>8,803</strong>'));
   assert.ok(patched.includes('Last known count &middot; Sep 20, 2026, 00:30 UTC'));
-  assert.ok(patched.includes('<strong id="latest-version">v11.23.4</strong>'));
+  assert.ok(patched.includes('<strong id="latest-version">v11.23.5</strong>'));
   assert.ok(!patched.includes('8,312'));
   assert.equal(applyFallback(patched, snapshot), patched);
   assert.equal(formatUtc(snapshot.updatedAt), 'Sep 20, 2026, 00:30 UTC');
@@ -80,7 +80,7 @@ test('release tags compare numerically', () => {
   assert.equal(isNewerVersion('v11.23.2', 'v11.23.2'), false);
   assert.equal(isNewerVersion('v11.23.1', 'v11.23.2'), false);
   assert.equal(isNewerVersion('nightly', 'v11.23.2'), false);
-  assert.equal(isNewerVersion('v11.23.4', undefined), false);
+  assert.equal(isNewerVersion('v11.23.5', undefined), false);
 });
 
 test('arguments are explicit about the pages checkout', () => {

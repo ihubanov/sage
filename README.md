@@ -48,7 +48,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.4`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.5`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -207,6 +207,18 @@ software updates, and encryption controls. Ordinary agent identity replacement
 uses re-enrollment; historical memory authorship is preserved.
 
 ---
+
+## What's New in v11.23.5
+
+**A fence on a quiet chain settles itself.** SAGE chains are idle by design: since app-v12 every node sets `create_empty_blocks=false`, so a block is minted exactly when a signed transaction enters the mempool and the chain sits still otherwise. A fence restored from durable intent refuses to sign, and its signed bytes did not survive the process — so on a chain that was already quiet when the fence was raised, the fence was holding the only thing that could produce the proof it was waiting for. No transaction meant no block; no block meant no committed hash and no advanced committed nonce. The key was held forever, every write and every cleanup on that node was refused, and on a single-validator personal node the hold had no exit at all — the operator route needed a credential the operator could not present.
+
+**What now happens:** when the node is caught up, has no peer and has seen none while this fence was held, holds no mempool copy of the transaction, sees no committed fate for its hash, holds an unspent allocation, and the chain's tip was minted before this fence was raised, the node settles the fence itself, records the decision as `fence_abandoned` with `mode=automatic_quiescent` and the full evidence (including the tip height and time), reserves the abandoned allocation so the next transaction cannot reuse it, and lets the next write mint the block that wakes the chain.
+
+**What still holds the fence:** a tip that has minted since the fence was raised (that chain can still speak to these bytes), any connected peer, a peer seen under this fence, a mempool that holds the transaction — that is a chain with something to mint and the fence is what stops it, so it stays an operator decision — a node still catching up, a tip that cannot be read, a live fence whose exact bytes still exist, and any record without a nonce.
+
+No consensus change, no transaction-type change, no upgrade height, and no chain reset.
+
+Container: `ghcr.io/l33tdawg/sage:11.23.5`. SDK 11.23.5.
 
 ## What's New in v11.23.4
 

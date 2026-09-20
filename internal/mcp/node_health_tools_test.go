@@ -48,12 +48,12 @@ func nodeHealthFor(t *testing.T, server *httptest.Server) map[string]any {
 // is stopping it, and the guidance must not imply one is held.
 func TestNodeHealthReportsNoFence(t *testing.T) {
 	server := healthServer(t, http.StatusOK, map[string]any{
-		"version": "11.23.4", "boot_id": "boot-1", "uptime": "1m0s",
+		"version": "11.23.5", "boot_id": "boot-1", "uptime": "1m0s",
 		"signer_fences": map[string]any{"active": 0, "oldest_age_seconds": 0},
 	})
 	out := nodeHealthFor(t, server)
 
-	require.Equal(t, "11.23.4", out["version"])
+	require.Equal(t, "11.23.5", out["version"])
 	fences, ok := out["signer_fences"].(map[string]any)
 	require.True(t, ok, "the fence block must be forwarded: %v", out["signer_fences"])
 	require.Equal(t, float64(0), fences["active"])
@@ -65,7 +65,7 @@ func TestNodeHealthReportsNoFence(t *testing.T) {
 // cannot clear itself, and an agent that treats it as pending waits forever.
 func TestNodeHealthExplainsARestoredFence(t *testing.T) {
 	server := healthServer(t, http.StatusOK, map[string]any{
-		"version": "11.23.4",
+		"version": "11.23.5",
 		"signer_fences": map[string]any{
 			"active": 1, "oldest_age_seconds": 212,
 			"explanation": "one or more signing keys are waiting for proof of an earlier submission's fate",

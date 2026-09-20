@@ -88,6 +88,64 @@ func newQuiescentRPC(t *testing.T, fenceBytes []byte) (*quiescentRPC, *httptest.
 	return state, server
 }
 
+// TestTxLookupNotFoundIsAnAnswerNotAFault pins the classification that broke
+// every route asking about an uncommitted transaction. CometBFT reports a hash
+// it has not indexed as JSON-RPC -32603 "Internal error" with a data string
+// naming that hash; read as a fault it 502'd the lift route, classified the
+// hash as "unavailable" in the abandon evidence, and errored the automatic
+// resolution before it could evaluate a single gate — which is why a field node
+// recorded no refusal reason at all and held two unprovable fences.
+func TestTxLookupNotFoundIsAnAnswerNotAFault(t *testing.T) {
+	const wantHashHex = "91583E9856D50564330CE21B3AEB58EA4A72E4C3DB7955EA7E523D6F8EA4CA9D"
+	raw, err := hex.DecodeString(wantHashHex)
+	require.NoError(t, err)
+	var hash [32]byte
+	copy(hash[:], raw)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/tx" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{
+				"code":    -32603,
+				"message": "Internal error",
+				"data":    "tx (" + wantHashHex + ") not found",
+			},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	outcome, lookupErr := cometIndexedOutcome(context.Background(), server.URL, nil, hash)
+	require.NoError(t, lookupErr, "a hash the node has not indexed is an answer, not a lookup fault")
+	require.Equal(t, TxVerdictUnresolved, outcome.Verdict)
+	require.Contains(t, outcome.Detail, "has not indexed this transaction")
+
+	// The narrowness matters: a real internal error, and a not-found answer for
+	// a DIFFERENT hash, must both stay faults. Adopting either as "not
+	// committed" is the direction that discards a transaction.
+	for name, envelope := range map[string]map[string]any{
+		"a genuine internal error": {
+			"code": -32603, "message": "Internal error", "data": "database unavailable",
+		},
+		"not found for another hash": {
+			"code": -32603, "message": "Internal error",
+			"data": "tx (ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB) not found",
+		},
+		"a different error code": {
+			"code": -32601, "message": "Method not found", "data": "tx (" + wantHashHex + ") not found",
+		},
+	} {
+		require.False(t,
+			cometTxLookupSaysNotFound(
+				envelope["code"].(int), envelope["message"].(string), envelope["data"].(string), hash),
+			name)
+	}
+}
+
 // TestQuiescentRuleSettlesARestoredFenceOnAQuietChain is the field case: a
 // healthy node whose chain has minted nothing since this fence was raised.
 // There is no transaction for those bytes to arrive in and no block to prove

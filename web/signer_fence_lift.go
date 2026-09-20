@@ -54,7 +54,7 @@ func (h *DashboardHandler) handleSignerFenceLift(w http.ResponseWriter, r *http.
 	target, heldCount := fenceForSigner(signer)
 	if target == nil {
 		writeJSONResp(w, http.StatusNotFound, map[string]any{
-			"error": "no signer fence is held for that signer",
+			"error": "no signer fence is held for that signer (use the full public key from the health row's signer_public_key; the signer field is a truncated display form)",
 			"held":  heldCount,
 		})
 		return

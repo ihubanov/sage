@@ -943,16 +943,24 @@ func signerFenceHealth(operator bool) map[string]any {
 	signers := make([]map[string]any, 0, len(held))
 	for _, fence := range held {
 		row := map[string]any{
-			"signer":          fence.SignerPubKeyPrefix,
-			"tx_hash":         fence.TxHash,
-			"held_seconds":    int(fence.HeldFor.Round(time.Second).Seconds()),
-			"since":           fence.Since.UTC().Format(time.RFC3339),
-			"attempts":        fence.Attempts,
-			"cause":           fence.Cause,
-			"resolution":      fence.Resolution,
-			"last_cause":      fence.LastCause,
-			"last_detail":     fence.LastDetail,
-			"signer_agent_id": fence.SignerPubKeyHex,
+			"signer": fence.SignerPubKeyPrefix,
+			// The full public key, because the prefix above is a DISPLAY form.
+			// It cannot be used as a request key: sending it to the lift or
+			// abandon route answers 404 "no signer fence is held", which reads
+			// like "your fence does not exist" rather than "you passed the
+			// truncated form". A field report lost several attempts to exactly
+			// that, and had to read the durable table to recover the key the
+			// status surface had already been given.
+			"signer_public_key": fence.SignerPubKeyHex,
+			"tx_hash":           fence.TxHash,
+			"held_seconds":      int(fence.HeldFor.Round(time.Second).Seconds()),
+			"since":             fence.Since.UTC().Format(time.RFC3339),
+			"attempts":          fence.Attempts,
+			"cause":             fence.Cause,
+			"resolution":        fence.Resolution,
+			"last_cause":        fence.LastCause,
+			"last_detail":       fence.LastDetail,
+			"signer_agent_id":   fence.SignerPubKeyHex,
 		}
 		if fence.HasNonce {
 			// The nonce is what makes a fence actionable: it can be compared

@@ -2501,10 +2501,34 @@ type cometTxLookup struct {
 		} `json:"tx_result"`
 	} `json:"result"`
 	Error *struct {
+		Code    int    `json:"code"`
 		Message string `json:"message"`
 		Data    string `json:"data"`
 	} `json:"error"`
 }
+
+// cometTxLookupSaysNotFound recognises the ONE error envelope that is an
+// answer rather than a fault: CometBFT's -32603 "Internal error" whose data
+// names the hash that was asked about and says it was not found. The hash must
+// appear in the text so a generic internal error cannot be adopted as "not
+// committed" — the direction that would be indistinguishable from a lookup
+// that simply failed.
+func cometTxLookupSaysNotFound(code int, message, data string, hash [sha256.Size]byte) bool {
+	if code != cometTxNotFoundRPCErrorCode {
+		return false
+	}
+	text := strings.ToLower(message + " " + data)
+	if !strings.Contains(text, "not found") {
+		return false
+	}
+	return strings.Contains(text, strings.ToLower(hex.EncodeToString(hash[:])))
+}
+
+// cometTxNotFoundRPCErrorCode is the JSON-RPC code CometBFT 0.38 uses for a
+// transaction the node has not indexed (it reports "Internal error" with a
+// "tx (HASH) not found" data string). It is NOT a unique not-found code — real
+// internal errors share it — which is why the text must corroborate.
+const cometTxNotFoundRPCErrorCode = -32603
 
 // cometBroadcastCommit mirrors the /broadcast_tx_commit envelope: both the
 // CheckTx and the FinalizeBlock code, because either one being non-zero is a
@@ -2646,6 +2670,32 @@ func cometIndexedOutcome(ctx context.Context, endpoint string, encoded []byte, h
 		return TxOutcome{Verdict: TxVerdictUnresolved}, err
 	}
 	if lookup.Error != nil {
+		// "NOT FOUND" IS AN ANSWER, NOT A FAULT. CometBFT reports a hash it has
+		// not indexed as JSON-RPC -32603 "Internal error" with a data string
+		// naming that hash. Read as a fault, this single line broke every route
+		// that asks about a transaction that never committed — which is the
+		// NORMAL state for a fence whose transaction is unproven:
+		//   - the lift route answered 502 "the fate of this transaction could
+		//     not be read" instead of 409 no-proof-yet;
+		//   - the evidence reader classified the hash as "unavailable" instead
+		//     of "not_found";
+		//   - and the automatic resolution errored BEFORE reaching any of its
+		//     gates, so every predicate it would have evaluated (and every
+		//     refusal reason it would have recorded) was unreachable. A field
+		//     node sat behind two unprovable fences for exactly this reason.
+		//
+		// The match is deliberately narrow: the error must be -32603 AND its
+		// text must say "not found" AND it must name the hash that was asked
+		// about. Anything else stays a fault, because a lookup that could not
+		// be performed must never be recorded as "the transaction is not
+		// committed" — that is the direction that lifts a fence on no evidence.
+		if cometTxLookupSaysNotFound(lookup.Error.Code, lookup.Error.Message, lookup.Error.Data, hash) {
+			return TxOutcome{
+				Verdict: TxVerdictUnresolved,
+				Detail: "comet tx lookup: the node has not indexed this transaction (it is in no committed " +
+					"block); a lookup miss is not proof of anything, which is why the fence stays held",
+			}, nil
+		}
 		return TxOutcome{Verdict: TxVerdictUnresolved},
 			fmt.Errorf("comet tx lookup: %s", scrubFenceText(lookup.Error.Message+": "+lookup.Error.Data, encoded))
 	}

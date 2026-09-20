@@ -256,6 +256,119 @@ func ReadFenceAbandonEvidence(
 // case is the safe direction: the operator can retry when the node is quieter.
 const fenceAbandonMempoolLimit = 100
 
+// ReadFenceIntentAbandonEvidence reads, for one DURABLE record, every fact the
+// node can contribute to an abandon decision — the same reads the daemon's
+// operator route performs, exposed so an on-node CLI can take the same decision
+// without HTTP. It never asserts anything on the caller's behalf: the evidence
+// comes from the node's own RPC and, where a committed nonce is needed, from the
+// caller's store-backed floor function.
+//
+// nonceFloor may be nil; without it the committed-nonce proof cannot be read and
+// the caller must treat that as "not knowable", exactly as the daemon does.
+func ReadFenceIntentAbandonEvidence(
+	ctx context.Context,
+	cometRPC string,
+	intent FenceIntent,
+	nonceFloor ...func(ed25519.PublicKey) (uint64, bool),
+) (FenceAbandonEvidence, error) {
+	var floor func(ed25519.PublicKey) (uint64, bool)
+	if len(nonceFloor) > 0 {
+		floor = nonceFloor[0]
+	}
+	return ReadFenceAbandonEvidence(ctx, cometRPC, floor, FencedSigner{
+		SignerPubKeyHex:    intent.SignerPubKeyHex,
+		SignerPubKeyPrefix: signerPrefixFromHex(intent.SignerPubKeyHex),
+		TxHash:             intent.TxHash,
+		Nonce:              intent.Nonce,
+		HasNonce:           intent.HasNonce,
+		Cause:              string(fenceCauseRestored),
+		Resolution:         "proof_or_operator",
+		Since:              intent.CreatedAt,
+	})
+}
+
+// signerPrefixFromHex is the log-and-CLI short form of a signer key. It is the
+// same shape FencedSigner carries, so an operator can copy a prefix from a list
+// into a command.
+func signerPrefixFromHex(signerHex string) string {
+	trimmed := strings.TrimSpace(signerHex)
+	if len(trimmed) <= 16 {
+		return trimmed
+	}
+	return trimmed[:16]
+}
+
+// FenceIntentStoreForCLI is the subset of the node's store the CLI writes
+// through: list the durable records, and delete exactly one.
+type FenceIntentStoreForCLI interface {
+	ListFenceIntents(ctx context.Context) ([]FenceIntent, error)
+	DeleteFenceIntent(ctx context.Context, signerPubKeyHex string) error
+}
+
+// RetireFenceIntent retires ONE durable fence record on an explicit operator
+// decision, reading and enforcing the same preconditions the daemon's operator
+// route enforces (validateAbandonEvidence): a restored record with a nonce, a
+// readable zero peer count, a complete mempool read that does not hold the
+// transaction, no committed or rejected fate for the hash, and an unspent
+// allocation. It then reserves the abandoned allocation and deletes the record.
+//
+// WHY A CLI NEEDS THIS SEPARATE ENTRY. The daemon's route lives behind the
+// CEREBRUM operator gate, and a node can reach a state where the operator has
+// no usable credential for that gate (no UI control exists for this action, and
+// the dashboard's own browser origin is the only accepted local authority). An
+// operator standing at the machine with the data directory must still be able to
+// take the decision — but on the SAME evidence, never by bypassing it.
+//
+// A RUNNING daemon keeps its in-process fence for this key: this retires the
+// durable record, so the hold ends when that daemon restarts (or immediately,
+// if none is running). Callers must say so rather than implying the key signs
+// again in a live process.
+func RetireFenceIntent(
+	ctx context.Context,
+	store FenceIntentStoreForCLI,
+	intent FenceIntent,
+	reason string,
+	ev FenceAbandonEvidence,
+) error {
+	if store == nil {
+		return errors.New("no durable fence store is available")
+	}
+	if strings.TrimSpace(reason) == "" {
+		return &FenceAbandonRefusedError{
+			Signer: signerPrefixFromHex(intent.SignerPubKeyHex),
+			Reason: "an operator reason is required: this decision accepts that a transaction's payload may be " +
+				"lost, and the record must say why it was taken",
+		}
+	}
+	held := FencedSigner{
+		SignerPubKeyHex:    intent.SignerPubKeyHex,
+		SignerPubKeyPrefix: signerPrefixFromHex(intent.SignerPubKeyHex),
+		TxHash:             intent.TxHash,
+		Nonce:              intent.Nonce,
+		HasNonce:           intent.HasNonce,
+	}
+	if err := validateAbandonEvidence(held, fenceCauseRestored, ev); err != nil {
+		return err
+	}
+	if err := store.DeleteFenceIntent(ctx, intent.SignerPubKeyHex); err != nil {
+		return fmt.Errorf("retire the durable fence record: %w", err)
+	}
+	reserveNonceFloor(intent.SignerPubKeyHex, intent.Nonce)
+	emitFenceEvent("fence_abandoned",
+		fenceKV("signer", held.SignerPubKeyPrefix),
+		fenceKV("tx_hash", held.TxHash),
+		fenceNonceField(held.Nonce, held.HasNonce),
+		fenceKV("mode", "operator_cli"),
+		fenceKV("tx_lookup", ev.TxLookup),
+		fenceNum("peers", uint64(ev.Peers)),                // #nosec G115 -- non-negative count
+		fenceNum("mempool_count", uint64(ev.MempoolCount)), // #nosec G115 -- non-negative count
+		fenceKV("reason", reason),
+		fenceKV("note", "OPERATOR DECISION FROM THE NODE HOST, NOT A PROOF: the record was retired through the "+
+			"same evidence gate the daemon's operator route applies; a running daemon still holds its "+
+			"in-process fence for this key until it restarts"))
+	return nil
+}
+
 // cometTip is the subset of CometBFT's block response the idle-chain rule
 // needs: the height, and when that block was minted.
 type cometTip struct {

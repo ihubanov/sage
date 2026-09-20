@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -185,7 +186,7 @@ func ReadFenceAbandonEvidence(
 		return ev, errors.New("comet net_info did not answer with a result")
 	}
 	ev.PeersChecked = true
-	ev.Peers = netInfo.Result.NPeers
+	ev.Peers = int(netInfo.Result.NPeers)
 	if ev.Peers > 0 {
 		peersEverSeen.Store(true)
 		observeFencePeer(fence.SignerPubKeyHex, fence.Since)
@@ -213,8 +214,8 @@ func ReadFenceAbandonEvidence(
 		return ev, errors.New("comet unconfirmed_txs did not answer with a result")
 	}
 	ev.MempoolChecked = true
-	ev.MempoolCount = mempool.Result.Count
-	ev.MempoolTotal = mempool.Result.Total
+	ev.MempoolCount = int(mempool.Result.Count)
+	ev.MempoolTotal = int(mempool.Result.Total)
 	wantHash := strings.ToUpper(strings.TrimSpace(fence.TxHash))
 	for _, raw := range mempool.Result.Txs {
 		decoded, decodeErr := base64.StdEncoding.DecodeString(string(raw))
@@ -934,9 +935,39 @@ func reserveNonceFloor(key string, nonce uint64) {
 // cometNetInfo and cometUnconfirmedTxs are the two RPC envelopes the evidence
 // reader needs. Only the fields the decision uses are decoded, and the response
 // body is bound by cometGetJSON's cap and single-document rules.
+// cometCount is a count that CometBFT may render as a JSON number OR as a
+// quoted string, depending on the endpoint and the build (the mempool surfaces
+// have returned `"n_txs": "0"` in released versions while the peer surfaces
+// return a bare number). Decoding strictly either way turns a formatting
+// difference into "the evidence could not be read", and the failure that
+// produces is the one this whole diagnostic lane exists to prevent: a node
+// whose automatic route cannot read its own evidence looks exactly like a node
+// whose route is merely waiting. Both spellings decode; anything else is an
+// error the caller must not paper over with a zero.
+type cometCount int
+
+func (c *cometCount) UnmarshalJSON(raw []byte) error {
+	text := strings.TrimSpace(string(raw))
+	if text == "null" {
+		*c = 0
+		return nil
+	}
+	text = strings.Trim(text, `"`)
+	if text == "" {
+		*c = 0
+		return nil
+	}
+	parsed, err := strconv.Atoi(text)
+	if err != nil {
+		return fmt.Errorf("count %q is neither a number nor a numeric string: %w", text, err)
+	}
+	*c = cometCount(parsed)
+	return nil
+}
+
 type cometNetInfo struct {
 	Result *struct {
-		NPeers int `json:"n_peers"`
+		NPeers cometCount `json:"n_peers"`
 	} `json:"result"`
 	Error *struct {
 		Message string `json:"message"`
@@ -946,9 +977,9 @@ type cometNetInfo struct {
 
 type cometUnconfirmedTxs struct {
 	Result *struct {
-		Count int      `json:"n_txs"`
-		Total int      `json:"total"`
-		Txs   []string `json:"txs"`
+		Count cometCount `json:"n_txs"`
+		Total cometCount `json:"total"`
+		Txs   []string   `json:"txs"`
 	} `json:"result"`
 	Error *struct {
 		Message string `json:"message"`

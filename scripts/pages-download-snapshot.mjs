@@ -74,11 +74,32 @@ export function applyFallback(html, snapshot) {
   if (!status) throw new Error('index.html has no #download-status element');
   patched = patched.replace(status[0], `${status[1]}Last known count &middot; ${formatUtc(snapshot.updatedAt)}${status[2]}`);
 
-  const chip = /(<strong id="latest-version">)([^<]*)(<\/strong>)/.exec(patched);
-  if (chip && isNewerVersion(snapshot.latest, chip[2])) {
-    patched = patched.replace(chip[0], `${chip[1]}${snapshot.latest}${chip[3]}`);
+  patched = applyVersionStamps(patched, snapshot.latest);
+  const description = /(<meta name="description" content="[^"]*?)v(\d+\.\d+\.\d+)/.exec(patched);
+  if (description && isNewerVersion(snapshot.latest, `v${description[2]}`)) {
+    patched = patched.replace(description[0], `${description[1]}${snapshot.latest}`);
   }
   return patched;
+}
+
+// Every version stamp on the page is marked: data-sage-version carries the tag (v11.23.2),
+// data-sage-version-bare the SDK-style number (11.23.2). Each one only ever moves forward, so a
+// snapshot that lags the published page can never walk a stamp backwards.
+export function applyVersionStamps(html, latest) {
+  const parts = versionParts(latest);
+  if (!parts) return html;
+  const stamp = (source, attribute, replacement) => source.replace(
+    new RegExp(`(<(span|strong|em|b|code)\\b[^>]*\\s${attribute}[^>]*>)([^<]*)(</\\2>)`, 'g'),
+    (match, open, _tag, current, close) => {
+      const existing = attribute.endsWith('-bare') ? `v${current.trim()}` : current.trim();
+      return isNewerVersion(`v${parts.join('.')}`, existing) ? `${open}${replacement}${close}` : match;
+    },
+  );
+  return stamp(
+    stamp(html, 'data-sage-version-bare', parts.join('.')),
+    'data-sage-version(?!-bare)',
+    `v${parts.join('.')}`,
+  );
 }
 
 export async function collectSnapshot({

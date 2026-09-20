@@ -5,7 +5,8 @@ name: Pages Download Snapshot
 # to a count that was baked into index.html by hand.
 #
 # The gh-pages branch is not protected; this bot commit is the only writer of downloads.json, and
-# it also refreshes the no-JS fallback (the number, its timestamp, the release chip) in index.html.
+# it also refreshes the no-JS fallback (the number, its timestamp, and every marked version stamp)
+# in index.html.
 # The counter's own rules live in gh-pages/download-counter.mjs, which the script imports, so the
 # snapshot and the page cannot disagree about what counts as a package.
 
@@ -13,6 +14,10 @@ on:
   schedule:
     # Four times a day, off the hour, because the number moves by tens per day.
     - cron: '17 */6 * * *'
+  # A release is published only after PyPI and the immutable channels are live, so this is the
+  # moment the version stamps on the site are allowed to move.
+  release:
+    types: [published]
   workflow_dispatch:
 
 concurrency:
@@ -29,6 +34,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Always run the script from main, whatever ref triggered the run (a release event
+          # checks out the tag by default).
+          ref: main
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: gh-pages

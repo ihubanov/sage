@@ -11,10 +11,20 @@ import {
 const workflow = readFileSync(new URL('../.github/workflows/pages-download-snapshot.yml', import.meta.url), 'utf8');
 const at = Date.parse('2026-09-20T00:30:00Z');
 const snapshot = { version: 1, count: 8803, latest: 'v11.23.6', updatedAt: '2026-09-20T00:30:00.000Z' };
+// Deliberately not the repo's current version: the release bump rewrites the version strings it
+// knows about, and this fixture has to stay older than the snapshot it is supposed to lag.
+const previous = 'v11.20.0';
+const previousBare = previous.slice(1);
+const bare = snapshot.latest.slice(1);
 const index = `<!doctype html>
 <html>
+  <head>
+    <meta name="description" content="Install SAGE ${previous}: governed local-first memory for AI agents.">
+  </head>
   <body>
-    <span class="cta-version">Latest <strong id="latest-version">v11.23.2</strong> &middot; signed assets</span>
+    <div class="hero-kicker"><span>SAGE <span data-sage-version>${previous}</span> &middot; durable memory for AI agents</span></div>
+    <span class="cta-version">Latest <strong id="latest-version" data-sage-version>${previous}</strong> &middot; signed assets</span>
+    <div class="section-tag"><span>Built through <span data-sage-version>${previous}</span></span></div>
     <span class="cta-count" id="minds-freed">
       <strong id="download-count" data-count="8312" data-updated-at="2026-09-10T01:26:26Z">8,312</strong>
       <span>package downloads</span>
@@ -22,6 +32,8 @@ const index = `<!doctype html>
     <p class="cta-fineprint">
       <span id="download-status" aria-live="polite">Last known count &middot; Sep 10, 2026, 01:26 UTC</span>
     </p>
+    <div class="dev-badge"><strong>Python SDK</strong> <span data-sage-version-bare>${previousBare}</span></div>
+    <div><span class="cmd">pip install "sage-agent-sdk&gt;=<span data-sage-version-bare>${previousBare}</span>"</span></div>
   </body>
 </html>
 `;
@@ -30,15 +42,17 @@ function fixture(pages = index) {
   const dir = mkdtempSync(join(tmpdir(), 'pages-snapshot-'));
   writeFileSync(join(dir, 'index.html'), pages);
   writeFileSync(join(dir, 'download-counter.mjs'),
-    'export async function fetchReleaseStats() { return { count: 4242, latest: "v11.23.2" }; }\n');
+    `export async function fetchReleaseStats() { return { count: 4242, latest: '${snapshot.latest}' }; }\n`);
   return dir;
 }
 
-test('the workflow is scheduled, token-backed, and writes only to gh-pages', () => {
+test('the workflow runs on a schedule, on release, and writes only to gh-pages', () => {
   for (const marker of [
     "cron: '17 */6 * * *'",
+    'types: [published]',
     'workflow_dispatch:',
     'contents: write',
+    'ref: main',
     'ref: gh-pages',
     'node scripts/pages-download-snapshot.mjs --pages pages',
     'git add -- downloads.json index.html',
@@ -51,23 +65,33 @@ test('the workflow is scheduled, token-backed, and writes only to gh-pages', () 
   assert.ok(!workflow.includes('pull_request'), 'the snapshot must not run on pull requests');
 });
 
-test('the fallback rewrite leaves no hand-baked number behind and is idempotent', () => {
+test('the rewrite leaves no hand-baked value behind and is idempotent', () => {
   const patched = applyFallback(index, snapshot);
   assert.ok(patched.includes('data-count="8803"'));
   assert.ok(patched.includes('data-updated-at="2026-09-20T00:30:00.000Z"'));
   assert.ok(patched.includes('>8,803</strong>'));
   assert.ok(patched.includes('Last known count &middot; Sep 20, 2026, 00:30 UTC'));
-  assert.ok(patched.includes('<strong id="latest-version">v11.23.6</strong>'));
   assert.ok(!patched.includes('8,312'));
+  assert.ok(!patched.includes(previous));
+  assert.equal([...patched.matchAll(new RegExp(`<span data-sage-version>${snapshot.latest}</span>`, 'g'))].length, 2);
+  assert.equal([...patched.matchAll(new RegExp(`<span data-sage-version-bare>${bare}</span>`, 'g'))].length, 2);
+  assert.ok(patched.includes(`<strong id="latest-version" data-sage-version>${snapshot.latest}</strong>`));
+  assert.ok(patched.includes(`content="Install SAGE ${snapshot.latest}:`));
   assert.equal(applyFallback(patched, snapshot), patched);
   assert.equal(formatUtc(snapshot.updatedAt), 'Sep 20, 2026, 00:30 UTC');
 });
 
-test('a chip is only ever moved forward, and missing markup fails loudly', () => {
-  const older = applyFallback(index, { ...snapshot, latest: 'v11.23.1' });
-  assert.ok(older.includes('<strong id="latest-version">v11.23.2</strong>'));
+test('a stamp is only ever moved forward, and missing markup fails loudly', () => {
+  const older = applyFallback(index, { ...snapshot, latest: previous });
+  assert.ok(older.includes(`<strong id="latest-version" data-sage-version>${previous}</strong>`));
+  assert.ok(older.includes(`content="Install SAGE ${previous}:`));
   const unreleased = applyFallback(index, { ...snapshot, latest: undefined });
-  assert.ok(unreleased.includes('<strong id="latest-version">v11.23.2</strong>'));
+  assert.ok(unreleased.includes(`<strong id="latest-version" data-sage-version>${previous}</strong>`));
+  const ahead = 'v11.30.0';
+  const pageAhead = index.replaceAll(previous, ahead).replaceAll(previousBare, ahead.slice(1));
+  const untouched = applyFallback(pageAhead, snapshot);
+  assert.ok(untouched.includes(`<span data-sage-version>${ahead}</span>`));
+  assert.ok(!untouched.includes(snapshot.latest));
   assert.throws(() => applyFallback('<html><body>no counter</body></html>', snapshot), /#download-count/);
   assert.throws(() => applyFallback(
     index.replace(' data-count="8312" data-updated-at="2026-09-10T01:26:26Z"', ''), snapshot), /fallback attributes/);
@@ -80,7 +104,7 @@ test('release tags compare numerically', () => {
   assert.equal(isNewerVersion('v11.23.2', 'v11.23.2'), false);
   assert.equal(isNewerVersion('v11.23.1', 'v11.23.2'), false);
   assert.equal(isNewerVersion('nightly', 'v11.23.2'), false);
-  assert.equal(isNewerVersion('v11.23.6', undefined), false);
+  assert.equal(isNewerVersion('v11.23.3', undefined), false);
 });
 
 test('arguments are explicit about the pages checkout', () => {
@@ -90,14 +114,17 @@ test('arguments are explicit about the pages checkout', () => {
   assert.throws(() => parseArgs(['--pages', 'x', '--nope']), /Unknown argument/);
 });
 
-test('a refresh writes the snapshot and the fallback, then reports no change', async () => {
+test('a refresh writes the snapshot, the counter and every stamp, then reports no change', async () => {
   const dir = fixture();
   const logged = [];
   const first = await refreshSnapshot({ pagesDir: dir, now: () => at, log: message => logged.push(message) });
   assert.deepEqual(first.changed, ['index.html', SNAPSHOT_FILENAME]);
   assert.deepEqual(JSON.parse(readFileSync(join(dir, SNAPSHOT_FILENAME), 'utf8')),
-    { version: 1, count: 4242, latest: 'v11.23.2', updatedAt: '2026-09-20T00:30:00.000Z' });
-  assert.ok(readFileSync(join(dir, 'index.html'), 'utf8').includes('data-count="4242"'));
+    { version: 1, count: 4242, latest: snapshot.latest, updatedAt: '2026-09-20T00:30:00.000Z' });
+  const written = readFileSync(join(dir, 'index.html'), 'utf8');
+  assert.ok(written.includes('data-count="4242"'));
+  assert.ok(written.includes(`<span data-sage-version>${snapshot.latest}</span>`));
+  assert.ok(written.includes(`<span data-sage-version-bare>${bare}</span>`));
   const second = await refreshSnapshot({ pagesDir: dir, now: () => at, log: () => {} });
   assert.deepEqual(second.changed, []);
   assert.ok(logged[1].includes('updated: index.html, downloads.json'));

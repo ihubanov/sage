@@ -48,7 +48,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.3`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.4`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -207,6 +207,22 @@ software updates, and encryption controls. Ordinary agent identity replacement
 uses re-enrollment; historical memory authorship is preserved.
 
 ---
+
+## What's New in v11.23.4
+
+**The fence fixes now reach the nodes that keep a peer.** v11.23.3 could prove a restored fence's fate and settle the shape no proof can reach — but only on a node that had never seen a peer since it started, and its operator abandon route refused outright whenever any peer was connected. A federated desktop node, or any validator with a persistent peer, therefore sat behind a fence that no proof could settle with **both** recovery routes closed: writes refused, updates vetoed, indefinitely. That is the report this release answers.
+
+**The peer observation is anchored to the fence, not to the process.** A sighting from an earlier outage — a peer that connected while the node was starting, a peer gone for hours — can no longer switch self-healing off for every fence raised afterwards. What still holds is the honest rule: the automatic route refuses while a peer is connected, or was seen while *this* fence was held, because a peer is how a transaction gets delivered back.
+
+**The operator abandon route now says what it needs.** It reads the live peer count, still records it with the decision, and requires a second, explicit acknowledgement — `peer_redelivery_acknowledged` — when peers are connected. The operator can see the topology (whether that peer was running when the submission went out, whether it ever held the bytes); the node cannot, so it states the route it cannot rule out instead of refusing by construction.
+
+**The health surface says HOW a fence ends.** Each held fence now reports a resolution class: `reconciling` means the node still holds the exact signed bytes and is re-submitting them until consensus answers, so it clears itself; `proof_or_operator` means the fence was restored from durable intent and its signed bytes did not survive, so only a chain-read proof or an explicit operator abandon will lift it. The block's explanation is rendered from that distinction instead of promising self-healing for every fence, and the automatic route's own refusal reason (still catching up / peers connected / a peer seen under this fence) is recorded with the fence rather than computed and dropped.
+
+**Agents can read it directly.** The MCP surface gains a read-only `sage_node_health` tool (the 35th): it forwards the node's `signer_fences` block and renders the guidance from the resolution class, and says "not knowable from here" rather than guessing on a node too old to report one. A write refused with `503 Signing key temporarily held` can now be diagnosed by the agent that hit it, without an operator shell.
+
+No consensus change, no transaction-type change, no upgrade height, and no chain reset: this decides when a key may sign again, not what the chain accepts.
+
+Container: `ghcr.io/l33tdawg/sage:11.23.4`. SDK 11.23.4.
 
 ## What's New in v11.23.3
 

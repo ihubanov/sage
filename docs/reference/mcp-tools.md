@@ -1,8 +1,8 @@
-Reconciled against internal/mcp for SAGE v11.23.3.
+Reconciled against internal/mcp for SAGE v11.23.4.
 
 # SAGE MCP Tools Reference
 
-SAGE advertises exactly 34 MCP tools over JSON-RPC 2.0. Four deprecated
+SAGE advertises exactly 35 MCP tools over JSON-RPC 2.0. Four deprecated
 `sage_pipe*` compatibility names remain callable for one migration window but
 are intentionally absent from `tools/list`, so new clients learn the canonical
 Messages API. Stdio tools sign REST calls with

@@ -926,9 +926,16 @@ func signerFenceHealth(operator bool) map[string]any {
 	// Said in the status payload as well as the log, because an operator looking
 	// at a stuck node needs to know the hold is deliberate — and must not be
 	// told to restart, which discards the fence and loses the transaction.
+	//
+	// The explanation NAMES THE ROUTE OUT of each held fence instead of
+	// describing one. An earlier revision said reconciliation was re-submitting
+	// the identical bytes for every fence, which is true only for a live one: a
+	// fence restored from durable intent has no bytes to re-submit and lifts on
+	// a proof or an operator decision. Callers read the blanket sentence as a
+	// promise that the node would clear itself, and reported the opposite
+	// symptom back as a broken self-heal.
 	out["explanation"] = "one or more signing keys are waiting for proof of an earlier submission's fate; " +
-		"nothing was signed or sent for the requests they refused, and reconciliation is re-submitting the " +
-		"identical bytes to force an answer"
+		"nothing was signed or sent for the requests they refused. " + signerFenceRoutes(held)
 	if !operator {
 		return out
 	}
@@ -942,6 +949,7 @@ func signerFenceHealth(operator bool) map[string]any {
 			"since":           fence.Since.UTC().Format(time.RFC3339),
 			"attempts":        fence.Attempts,
 			"cause":           fence.Cause,
+			"resolution":      fence.Resolution,
 			"last_cause":      fence.LastCause,
 			"last_detail":     fence.LastDetail,
 			"signer_agent_id": fence.SignerPubKeyHex,
@@ -958,4 +966,38 @@ func signerFenceHealth(operator bool) map[string]any {
 	}
 	out["signers"] = signers
 	return out
+}
+
+// signerFenceRoutes renders what can still end each held fence, by resolution
+// class, and says what that means in one sentence. It never promises a route
+// the fence does not have.
+func signerFenceRoutes(held []tx.FencedSigner) string {
+	reconciling, proofOrOperator := 0, 0
+	for _, fence := range held {
+		switch fence.Resolution {
+		case "reconciling":
+			reconciling++
+		case "proof_or_operator":
+			proofOrOperator++
+		default:
+			// An unclassified cause is reported as needing an operator rather
+			// than as self-healing, because the safe reading of "we cannot say
+			// how this ends" is that it may not end on its own.
+			proofOrOperator++
+		}
+	}
+	switch {
+	case reconciling > 0 && proofOrOperator > 0:
+		return fmt.Sprintf("reconciliation is re-submitting the identical bytes for %d of them; %d "+
+			"restored from a previous process's durable intent did not survive with its signed bytes and lifts "+
+			"only on a proof read from the chain or on an explicit operator abandon "+
+			"(POST /v1/dashboard/signer-fence/abandon)", reconciling, proofOrOperator)
+	case proofOrOperator > 0:
+		return fmt.Sprintf("%d restored from a previous process's durable intent: the signed bytes did not "+
+			"survive, so reconciliation cannot re-submit them and this fence lifts only on a proof read from "+
+			"the chain or on an explicit operator abandon "+
+			"(POST /v1/dashboard/signer-fence/abandon)", proofOrOperator)
+	default:
+		return "reconciliation is re-submitting the identical bytes to force an answer"
+	}
 }

@@ -247,7 +247,8 @@ intent table.
 POST /v1/dashboard/signer-fence/abandon
 {"signer": "<hex key or prefix>",
  "reason": "<why this decision is being taken>",
- "acknowledge_payload_loss": true}
+ "acknowledge_payload_loss": true,
+ "peer_redelivery_acknowledged": true}   // required only when peers are connected
 ```
 
 This is an OPERATOR DECISION, not a proof, and the request has to be spelled that
@@ -262,8 +263,15 @@ by the same CEREBRUM operator gate, and every precondition is read by the node
 - its durable record must carry a nonce, so the abandoned allocation can be
   reserved: the next allocation for that signer is strictly above it, which is
   what keeps a same-nonce twin from being minted;
-- the node's live P2P peer count must be **zero**, read from its own RPC — a
-  connected peer can still deliver the transaction back into the mempool;
+- the node's live P2P peer count is **read**, and when it is non-zero the
+  request must carry a second acknowledgement, `peer_redelivery_acknowledged`.
+  A connected peer is a route the transaction could still take back into this
+  node's mempool, and the node cannot see whether any peer ever held those
+  bytes — only the operator can. Making the peer count a flat veto instead
+  stranded exactly the nodes that need this route (a federated desktop node, a
+  validator with a persistent peer): the fence lifted on no proof, the
+  automatic route is closed by the peer, and the operator route refused by
+  construction;
 - the transaction must not be in this node's mempool, and the mempool read must
   be complete (a truncated read cannot certify absence);
 - the recorded hash must not be committed or rejected, and the signer's committed
@@ -294,12 +302,16 @@ the same evidence-backed decision itself at startup
 - CometBFT reports `catching_up == false`, so the "no committed fate" answer came
   from a chain that has caught up — a node still replaying or state-syncing may
   simply not have indexed a transaction that DID commit;
-- **no peer has been seen since this process started**, and none is connected
-  now. This is a latch: once a peer has been seen, the automatic path is closed
-  for the rest of the run even if that peer disconnects, because a peer is how a
-  transaction gets delivered back. A multi-validator or P2P-connected node
-  therefore keeps its fence and needs a proof or an operator — which is the
-  correct answer there;
+- **no peer has been seen while THIS fence was held**, and none is connected
+  now. This is a latch anchored to the fence, not to the process: a peer is how
+  a transaction gets delivered back, so a fence that has coexisted with a
+  connected peer is kept even after that peer disconnects — but a sighting from
+  an earlier outage cannot answer for a fence raised afterwards, because that
+  transaction did not exist when the peer was seen. (An earlier revision
+  anchored on process start, which meant one transient peer switched the
+  automatic path off for every future fence for the rest of the run.) A node
+  that is P2P-connected now keeps its fence and needs a proof, or an operator
+  who can see the topology and takes the acknowledgement above;
 - the transaction is in no mempool copy on this node, the recorded hash is in no
   committed block, and the signer's committed nonce has not reached the fenced
   allocation.
@@ -413,8 +425,18 @@ callers get `active` and `oldest_age_seconds`; an operator session — or, on an
 **unencrypted** node, the local loopback dashboard (the same read-level gate as
 the rest of the operator status view, `isCEREBRUMReadRequest`) — also gets
 per-fence `signer`, `tx_hash`, `nonce`, `held_seconds`, `attempts`, `cause`,
-`last_cause` and `last_detail`. Everything in it is public-on-chain data, but
-do not mistake the gate for credential-only access.
+`resolution`, `last_cause` and `last_detail`. Everything in it is public-on-chain
+data, but do not mistake the gate for credential-only access.
+
+`resolution` is the field that says **how a fence can end**, and it exists
+because "the fence is held" without it is ambiguous in a way that misled
+callers: `reconciling` means the fence still holds the exact bytes that went out
+and is re-submitting them until consensus answers, so it clears itself;
+`proof_or_operator` means it was restored from durable intent and its signed
+bytes did not survive, so it lifts only on a proof read from the chain or on an
+explicit operator abandon. The block's `explanation` is rendered from the same
+distinction, so it no longer promises self-healing for a fence that has nothing
+to re-submit.
 
 **Metrics** — `sage_nonce_fences_active`,
 `sage_nonce_fence_oldest_age_seconds`, `sage_nonce_fence_indeterminate_total`,

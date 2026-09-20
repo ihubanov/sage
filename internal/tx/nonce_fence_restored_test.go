@@ -433,6 +433,56 @@ func TestRestoredFenceAutoResolveRefusesOnceAPeerHasBeenSeen(t *testing.T) {
 	require.True(t, store.held(signerHex))
 }
 
+// TestRestoredFenceAutoResolveIgnoresAPeerSeenBeforeThisFence pins the OTHER
+// half of the same rule, and it is the half that used to strand nodes: the peer
+// observation is anchored to the fence, not to the process. A node that saw a
+// peer during some earlier outage — a peer that connected while it was starting,
+// a peer that has since been gone for hours — is still a node where a fence
+// raised afterwards cannot be delivered its transaction, because that
+// transaction did not exist when the peer was seen.
+//
+// BEFORE THIS FIX the process-wide latch answered for every future fence: one
+// sighting switched self-healing off for the rest of the run, and the operator
+// route refused while any peer was connected. A node then had a fence no proof
+// could settle, an automatic route closed by construction, and writes refused
+// indefinitely — the reported "the self-heal is not releasing it".
+func TestRestoredFenceAutoResolveIgnoresAPeerSeenBeforeThisFence(t *testing.T) {
+	setFenceTimingsForTest(t, fastFenceTimings())
+	peersEverSeen.Store(false)
+	store := intentStoreForTest(t)
+	sk := newLeaseTestKey(t)
+	signerHex := signerHexFor(t, sk)
+	_, rpc := newAutoResolveRPC(t)
+
+	// The peer was connected BEFORE this fence existed, and is gone now: the
+	// observation is recorded against an older fence start for the same signer.
+	observeFencePeer(signerHex, time.Now().Add(-time.Hour))
+
+	require.NoError(t, store.SaveFenceIntent(context.Background(), FenceIntent{
+		SignerPubKeyHex: signerHex,
+		TxHash:          strings.Repeat("12", 32),
+		Nonce:           55,
+		HasNonce:        true,
+		CreatedAt:       time.Now().UTC(),
+	}))
+	SetFenceProverFunc(nil)
+	SetFenceAutoResolverFunc(func(ctx context.Context, fence FencedSigner) (bool, string, error) {
+		return AutoResolveUnprovableFence(ctx, rpc.URL, nil, fence)
+	})
+	t.Cleanup(func() {
+		SetFenceAutoResolverFunc(nil)
+		SetFenceProverFunc(nil)
+	})
+
+	_, err := RestoreFencesFromIntents(context.Background())
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return len(FencedSigners()) == 0 },
+		10*time.Second, 10*time.Millisecond,
+		"a peer seen before this fence was raised cannot deliver this transaction back, so the fence must "+
+			"still resolve itself")
+	require.False(t, store.held(signerHex))
+}
+
 // TestRestoredFenceAutoResolveWaitsForTheChainToCatchUp pins the other
 // precondition: a node that is still replaying or state-syncing may not have
 // indexed a transaction that DID commit, so "no committed fate" is not yet an

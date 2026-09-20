@@ -227,6 +227,42 @@ func TestSignerFenceAbandonRefusesWithPeersConnected(t *testing.T) {
 	require.True(t, fixture.store.held(fixture.signer), "and must leave the durable record in place")
 }
 
+// TestSignerFenceAbandonAcceptsAnAcknowledgedPeerRoute is the exit for the
+// nodes the blanket peer veto used to strand. A node with a connected peer is
+// NOT automatically a node where the transaction can come back — the peer may
+// have come up long after the submission, and CometBFT's mempool does not
+// survive it — but only the operator can see that, so the node reads the facts
+// it can (peers connected, mempool, index, committed nonce) and requires the
+// operator to say in as many words that the peer route is understood.
+//
+// Without this path a federated desktop node or a validator with a persistent
+// peer had a fence no proof could settle and no route out: writes refused, the
+// updater vetoed, and the one documented exit refusing by construction.
+func TestSignerFenceAbandonAcceptsAnAcknowledgedPeerRoute(t *testing.T) {
+	fixture := newAbandonFixture(t)
+	fixture.peers.Store(2)
+
+	recorder := fixture.post(t, map[string]any{
+		"signer": fixture.signer, "reason": "peer came up after the submission; mempool empty on both sides",
+		"acknowledge_payload_loss":     true,
+		"peer_redelivery_acknowledged": true,
+	})
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	body := decodeAbandonBody(t, recorder)
+	require.Equal(t, true, body["abandoned"])
+
+	// The decision is recorded WITH the route it accepted, so a later reader can
+	// tell that this lift was taken while a peer was connected rather than on a
+	// node where nothing could deliver the bytes back.
+	evidence, ok := body["evidence"].(map[string]any)
+	require.True(t, ok, "the decision must carry the evidence it was taken on: %v", body["evidence"])
+	require.Equal(t, float64(2), evidence["peers"])
+	require.Equal(t, true, evidence["peer_redelivery_acknowledged"])
+
+	require.Empty(t, tx.FencedSigners(), "the acknowledged abandon must lift the fence")
+	require.False(t, fixture.store.held(fixture.signer), "and retire the durable intent")
+}
+
 // TestSignerFenceAbandonLiftsAProoflessRestoredFence is the exit itself: the
 // node read no committed fate, has no peers and nothing queued, so the operator
 // decision is taken, recorded, and the key signs again.

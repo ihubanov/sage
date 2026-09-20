@@ -1509,6 +1509,20 @@ type FencedSigner struct {
 	// contains the full request URL and therefore the entire signed
 	// transaction. See fenceCause.
 	Cause string
+	// Resolution says HOW this fence can end, which is the difference between a
+	// fence that will clear itself and one that needs an operator. It is derived
+	// from the cause rather than stored, and it exists because a caller reading
+	// status had no way to tell the two apart: "reconciliation is re-submitting
+	// the identical bytes" is TRUE for a fence raised by a live indeterminate
+	// submit and FALSE for one restored from durable intent, whose bytes did not
+	// survive the process. Agents reported the false version back as "the
+	// self-heal is not working" — the same symptom, two different diagnoses.
+	//
+	// Values: "reconciling" (live fence, bytes in hand, re-submitted until
+	// consensus answers), "proof_or_operator" (restored fence, lifts on a proof
+	// read from the chain or on an explicit operator abandon), or
+	// "unknown" for a cause this build does not classify.
+	Resolution string
 	// Since / HeldFor are when the fence was raised and how long it has stood.
 	Since   time.Time
 	HeldFor time.Duration
@@ -1556,12 +1570,42 @@ func (f *keyFence) snapshotLocked(key string, now time.Time) FencedSigner {
 		Nonce:              f.nonce,
 		HasNonce:           f.hasNonce,
 		Cause:              string(f.cause),
+		Resolution:         fenceResolution(f.cause),
 		Since:              f.since,
 		HeldFor:            now.Sub(f.since),
 		Attempts:           f.attempts,
 		LastAttemptAt:      f.lastAt,
 		LastCause:          string(f.lastCause),
 		LastDetail:         f.lastDetail,
+	}
+}
+
+// fenceResolution answers "how does this fence end?" from its cause. It is the
+// one field a caller needs to tell a self-clearing fence from one that needs an
+// operator, and it is derived here, beside the cause, so the two can never
+// disagree.
+func fenceResolution(cause fenceCause) string {
+	switch cause {
+	case fenceCauseRestored:
+		// The bytes are gone with the process that sent them, so reconciliation
+		// has nothing to re-submit: this fence lifts on a proof read from the
+		// chain, or on an explicit operator abandon when no proof can exist.
+		return "proof_or_operator"
+	case fenceCauseNoProver, fenceCauseNoProof:
+		// Only the restored path records these: its instrument is the proof
+		// reader, and "the reader is missing" or "the reader sees no proof yet"
+		// both mean the same thing to a caller — this fence ends on a proof, or
+		// on an operator decision, never by re-submission.
+		return "proof_or_operator"
+	case fenceCauseTimeout, fenceCauseCanceled, fenceCauseTransport, fenceCauseDecode, fenceCauseRPC,
+		fenceCausePending, fenceCauseNoResolver, fenceCauseNoEncodedTx, fenceCausePanic, fenceCauseSubmitPanic,
+		fenceCauseSubmitError:
+		// Everything else still holds the exact bytes that went out (or failed
+		// for a reason reconciliation retries), so the reconciler keeps pushing
+		// them until consensus answers.
+		return "reconciling"
+	default:
+		return "unknown"
 	}
 }
 

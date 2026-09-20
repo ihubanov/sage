@@ -27,6 +27,20 @@ import (
 // recorded with the decision, because this is the only lift in SAGE whose fate
 // the chain never settled.
 //
+// PEERS ARE AN ACKNOWLEDGEMENT, NOT A VETO. A connected peer is a route the
+// fenced transaction could still take back into this node's mempool, and the
+// node cannot see whether any peer ever held those bytes. What it CAN see is
+// that the route exists, so when peers are connected the request must set
+// peer_redelivery_acknowledged — a separate field from acknowledge_payload_loss
+// because they are different facts: the first says "I know a peer could still
+// deliver this", the second says "I accept that the payload may be lost". A
+// blanket refusal whenever a peer was connected made this route unusable on
+// exactly the nodes that need it (federated desktop nodes and validators with
+// persistent peers), which is how an unprovable fence became a node that could
+// never write again. The automatic route keeps the strict rule: it abandons
+// only when no peer is connected and none has been seen since the fence was
+// raised.
+//
 // WHAT THE NODE DECIDES, NOT THE CALLER. Every precondition is read by
 // ReadFenceAbandonEvidence and re-checked in tx.AbandonUnprovableFence against
 // the live fence. The request body cannot assert a nonce, a peer count, an
@@ -39,6 +53,13 @@ func (h *DashboardHandler) handleSignerFenceAbandon(w http.ResponseWriter, r *ht
 		// there is no way to spell this request without asserting that the
 		// transaction the fence is protecting may be discarded.
 		AcknowledgePayloadLoss bool `json:"acknowledge_payload_loss"`
+		// PeerRedeliveryAcknowledged must be true when the node has peers
+		// connected. It is deliberately a SECOND field rather than folded into
+		// AcknowledgePayloadLoss: "a peer could still deliver this" and "the
+		// payload may be lost" are different facts about different actors, and
+		// an operator reading the recorded decision must be able to tell which
+		// one was accepted.
+		PeerRedeliveryAcknowledged bool `json:"peer_redelivery_acknowledged"`
 	}
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 4<<10))
 	decoder.DisallowUnknownFields()
@@ -90,6 +111,7 @@ func (h *DashboardHandler) handleSignerFenceAbandon(w http.ResponseWriter, r *ht
 		})
 		return
 	}
+	evidence.PeerRedeliveryAcknowledged = request.PeerRedeliveryAcknowledged
 
 	if err := tx.AbandonUnprovableFence(r.Context(), target.SignerPubKeyHex, request.Reason, evidence); err != nil {
 		var refused *tx.FenceAbandonRefusedError

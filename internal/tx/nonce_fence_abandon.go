@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -34,8 +35,9 @@ import (
 // discard a transaction, and the node must first read everything it can about
 // whether that transaction could still come back:
 //
-//   - the node's LIVE P2P peer count is zero, so no peer can deliver the
-//     transaction into this node's mempool;
+//   - the node's LIVE P2P peer count is known, and when peers ARE connected the
+//     operator must additionally acknowledge that a connected peer is a route
+//     the transaction could still take back into this node's mempool;
 //   - the transaction is not in this node's mempool;
 //   - the recorded hash is not in a committed block, and the signer's
 //     committed nonce has not reached the fenced allocation.
@@ -48,6 +50,20 @@ import (
 // event records the evidence the decision was taken on. What it removes is the
 // only alternative that was on offer: a node that could never write and never
 // update again.
+//
+// THE PEER GATE IS AN ACKNOWLEDGEMENT, NOT A VERDICT. An earlier revision
+// refused the abandon outright whenever a peer was connected, on the theory
+// that a peer could always deliver the transaction back. That refusal was
+// unconditional and permanent for any node that keeps a peer — which is every
+// federated desktop node and every validator with a persistent peer — so a
+// fence that no proof could settle became a node that could never write again,
+// with the one documented exit route refusing by construction. The peer count
+// is evidence about a ROUTE, not about the transaction: the operator can see
+// the topology (whether the peer was running when the submission went out,
+// whether it ever admitted the bytes) and the node cannot. So the evidence is
+// still read and recorded, the count is still reported, and the decision now
+// requires the caller to acknowledge the peer route explicitly instead of
+// pretending the node can rule it out.
 
 // FenceAbandonEvidence is what the NODE could read about a restored fence when
 // an operator asks to abandon it. Every field is read from the node's own store
@@ -59,8 +75,17 @@ type FenceAbandonEvidence struct {
 	// refused in that case: "we could not look" is not "nothing is connected".
 	PeersChecked bool `json:"peers_checked"`
 	// Peers is the node's live P2P peer count. Anything above zero refuses the
-	// abandon, because a connected peer can still deliver the transaction.
+	// AUTOMATIC abandon, because a connected peer can still deliver the
+	// transaction; the operator route accepts it against an explicit
+	// acknowledgement that this route exists.
 	Peers int `json:"peers"`
+	// PeerRedeliveryAcknowledged is the operator's explicit acceptance that a
+	// connected peer is a route the fenced transaction could still take back
+	// into this node's mempool, and that a late arrival would lose the payload
+	// instead of the other way round. It is required when Peers > 0 and it is
+	// recorded with the decision. It is an ACKNOWLEDGEMENT, not a fact read
+	// from the node: a caller that wants the safe answer does not set it.
+	PeerRedeliveryAcknowledged bool `json:"peer_redelivery_acknowledged"`
 	// MempoolChecked / MempoolCount / MempoolTotal / MempoolHolds describe this
 	// node's own mempool. MempoolHolds is true when the fenced transaction
 	// itself was found there, which refuses the abandon outright: it is alive,
@@ -75,12 +100,27 @@ type FenceAbandonEvidence struct {
 	// DID commit, so absence of proof is not yet meaningful; the automatic
 	// resolution (see AutoResolveUnprovableFence) refuses until this is true.
 	NodeCaughtUp bool `json:"node_caught_up"`
-	// PeersEverSeen is true when ANY peer has been connected since this process
-	// started. It is the latch that keeps the automatic resolution honest: a
-	// transaction is delivered back by a peer, so a node that has talked to one
-	// this run is not a node where "nothing can deliver it back" is true, even
-	// if that peer has since disconnected.
+	// PeersEverSeen is true when any peer has been observed connected since this
+	// PROCESS started. It is the conservative, process-wide latch; see
+	// PeersObservedSinceFence for the per-fence answer the automatic route
+	// actually uses.
 	PeersEverSeen bool `json:"peers_ever_seen"`
+	// PeersObservedSinceFence is true when a peer was observed connected at any
+	// point AFTER this fence was raised. THIS is the latch that keeps the
+	// automatic resolution honest: a transaction is delivered back by a peer,
+	// so a fence that has coexisted with a connected peer is not one where
+	// "nothing can deliver it back" is true, even if that peer has since
+	// disconnected.
+	//
+	// WHY NOT THE PROCESS-WIDE LATCH. Anchoring on process start meant a
+	// single peer sighting at any time — a peer that connected while the node
+	// was starting, a peer that has been gone for hours — switched the
+	// automatic route off for every fence for the rest of the run, including a
+	// fence raised long afterwards. The node then had a stuck key, an automatic
+	// route that refused by construction, and an operator route that also
+	// refused whenever any peer was connected: the exact "no way back" state
+	// the automatic route was added to end.
+	PeersObservedSinceFence bool `json:"peers_observed_since_fence"`
 	// TxLookup is "committed", "rejected", "not_found", "unavailable" or
 	// "unknown_hash". Only the first two refuse the abandon (they ARE proofs,
 	// and the lift route is the right one). "unavailable" is the bucket for
@@ -147,8 +187,10 @@ func ReadFenceAbandonEvidence(
 	ev.Peers = netInfo.Result.NPeers
 	if ev.Peers > 0 {
 		peersEverSeen.Store(true)
+		observeFencePeer(fence.SignerPubKeyHex, fence.Since)
 	}
 	ev.PeersEverSeen = peersEverSeen.Load()
+	ev.PeersObservedSinceFence = peersObservedSinceFence(fence.SignerPubKeyHex, fence.Since)
 
 	var syncStatus cometSyncStatus
 	resultOK, err = cometGetJSON(ctx, "comet status", endpoint+"/status", nil, &syncStatus)
@@ -215,8 +257,72 @@ const fenceAbandonMempoolLimit = 100
 
 // peersEverSeen is the process-lifetime latch described on
 // FenceAbandonEvidence.PeersEverSeen. Monotonic on purpose: once a peer has been
-// seen, the automatic path is closed for the rest of this run.
+// seen, it stays seen for the rest of this run.
 var peersEverSeen atomic.Bool
+
+// fencePeerSeenSince records, per signer, whether a connected peer has been
+// OBSERVED at any point after that signer's current fence was raised, and the
+// times that bound the observation. The automatic resolution reads it as a
+// per-fence latch; see FenceAbandonEvidence.PeersObservedSinceFence for why the
+// process-wide latch was the wrong anchor.
+//
+// It is deliberately NOT cleared by a lift: the entry is keyed by fence start
+// time, so a fence raised afterwards starts from "no peer seen since" with no
+// bookkeeping — a stale entry cannot leak into it, and one that is never
+// consulted again is harmless. Only the most recent observation per signer is
+// kept, because only the newest fence's window can be current.
+type fencePeerObservation struct {
+	FenceSince time.Time
+	ObservedAt time.Time
+}
+
+var fencePeerObservations struct {
+	mu sync.Mutex
+	by map[string]fencePeerObservation
+}
+
+// observeFencePeer records that a connected peer was seen while the fence
+// anchored at fenceSince was held. The comparison is monotonic in the
+// observation, not in the wall clock: ObservedAt is taken here, and the entry
+// only replaces one anchored at an older (or equal) fence start, so an older
+// fence's sighting can never be attributed to a newer fence.
+func observeFencePeer(signerHex string, fenceSince time.Time) {
+	signerHex = strings.ToLower(strings.TrimSpace(signerHex))
+	if signerHex == "" || fenceSince.IsZero() {
+		return
+	}
+	fencePeerObservations.mu.Lock()
+	defer fencePeerObservations.mu.Unlock()
+	if fencePeerObservations.by == nil {
+		fencePeerObservations.by = make(map[string]fencePeerObservation)
+	}
+	prior, ok := fencePeerObservations.by[signerHex]
+	if ok && prior.FenceSince.After(fenceSince) {
+		return
+	}
+	fencePeerObservations.by[signerHex] = fencePeerObservation{
+		FenceSince: fenceSince,
+		ObservedAt: time.Now(),
+	}
+}
+
+// peersObservedSinceFence reports whether a connected peer has been observed
+// while THIS fence was held. An entry that belongs to an older fence (its
+// recorded start is before this one) does not answer for this fence: the
+// transaction under this fence did not exist when that peer was seen.
+func peersObservedSinceFence(signerHex string, fenceSince time.Time) bool {
+	signerHex = strings.ToLower(strings.TrimSpace(signerHex))
+	if signerHex == "" || fenceSince.IsZero() {
+		return false
+	}
+	fencePeerObservations.mu.Lock()
+	defer fencePeerObservations.mu.Unlock()
+	observation, ok := fencePeerObservations.by[signerHex]
+	if !ok {
+		return false
+	}
+	return !observation.FenceSince.Before(fenceSince)
+}
 
 // AutoResolveUnprovableFence resolves a restored fence that NOTHING can deliver
 // back, without waiting for an operator.
@@ -232,10 +338,12 @@ var peersEverSeen atomic.Bool
 //     and no re-submission is possible;
 //   - CometBFT reports catching_up == false, so "no committed fate" means the
 //     question was asked of a chain that has caught up;
-//   - NO peer has been seen since this process started, and none is connected
-//     now, so nothing can deliver the transaction back into this node's
-//     mempool (a multi-validator or P2P-connected node fails this gate and
-//     keeps its fence, which is the correct answer there);
+//   - no peer is connected now, and none has been seen since THIS fence was
+//     raised, so nothing can deliver the transaction back into this node's
+//     mempool (a node that is currently P2P-connected fails this gate and keeps
+//     its fence, which is the correct answer there — and the operator route is
+//     the one that can be taken deliberately, against an explicit
+//     acknowledgement of the peer route);
 //   - the transaction is not in this node's mempool;
 //   - the recorded hash is in no committed block, and the signer's committed
 //     nonce has not reached the fenced allocation.
@@ -256,7 +364,7 @@ func AutoResolveUnprovableFence(
 	if err != nil {
 		return false, "", err
 	}
-	if !ev.NodeCaughtUp || ev.PeersEverSeen || ev.Peers > 0 {
+	if !ev.NodeCaughtUp || ev.PeersObservedSinceFence || ev.Peers > 0 {
 		return false, "", nil
 	}
 	raw, decodeErr := hex.DecodeString(strings.TrimSpace(fence.SignerPubKeyHex))
@@ -319,6 +427,12 @@ func AutoResolveUnprovableFence(
 // a proven fate. Every precondition is read HERE, from the live fence and the
 // evidence the caller collected, so a handler cannot widen it by mistake.
 //
+// The peer count is the one precondition that is partly the caller's: when the
+// node reports peers, the operator must have acknowledged that a peer is still
+// a route the transaction could take back. The count itself is re-checked
+// against the evidence the caller read, so a request cannot claim "no peers"
+// and then be handed a decision the node never agreed to.
+//
 // On success the abandoned allocation is reserved: the next allocation for that
 // signer is strictly ABOVE the fenced nonce rather than resuming at the
 // committed floor, so the abandoned bytes cannot be duplicated by a same-nonce
@@ -367,6 +481,18 @@ func AbandonUnprovableFence(ctx context.Context, signerPubKeyHex, reason string,
 		"peers=%d, mempool=%d/%d holding_this_tx=%t. The payload may be lost — if any copy of it still exists "+
 		"somewhere, it will be refused as a replay once a higher nonce commits.",
 		reason, ev.TxLookup, committedNonceText(ev), ev.Peers, ev.MempoolCount, ev.MempoolTotal, ev.MempoolHolds)
+	// The recorded note must not claim a fact the node did not observe. With
+	// peers connected the operator accepted the peer route explicitly, so the
+	// note says THAT rather than repeating the no-peer wording, which would
+	// misdescribe an incident review later.
+	peerNote := "the node could read no committed fate for this transaction and held no mempool copy of it, " +
+		"so the operator accepted that its payload may be lost"
+	if ev.Peers > 0 {
+		peerNote = fmt.Sprintf("the node could read no committed fate for this transaction and held no mempool "+
+			"copy of it, but %d peer(s) were connected — the operator acknowledged that a peer is still a route "+
+			"these bytes could take back into this node, and accepted that a late arrival loses the abandoned "+
+			"payload", ev.Peers)
+	}
 	emitFenceEvent("fence_abandoned",
 		fenceKV("signer", held.SignerPubKeyPrefix),
 		fenceKV("tx_hash", held.TxHash),
@@ -377,10 +503,10 @@ func AbandonUnprovableFence(ctx context.Context, signerPubKeyHex, reason string,
 		fenceKV("tx_lookup_detail", ev.TxLookupDetail),
 		fenceKV("committed_nonce", committedNonceText(ev)),
 		fenceNum("mempool_count", uint64(ev.MempoolCount)), // #nosec G115 -- counts are non-negative
+		fenceKV("peer_redelivery_acknowledged", fmt.Sprintf("%t", ev.Peers > 0 && ev.PeerRedeliveryAcknowledged)),
 		fenceKV("reason", reason),
-		fenceKV("note", "OPERATOR DECISION, NOT A PROOF: the node could read no committed fate for this "+
-			"transaction and had no peer or mempool copy of it, so the operator accepted that its payload may "+
-			"be lost rather than leaving the key refusing to sign and the node refusing to restart forever"))
+		fenceKV("note", "OPERATOR DECISION, NOT A PROOF: "+peerNote+", rather than leaving the key refusing "+
+			"to sign and the node refusing to restart forever"))
 
 	// A restored fence has no reconciler to retire its pending count; setting it
 	// to 1 (as the operator lift does) makes the decrement inside liftFence land
@@ -419,9 +545,18 @@ func validateAbandonEvidence(held FencedSigner, cause fenceCause, ev FenceAbando
 		return refuse("the node's live peer count was not read, and a connected peer can still deliver this " +
 			"transaction back into the mempool")
 	}
-	if ev.Peers > 0 {
+	// PEERS ARE AN ACKNOWLEDGEMENT, NOT A VETO. See the file header: refusing
+	// outright meant a node that keeps a peer (federated desktop node, validator
+	// with a persistent peer) could never take the one route out of an
+	// unprovable fence, which is the outage this route exists to end. The peer
+	// count is still read, still reported with the decision, and still refuses
+	// the AUTOMATIC route outright; the operator route requires an explicit
+	// acknowledgement when peers are connected.
+	if ev.Peers > 0 && !ev.PeerRedeliveryAcknowledged {
 		return refuse("%d peer(s) are connected, so this transaction can still be delivered back to this "+
-			"node and commit", ev.Peers)
+			"node and commit. Set peer_redelivery_acknowledged to true to abandon it anyway and accept that "+
+			"a late arrival loses the abandoned payload; the decision and the peer count are recorded with "+
+			"the fence", ev.Peers)
 	}
 	if !ev.MempoolChecked {
 		return refuse("the node's mempool was not read")

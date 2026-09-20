@@ -1195,12 +1195,14 @@ func (h *DashboardHandler) handleRestart(w http.ResponseWriter, r *http.Request)
 	}
 	// Checked BEFORE the in-process-restart capability branch, because that
 	// branch's answer is "fully quit SAGE and open it again" — an instruction to
-	// do by hand the exact thing the signer fence exists to prevent. A restart
-	// while a key is fenced discards the only record that a transaction may still
-	// be in flight; the allocator then re-seeds from the highest COMMITTED nonce,
-	// which is below it, and the next transaction overtakes it into a Code 4
-	// rejection nobody can trace. cmd/sage-gui vetoes the coordinated path;
-	// this stops us TELLING an operator to take the manual one.
+	// do by hand the exact thing the signer fence exists to prevent. The veto
+	// fires only for a fence whose durable record cannot be confirmed: with the
+	// record on disk the restart re-raises the fence, so it cannot re-seed past
+	// an in-flight nonce, while WITHOUT it the allocator seeds from the highest
+	// COMMITTED nonce — below the abandoned one — and the next transaction
+	// overtakes it into a Code 4 rejection nobody can trace. cmd/sage-gui vetoes
+	// the coordinated path; this stops us TELLING an operator to take the
+	// manual one, which would discard the record the same way.
 	//
 	// It reads the fence state directly rather than through a hook: there is
 	// nothing here that can be left unwired, so there is no degraded mode to fail

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/l33tdawg/sage/internal/tx"
@@ -107,6 +108,14 @@ func (s *Server) submitConsensusTx(
 	if submit == nil {
 		return consensusTxSubmit, fmt.Errorf("missing transaction submitter")
 	}
+	// REFUSE IMMEDIATELY when this key is already fenced. The lease below would
+	// otherwise park here until the request's deadline (see tx.FenceForSigner),
+	// so an agent writing to a fenced node sees a bare timeout with no reason
+	// instead of the typed "not sent, retry" answer. Nothing is signed either
+	// way; this only decides how long the caller waits to be told.
+	if _, fenced := tx.FenceForSigner(s.signingKey); fenced {
+		return consensusTxLease, fmt.Errorf("%w: check tx.FenceForSigner", tx.ErrSignerFenced)
+	}
 
 	stage := consensusTxLease
 	err := tx.WithNonceLease(ctx, s.signingKey, func(nonce uint64) error {
@@ -149,9 +158,9 @@ func (s *Server) writeConsensusTxError(
 		s.logger.Error().Err(err).Msg("failed to acquire nonce lease for " + operation + " tx")
 		switch {
 		case errors.Is(err, tx.ErrSignerFenced):
-			w.Header().Set("Retry-After", "1")
+			w.Header().Set("Retry-After", strconv.Itoa(signerFencedRetryAfterSeconds))
 			writeProblem(w, http.StatusServiceUnavailable, "Signing key temporarily held",
-				"An earlier transaction from this signing key is still being confirmed. Nothing was signed or sent for this request; retry shortly.")
+				s.signerFencedPublicMessage())
 		case errors.Is(err, tx.ErrSigningQuiesced):
 			writeProblem(w, http.StatusServiceUnavailable, "Signing paused",
 				"Transaction signing is paused for a coordinated restart. Nothing was signed or sent for this request.")
@@ -175,4 +184,33 @@ func (s *Server) writeConsensusTxError(
 		status, publicMsg := broadcastErrorPublic(err)
 		writeProblem(w, status, "Broadcast error", publicMsg)
 	}
+}
+
+// signerFencedRetryAfterSeconds matches the web surface's advice: long enough
+// not to hammer a node that is already stuck, short enough that a fence
+// clearing normally is not followed by a needless wait.
+const signerFencedRetryAfterSeconds = 15
+
+// signerFencedPublicMessage is what a caller is told when its write was refused
+// because the signing key is fenced. It states the three things that matter and
+// nothing else: nothing was signed or sent (so nothing needs undoing), WHY the
+// key is held (the earlier submission this request is stuck behind), and where
+// an operator can look. The held transaction's identity is public on-chain data
+// — the same fields the health surface already prints.
+func (s *Server) signerFencedPublicMessage() string {
+	const base = "An earlier transaction from this signing key is still waiting to be confirmed. Nothing was " +
+		"signed or sent for this request, and nothing needs undoing."
+	held, fenced := tx.FenceForSigner(s.signingKey)
+	if !fenced {
+		return base + " Retry shortly: the node lifts the hold itself once that transaction's fate is proven."
+	}
+	detail := fmt.Sprintf(" The key is held on transaction %s", held.TxHash)
+	if held.HasNonce {
+		detail += fmt.Sprintf(" (nonce %d)", held.Nonce)
+	}
+	if held.HeldFor > 0 {
+		detail += fmt.Sprintf(", unproven for %s", held.HeldFor.Round(time.Second))
+	}
+	return base + detail + ". The node re-reads the chain for a proof on its own; the operator view is " +
+		"GET /v1/dashboard/health (signer_fences). Retry shortly."
 }

@@ -568,6 +568,14 @@ func (h *DashboardHandler) signAndBroadcastCommitDurable(
 		txLog  string
 		txErr  error
 	)
+	// Refuse IMMEDIATELY when the key is already fenced: the lease would park
+	// here until this request's deadline instead of answering, and the caller is
+	// an operator or an agent waiting on a response (see tx.FenceForSigner).
+	// Nothing is signed either way; this only decides how long they wait to be
+	// told, and the handlers already map ErrSignerFenced to 503 + Retry-After.
+	if _, fenced := tx.FenceForSigner(key); fenced {
+		return "", 0, "", tx.ErrSignerFenced
+	}
 	leaseErr := tx.WithNonceLease(ctx, key, func(nonce uint64) error {
 		ptx.Nonce = nonce
 		if ptx.Timestamp.IsZero() {
@@ -664,6 +672,11 @@ func (h *DashboardHandler) signAndBroadcastCommitDurable(
 // or hash-binding failure stays live and fences through WithNonceLease.
 func (h *DashboardHandler) signAndBroadcastSyncContext(ctx context.Context, ptx *tx.ParsedTx, key ed25519.PrivateKey) error {
 	var txErr error
+	// Same fast refusal as the durable commit path: a held fence must reach the
+	// handler's 503 mapping now, not after the request has already timed out.
+	if _, fenced := tx.FenceForSigner(key); fenced {
+		return tx.ErrSignerFenced
+	}
 	leaseErr := tx.WithNonceLease(ctx, key, func(nonce uint64) error {
 		ptx.Nonce = nonce
 		if ptx.Timestamp.IsZero() {

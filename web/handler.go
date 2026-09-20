@@ -1341,6 +1341,7 @@ func (h *DashboardHandler) RegisterRoutes(r chi.Router) {
 			// and the node's own RPC — and refuses anything weaker than a proven
 			// fate; see web/signer_fence_lift.go.
 			r.With(h.cerebrumOperatorGate).Post("/v1/dashboard/signer-fence/lift", h.handleSignerFenceLift)
+			r.With(h.cerebrumOperatorGate).Post("/v1/dashboard/signer-fence/abandon", h.handleSignerFenceAbandon)
 			r.With(h.cerebrumOperatorGate).Post("/v1/dashboard/memory/adoption-assign", h.handleAppV26LegacyAdoptionAssign)
 			r.With(h.cerebrumOperatorGate).Post("/v1/dashboard/memory/adoption-deprecate", h.handleAppV25LegacyAdoptionDeprecate)
 			// Pre-v11.16.2 MCP bridges still call this dashboard-shaped read during

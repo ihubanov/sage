@@ -177,7 +177,8 @@ func RestoreFencesFromIntents(ctx context.Context) (int, error) {
 			fenceNonceField(intent.Nonce, intent.HasNonce),
 			fenceKV("note", "restored from durable intent after a restart: the signed bytes did not survive "+
 				"this process, so reconciliation cannot re-submit them; this fence resolves on a PROVEN fate "+
-				"(a committed height for that hash, or a higher committed nonce for this signer)"))
+				"read from the chain (the recorded hash in a committed block, or a committed nonce at or above "+
+				"the fenced allocation), or through the operator recovery routes if no proof can exist"))
 		restored++
 	}
 	return restored, nil
@@ -221,9 +222,20 @@ func (e *FenceLiftUnprovenError) Error() string {
 	return fmt.Sprintf("fence for signer %s cannot be lifted: %s", e.Signer, e.Reason)
 }
 
-// ProveFenceLiftFromChain reads the proofs this package will accept, in
-// descending order of strength: the exact transaction found in a block, then
-// supersession by a higher committed nonce for the same signer.
+// ProveFenceLiftFromChain reads the proofs this package will accept: the exact
+// transaction found in a block, or the signer's committed nonce having reached
+// the fenced allocation (spent when it equals it, superseded when it is above).
+//
+// THE EQUALITY CASE IS A REAL PROOF, NOT A RELAXATION. Consensus refuses a
+// transaction whose nonce is <= the signer's committed nonce, so once the
+// committed floor has reached the fenced allocation those exact bytes can never
+// commit again and no later allocation can overtake anything. That is the same
+// property the re-submission path lifts on when CheckTx answers code 4 — the
+// floor is checked directly here because a fence restored from durable intent
+// has no bytes to re-submit. It is labelled "spent" rather than "superseded"
+// because the floor alone cannot say whether these bytes were the transaction
+// that committed or were overtaken; the transaction index is what distinguishes
+// them, and a node whose indexer is disabled cannot answer at all.
 //
 // A missing transaction is NOT a proof and never becomes one here. CometBFT
 // indexes a transaction only once it is in a block, so a tx sitting unindexed
@@ -251,16 +263,29 @@ func ProveFenceLiftFromChain(
 		TxHash:          fence.TxHash,
 	}
 
-	// Supersession first: it needs no RPC and it is the proof that survives a
-	// restart, because a restored fence has no bytes to look up by content.
+	// The committed nonce floor first: it needs no RPC and it is the proof that
+	// survives a restart, because a restored fence has no bytes to look up by
+	// content.
 	if nonceFloor != nil && fence.HasNonce {
-		if committed, ok := nonceFloor(pub); ok && committed > fence.Nonce {
+		committed, ok := nonceFloor(pub)
+		if ok && committed > fence.Nonce {
 			proof.Kind = "superseded"
 			proof.CommittedNonce = committed
 			proof.Detail = fmt.Sprintf(
 				"signer has committed nonce %d, above the fenced %d; the fenced transaction can never commit "+
 					"(consensus refuses a stale nonce), so the allocation is dead and its payload is lost",
 				committed, fence.Nonce)
+			return proof, nil
+		}
+		if ok && committed == fence.Nonce {
+			proof.Kind = "spent"
+			proof.CommittedNonce = committed
+			proof.Detail = fmt.Sprintf(
+				"signer's committed nonce has reached the fenced allocation %d: consensus refuses a nonce "+
+					"that is not strictly above it, so these bytes can never commit again. Whether they were "+
+					"the transaction that committed, or were overtaken by a different allocation of the same "+
+					"nonce, is not distinguishable from the nonce floor alone",
+				fence.Nonce)
 			return proof, nil
 		}
 	}
@@ -322,6 +347,11 @@ func LiftFenceWithProof(ctx context.Context, signerPubKeyHex string, proof Fence
 	if validateErr != nil {
 		return validateErr
 	}
+	// This package cannot tell whether the proof was read by the node's own
+	// reader or by a caller, so the operator path labels it: a lift recorded as
+	// a plain proof may have been resolved automatically, and only this route
+	// knows a human asked.
+	detail = "operator lift: " + detail
 
 	// A restored fence has no reconciler to retire its pending count, so the
 	// operator's verdict retires it. Done under the lock that liftFence also
@@ -369,7 +399,25 @@ func validateFenceLiftProof(signer string, fence *keyFence, proof FenceLiftProof
 		if proof.Kind == "rejected" {
 			verdict = TxVerdictRejected
 		}
-		return verdict, fmt.Sprintf("operator proof: %s", proof.Detail), nil
+		return verdict, fmt.Sprintf("proof: %s", proof.Detail), nil
+	case "spent":
+		if !fence.hasNonce {
+			return TxVerdictUnresolved, "", &FenceLiftUnprovenError{
+				Signer: signer,
+				Reason: "the fence recorded no nonce, so a spent allocation cannot be evaluated for it",
+			}
+		}
+		if proof.CommittedNonce < fence.nonce {
+			return TxVerdictUnresolved, "", &FenceLiftUnprovenError{
+				Signer: signer,
+				Reason: fmt.Sprintf(
+					"the proof claims committed nonce %d, which is below the fenced nonce %d",
+					proof.CommittedNonce, fence.nonce),
+			}
+		}
+		return TxVerdictSpent, fmt.Sprintf(
+			"proof: signer's committed nonce has reached the fenced %d, so the allocation is spent and "+
+				"these bytes can never commit again (%s)", fence.nonce, proof.Detail), nil
 	default:
 		return TxVerdictUnresolved, "", &FenceLiftUnprovenError{
 			Signer: signer,

@@ -48,7 +48,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.2`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.3`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -207,6 +207,22 @@ software updates, and encryption controls. Ordinary agent identity replacement
 uses re-enrollment; historical memory authorship is preserved.
 
 ---
+
+## What's New in v11.23.3
+
+**A held signing key can no longer strand a node, and a write that hits one says so.** The signer fence refuses to let a key sign anything new while an earlier transaction's fate is unproven — that part is deliberate and unchanged. What was wrong was everything around a fence that got restored after a restart: its signed bytes are gone, so re-submission cannot prove anything, and the node had no other way to settle it. It held the key, refused every coordinated restart (which is every in-app update), and the only exits were an operator POST that needed a proof the chain did not have, or hand-editing the database. Users hit it as an upgrade that could not be installed and, on the nodes that did restart, as writes that timed out with no error while reads stayed fine.
+
+**A restored fence now proves what it can, and settles what it cannot.** On the first boot of this release the node re-reads the chain for the two proofs it accepts — the recorded transaction hash found in a committed block, or the signer's committed nonce having reached the fenced allocation — on the same retry schedule the live reconciler uses, and lifts the fence the moment either exists. For the shape no proof can ever settle (the transaction never committed, and the bytes died with the process that sent them) the node resolves the fence itself once the evidence is unambiguous: it is caught up, it has seen no peer this run, nothing is queued in its mempool, the recorded hash is in no block, and the allocation is unspent. That decision is recorded as a `fence_abandoned` event with `mode=automatic_unprovable` and the full evidence, and the abandoned nonce is reserved so the next transaction cannot reuse it. A node that has talked to a peer keeps its fence — there the transaction can still come back, and only a proof or an operator may lift it.
+
+**The restart veto now asks the right question.** It used to refuse any coordinated restart while a fence was held, on the reasoning that a restart discards the only record of a possibly in-flight transaction. Since durable intent landed, that record is on disk and is re-raised at the next start, so the veto now refuses only when it cannot confirm the record survives (an unwired, unreadable or missing intent row — it fails closed). Refusing blanket-wide was itself the bug: a fenced node would not take the restart that installs the release carrying the fence's own proof reader and recovery.
+
+**A fenced write is refused immediately instead of hanging.** The lease's fence wait blocks until the caller's deadline, so an agent writing to a fenced node saw a bare timeout. Request-serving paths now check first and answer `503` with `Retry-After`, naming the transaction the key is held on and stating that nothing was signed or sent.
+
+**Already stuck on v11.23.2? Replace the app.** A node that is fenced right now refuses the in-app restart that would install this release, so the recovery is the app itself: drag the new SAGE into `Applications`, replacing the old copy, then quit and reopen it. The first boot of v11.23.3 resolves the fence on the evidence above and writes work again — no terminal, no command to run. The proof route (`POST /v1/dashboard/signer-fence/lift`) still exists for anyone whose key can be proven, and the operator abandon route remains for fleets that keep their fence because they have peers.
+
+No consensus change, no transaction-type change, no upgrade height, and no chain reset: this decides when a key may sign again, not what the chain accepts.
+
+Container: `ghcr.io/l33tdawg/sage:11.23.3`. SDK 11.23.3.
 
 ## What's New in v11.23.2
 

@@ -1,10 +1,10 @@
-# The signer fence — same-key nonce ordering, and the hole that is still open
+# The signer fence — same-key nonce ordering, and what it cannot prove
 
-**Status: v11.23.2. This document describes a fence that survives the process
-that raised it: the residual it used to state — an in-process fence lost to a
-restart — is closed by durable intent plus an operator recovery that lifts only
-on a proven fate. Read "What the fence still cannot do" for the limits that
-remain.**
+**Status: v11.23.3. This document describes a fence that survives the process
+that raised it: a restart no longer loses the record, a restored fence re-reads
+its own proofs from the chain, and the one shape no proof can settle has an
+explicit operator exit that says so. Read "What the fence still cannot do" for
+the limits that remain.**
 
 Source of truth: `internal/tx/nonce.go` (the lease),
 `internal/tx/nonce_fence.go` (the fence), `cmd/sage-gui/signer_fence_restart.go`
@@ -75,6 +75,7 @@ went out**:
 |---|---|---|
 | The exact tx hash is in a committed block | **yes** | Proof. |
 | An indexed block result for that hash, non-zero code | **yes** | Consensus executed those bytes; they had their turn. |
+| The signer's committed nonce has **reached** the fenced allocation (equal, or above) | **yes** | Read from the allocator's own floor source. Consensus refuses a nonce that is not strictly above the committed one, so the bytes can never commit again — the same monotonicity argument as the code-4 row below, checked directly instead of through a re-submission. When it is EQUAL the fate label is `spent`: the floor cannot say whether these bytes committed or were overtaken, so no surface may claim the payload was lost. |
 | Re-submission refused with **CheckTx code 4** (nonce gate) | **yes** | For a positive nonce, the signer's committed nonce is monotone non-decreasing **on the chain**, so this refusal cannot un-happen there. For the nonce-zero sentinel, permanence instead comes from the already-activated app-v9 fork height: the rule cannot deactivate as height advances. Either way the bytes cannot commit *again*. Two caveats the code itself writes down: (a) positive-nonce code 4 proves supersession **or self-commit** — the gate is `nonce <= committed`, so a transaction that itself committed answers code 4 exactly like one overtaken by a higher nonce, and without the tx index the two are indistinguishable (see triage step 2); (b) a node-level rollback (snapshot restore, state-sync rewind) is the one event that can invalidate these monotonicity assumptions — accepted, because a restore invalidates the fence-holding process anyway. |
 | Re-submission refused with any other CheckTx code | **no** | It refuses *this* submission. The older copy will be judged against whatever state exists wherever it arrives. Codes 3 (nonce lookup), 112 (backpressure), authorization codes and even decode/signature codes (fork-gated) can all flip back. |
 | `/tx` says "not found" | **no** | CometBFT indexes a transaction only once it is in a block, so this is indistinguishable from one sitting in a mempool about to commit. |
@@ -133,12 +134,33 @@ Two limits remain, and both are deliberate:
   transaction hash and the nonce. It does not hold the signed bytes, because
   those routinely carry memory content that must not be copied into a plaintext
   table. A restored fence therefore cannot resolve by re-submission the way a
-  live one does; it resolves on a proven fate.
+  live one does; it resolves on a proven fate **read from the chain**.
 - **A crash between the record and the wire holds the key.** If the process dies
   after registering intent but before the bytes left the machine, the fence is
   raised for a transaction that may never have been sent. That is the safe
   direction — nothing is signed past an unresolved allocation — and it resolves
   through the same proof path, but it can hold a key that has nothing in flight.
+
+### A restored fence re-reads its own proof
+
+A fence restored from durable intent has no bytes to re-submit, so reading the
+chain is the only thing that can settle it — and until v11.23.3 nothing did.
+The restored path emitted one `fence_restored_waiting_for_proof` event and
+parked. That made the lift route below the ONLY way out, and it made the restart
+veto — which every update must pass — a permanent refusal for a node whose
+transaction the chain had already settled: the fence held, the key refused to
+sign, and the update could not be installed. Users hit exactly that and were
+told, by the veto message itself, to wait for a reconciliation that had nothing
+to do.
+
+Now the node installs a proof reader at boot (`tx.SetFenceProverFunc`,
+`internal/tx/nonce_fence.go`, wired from the same CometBFT RPC URL and the same
+committed-nonce store the rest of the node uses) and a restored fence calls it on
+the same backoff as live reconciliation. Every attempt is recorded, so
+`attempts`, `last_cause` and `last_detail` in the health block describe what the
+node is doing instead of sitting at zero. `last_cause=no_proof` means the chain
+answered and has not settled the transaction; `last_cause=no_fence_prover` means
+the hook was never wired — a wiring gap, fixed by installing it, not by waiting.
 
 ### Restarting does **not** clear a fence safely
 
@@ -150,12 +172,30 @@ raises the floor to what **committed**. A fence is about what is **in flight**,
 which is by definition above that floor. Restarting discards the only record of
 it.
 
-There is no flag, no override and no operator procedure to force a fence open,
-because there is no safe one.
+Since durable intent landed, "the only record" is a statement about the RECORD,
+not about the fence: a fence shadowed by an `signer_fence_intent` row is
+re-raised at the next start, so the restart cannot lose it and the allocator
+cannot seed past the abandoned nonce. What a restart does cost is the signed
+bytes, and with them the re-submission proof — which is why the restored fence
+re-reads its own proofs and why the abandon route exists.
+
+The vetoes in `cmd/sage-gui/signer_fence_restart.go` and `web/update_handler.go`
+follow exactly that line: a coordinated restart is refused while a fence's
+durable record cannot be confirmed, and allowed when every held fence is
+shadowed by one. The check fails closed — an unwired, unreadable or empty store
+leaves every fence protected — and an allowed restart records
+`fence_restart_allowed_durable` so the decision is visible in the log rather than
+inferred. Refusing blanket-wide was itself a bug: the node would not take the
+restart that installs the fix, and the fix was the only thing that could clear
+the fence.
+
+What follows replaces "there is no procedure at all" with two procedures that
+state exactly what they are: a lift that requires proof, and an abandon that
+requires an operator to accept the loss.
 
 ### Recovering a fence on proof
 
-Two proofs are accepted, and nothing weaker. They are read by the NODE, not
+Three proofs are accepted, and nothing weaker. They are read by the NODE, not
 asserted by the caller: the committed nonce floor comes from the same store the
 allocator seeds from, and the transaction lookup goes to the node's own RPC.
 
@@ -165,6 +205,16 @@ allocator seeds from, and the transaction lookup goes to the node's own RPC.
   refuses a stale nonce, so the fenced allocation can never be included. The key
   reopens and the fenced transaction's payload is permanently lost — which is a
   fact the lift records rather than a fact it hides.
+- **Spent**: the signer's committed nonce has reached the fenced allocation (it
+  is equal, not above). Consensus refuses a nonce that is not strictly above the
+  committed one, so those exact bytes can never commit again and no later
+  allocation can overtake anything. This is the same proof the re-submission path
+  lifts on when CheckTx answers code 4, read directly from the store — which is
+  what makes it reachable on a node whose transaction index is disabled or
+  pruned. It is labelled `spent` rather than `superseded` because the nonce floor
+  alone cannot say whether these bytes were the transaction that committed or
+  were overtaken by another allocation of the same nonce; the index is what
+  distinguishes those, and `fate_spent` is the label that admits it.
 
 A missing lookup is NOT a proof and never becomes one here: CometBFT indexes a
 transaction only once it is in a block, so a mempool-resident transaction
@@ -182,6 +232,84 @@ with the reason when the evidence is not there yet. Lifting is also what retires
 the durable record; a fence left held keeps its record and comes back on the next
 start.
 
+### Abandoning a fence nothing can prove
+
+One shape has no proof and never will: a fence restored from durable intent whose
+transaction never committed, on a node where nothing can deliver it back. The
+allocation cannot be spent (nothing landed, so nothing advanced the signer's
+committed nonce), the hash is in no block, the signed bytes died with the only
+process that had them, and the fence therefore refuses to sign AND refuses every
+update for as long as the node runs. That is what a process killed mid-submission
+leaves behind, and the only exits used to be "wait forever" and hand-editing the
+intent table.
+
+```
+POST /v1/dashboard/signer-fence/abandon
+{"signer": "<hex key or prefix>",
+ "reason": "<why this decision is being taken>",
+ "acknowledge_payload_loss": true}
+```
+
+This is an OPERATOR DECISION, not a proof, and the request has to be spelled that
+way: the acknowledgement and the reason are both required, because the lift it
+performs is the only one in SAGE whose fate the chain never settled. It is gated
+by the same CEREBRUM operator gate, and every precondition is read by the node
+(`tx.ReadFenceAbandonEvidence`, `tx.AbandonUnprovableFence`):
+
+- the fence must be **restored from durable intent** — a live fence still holds
+  the exact bytes that went out, so reconciliation keeps re-submitting them and
+  abandoning it would throw away a transaction consensus can still settle;
+- its durable record must carry a nonce, so the abandoned allocation can be
+  reserved: the next allocation for that signer is strictly above it, which is
+  what keeps a same-nonce twin from being minted;
+- the node's live P2P peer count must be **zero**, read from its own RPC — a
+  connected peer can still deliver the transaction back into the mempool;
+- the transaction must not be in this node's mempool, and the mempool read must
+  be complete (a truncated read cannot certify absence);
+- the recorded hash must not be committed or rejected, and the signer's committed
+  nonce must not have reached the fenced allocation. Either of those is a
+  **proof**, and the refusal says to use the lift route instead.
+
+Every refusal answers `409` with the evidence attached. An accepted decision is
+recorded as a `fence_abandoned` event plus
+`sage_nonce_fence_resolved_total{fate="abandoned"}` — never as a proven fate, so
+a later post-mortem can tell the two apart. The residual the operator accepts is
+stated in the response: a peer that holds the transaction from before the
+shutdown, or a client that kept the signed bytes, can still deliver it; it
+commits if it lands before the signer's next transaction, and is refused as a
+replay if it lands after. Verify the effect on-chain before redoing that action by
+hand.
+
+### The same decision at first boot, because the desktop has no operator
+
+The operator routes above are not a recovery path for the product. A CEREBRUM
+user whose node came back fenced has a node that refuses every write and an
+updater that refuses to restart it, and nobody is going to run a `curl` from a
+terminal. The instruction has to be "install the new version", so the node makes
+the same evidence-backed decision itself at startup
+(`tx.AutoResolveUnprovableFence`, wired in `cmd/sage-gui/node.go`):
+
+- the fence is restored from durable intent (its bytes are gone, so no
+  re-submission is possible);
+- CometBFT reports `catching_up == false`, so the "no committed fate" answer came
+  from a chain that has caught up — a node still replaying or state-syncing may
+  simply not have indexed a transaction that DID commit;
+- **no peer has been seen since this process started**, and none is connected
+  now. This is a latch: once a peer has been seen, the automatic path is closed
+  for the rest of the run even if that peer disconnects, because a peer is how a
+  transaction gets delivered back. A multi-validator or P2P-connected node
+  therefore keeps its fence and needs a proof or an operator — which is the
+  correct answer there;
+- the transaction is in no mempool copy on this node, the recorded hash is in no
+  committed block, and the signer's committed nonce has not reached the fenced
+  allocation.
+
+The resolution records `fence_abandoned` with `mode=automatic_unprovable` and the
+full evidence, and it retires the durable record. It is the same decision the
+operator route makes, taken by the node when nothing could ever deliver the
+transaction back; the same residual applies, and the same allocation is
+reserved above the abandoned nonce.
+
 ### What this release does about a restart while fenced
 
 The dominant road into that hole is not a crash — it is **this node's own updater
@@ -191,7 +319,10 @@ deciding to restart**. That one we control, so:
   `tx.RestartVetoReason()` returns the operator-facing reason;
   `cmd/sage-gui/signer_fence_restart.go` enforces it on both restart entry points
   (`prepareAndQueueRestart` and the updater's `RequestRestartPrepared`).
-  **It fails closed**: an unwired or panicking guard refuses the restart.
+  **It fails closed**: an unwired or panicking guard refuses the restart, and so
+  does a fence whose durable record cannot be read. A fence whose record CAN be
+  read does not refuse the restart — the record re-raises it at the next start —
+  and the decision is logged as `fence_restart_allowed_durable`.
 - **The veto is re-checked at drain time, not only at request time.** A check
   made only when the restart is requested is a time-of-check race: the drain's
   own force-close of in-flight HTTP handlers is precisely how an indeterminate
@@ -218,26 +349,28 @@ deciding to restart**. That one we control, so:
   the restart begins are refused (`ErrSigningQuiesced`) instead of signing into
   the drain.
 
-A `kill -9`, a power cut, or a crash during the original RPC can still lose the
-fence. **Closing that needs durable pre-broadcast intent** — the exact bytes and
-hash recorded *before* the send, cleared only on a proven fate, reloaded and
-reconciled *before* any nonce is allocated on startup. That is persistence work
-and is **not in v11.23.2**.
-
-The residual is covered by an executable test:
+A `kill -9`, a power cut, or a crash during the original RPC no longer loses the
+RECORD — durable pre-broadcast intent landed in v11.20.4, so the fence is
+re-raised at startup instead of the allocator re-seeding past it. What a crash
+loses is the signed BYTES, and with them the cheapest proof: a restored fence
+cannot re-submit, so it waits on the proof reader and, if no proof can exist, on
+an operator decision. A node built WITHOUT an intent store still has the old
+residual in full — that is what
 `TestRestartWhileFencedLosesTheTransaction` in
-`internal/tx/nonce_fence_safety_test.go` walks the sequence above and asserts the
-uncomfortable half, so this document cannot quietly stop being true.
+`internal/tx/nonce_fence_safety_test.go` walks and asserts, so this document
+cannot quietly stop being true about the unprotected deployment.
 
 ### The honest scope claim
 
 > Same-key nonce inversion is eliminated **within a running process, for every
 > producer that goes through the lease**. In the daemon that includes the
-> dashboard, `api/rest`, federation, voter, and upgrade-watchdog producers. A
-> standalone CLI is a separate process: its lease protects its own work but
-> cannot coordinate with a concurrently running daemon using the same key.
-> Cross-process, cross-restart, and crash exposure remain until durable
-> pre-broadcast intent lands.
+> dashboard, `api/rest`, federation, voter, and upgrade-watchdog producers.
+> Across a restart, the RECORD survives (durable intent) rather than the bytes:
+> the key comes back refusing to sign until a fate is proven, or until an
+> operator abandons it with the evidence recorded. A standalone CLI is a
+> separate process: its lease protects its own work but cannot coordinate with a
+> concurrently running daemon using the same key, and that cross-process
+> exposure remains.
 
 Any stronger claim (lifecycle-wide elimination, "restart to recover") is wrong.
 
@@ -256,10 +389,12 @@ SAGE: nonce_fence event=fence_held  signer=3d73cdbdffaacac7… held_for=5m0s att
 SAGE: nonce_fence event=fence_lift  signer=3d73cdbdffaacac7… fate=committed held_for=5m2s attempts=92
 ```
 
-Events: `fence_set`, `reconcile_retry`, `resolver_panic`, `submit_panic`,
-`fate_committed`, `fate_rejected`, `fence_lift`, `fence_held`,
-`signing_quiesced`, `signing_resumed`, `fence_dropped_at_shutdown`. Retry and
-panic lines are
+Events: `fence_set`, `fence_restored`, `fence_restored_waiting_for_proof`,
+`reconcile_retry`, `resolver_panic`, `submit_panic`, `fence_abandoned`
+(`mode=automatic_unprovable` for the startup resolution),
+`fence_restart_allowed_durable`, `fate_committed`, `fate_rejected`, `fate_spent`,
+`fate_abandoned`, `fence_lift`, `fence_held`, `signing_quiesced`,
+`signing_resumed`, `fence_dropped_at_shutdown`. Retry and panic lines are
 rate-limited, so a long hold cannot flood the log. The last one is the terminal
 record: a process exit (signal, serve error, or a failed restart gate that
 execs a recovery binary) discards every held fence, and this line — one per
@@ -294,6 +429,15 @@ consensus rejection: there is no verdict to report and nothing to undo. HTTP
 surfaces map it to **503 with `Retry-After`**, never to a rejection status.
 `tx.ErrSigningQuiesced` means the same thing during a restart.
 
+**The refusal is immediate.** The request-serving paths (`api/rest`'s
+`submitConsensusTx`, `web/rbac_signing.go`'s two broadcast helpers) ask
+`tx.FenceForSigner` before they take the lease, because the lease's fence wait
+blocks until the CALLER's deadline — which is how a fenced node looked to agents
+as "writes timed out, no error other than the timeout". They now answer
+immediately, name the transaction the key is held on, and say that nothing was
+sent. Background producers still wait on the fence; a request that has a person
+or an agent on the other end does not.
+
 The other side of the same coin is a submit whose outcome this process could not
 observe. That is **not** a failure and must not be reported as one: REST answers
 `202` with `"status":"indeterminate"`, the exact `tx_hash` of the bytes that went
@@ -305,15 +449,19 @@ the ambiguity arrived as the same opaque 500 as a genuine internal fault.
 
 ### Triage
 
-1. Read `last_cause`. `no_resolver` is a wiring bug — install one with
-   `tx.SetTxResolverFunc`; it is re-read on every attempt, so a late install
-   rescues fences that are already held. `transport` means the **connection to
-   the node failed** — check the CometBFT RPC endpoint, and the fence resolves
-   itself once it is reachable. `rpc` is the opposite of unreachable: the node
-   **is answering**, with a decoded JSON-RPC error envelope — read
-   `last_detail` for what it said (e.g. a persistent internal error on `/tx`)
-   instead of chasing connectivity. `pending` means the node is answering and
-   the transaction is genuinely unresolved — this normally clears on its own.
+1. Read `last_cause`. `no_resolver` and `no_fence_prover` are wiring bugs —
+   install one with `tx.SetTxResolverFunc` / `tx.SetFenceProverFunc`; both are
+   re-read on every attempt, so a late install rescues fences that are already
+   held. `transport` means the **connection to the node failed** — check the
+   CometBFT RPC endpoint, and the fence resolves itself once it is reachable.
+   `rpc` is the opposite of unreachable: the node **is answering**, with a
+   decoded JSON-RPC error envelope — read `last_detail` for what it said (e.g. a
+   persistent internal error on `/tx`) instead of chasing connectivity.
+   `pending` means the node is answering and the transaction is genuinely
+   unresolved — this normally clears on its own. `no_proof` means the proof
+   reader answered and neither accepted proof holds yet; that is the state a
+   restored fence sits in until the chain settles it, and `attempts` climbing
+   with `no_proof` means the node is asking and the answer is "not yet".
 2. Compare the fence's `nonce` against the signer's committed nonce on-chain.
    If the chain is at or above it, the next re-submission gets CheckTx code 4
    and the fence lifts. Read the lifted fate with care: **code 4 proves

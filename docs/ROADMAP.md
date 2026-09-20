@@ -171,9 +171,10 @@ single-validator personal node after an upgrade restart it had no exit at all.
 The automatic resolution now recognises that shape. When the node is caught up, has no peer and has seen none
 while this fence was held, holds no mempool copy, sees no committed fate for the hash, holds an unspent
 allocation, and the tip was minted before this fence was raised, it settles the fence, records
-`fence_abandoned` with `mode=automatic_quiescent` and the full evidence including the tip height and time,
-reserves the abandoned allocation so the next transaction cannot reuse it, and lets the next write mint the
-block that wakes the chain. The residual is the same one the existing automatic decision states: a surviving
+`fence_abandoned` with the full evidence, reserves the abandoned allocation so the next transaction cannot reuse it,
+and lets the next write mint the block that wakes the chain. The mode string names which evidence set reached
+the decision: `automatic_unprovable` for the original startup resolution, `automatic_quiescent` for the rule
+added here (a chain that has minted nothing since the fence was raised). The residual is the same one the existing automatic decision states: a surviving
 copy of those bytes can still commit before the signer's next commit and lose its payload.
 
 Everything that could still make these bytes come back keeps the fence: a tip that has minted since the fence

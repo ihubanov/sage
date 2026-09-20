@@ -2355,6 +2355,24 @@ func reportHeldFence(key string, fence *keyFence) bool {
 	fenceMu.Unlock()
 
 	publishFenceGauges()
+	// The held-alarm note must describe THIS fence's route out. For a fence
+	// restored from durable intent the bytes did not survive, so saying
+	// "reconciliation keeps re-submitting the identical bytes" is false — and
+	// it is not a harmless turn of phrase: an operator (or an agent reading the
+	// log) takes it as "this clears itself", stops looking for the proof route,
+	// and reads the honest wait as a broken self-heal. The status surface was
+	// already given a resolution class for the same reason; the alarm now
+	// matches it.
+	heldNote := "every signing request for this key is refused with ErrSignerFenced until that exact " +
+		"transaction is proven committed or proven permanently refused; reconciliation keeps re-submitting " +
+		"the identical bytes to force that answer"
+	if fence.cause == fenceCauseRestored {
+		heldNote = "every signing request for this key is refused with ErrSignerFenced until that exact " +
+			"transaction is proven committed or proven permanently refused. THIS fence was restored from " +
+			"durable intent, so its signed bytes did NOT survive: nothing is being re-submitted, and it lifts " +
+			"only on a proof read from the chain (or another allocation reaching this nonce) or on an explicit " +
+			"operator abandon"
+	}
 	emitFenceEvent("fence_held",
 		fenceKV("signer", signerPrefix(key)),
 		fenceKV("tx_hash", txHash),
@@ -2363,9 +2381,7 @@ func reportHeldFence(key string, fence *keyFence) bool {
 		fenceNum("attempts", uint64(attempts)), // #nosec G115 -- attempts is a non-negative counter
 		fenceKV("last_cause", string(cause)),
 		fenceKV("last_detail", fenceDetailOrUnknown(detail)),
-		fenceKV("note", "every signing request for this key is refused with ErrSignerFenced until that exact "+
-			"transaction is proven committed or proven permanently refused; reconciliation keeps re-submitting "+
-			"the identical bytes to force that answer"))
+		fenceKV("note", heldNote))
 	return true
 }
 

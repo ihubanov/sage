@@ -48,7 +48,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.6`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.7`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -207,6 +207,18 @@ software updates, and encryption controls. Ordinary agent identity replacement
 uses re-enrollment; historical memory authorship is preserved.
 
 ---
+
+## What's New in v11.23.7
+
+**A node that has activated app-v28 can install its own updates again.** The signed update flow takes a pre-upgrade recovery snapshot and proves it before it touches the installed app: the manifest carries the AppHash the running chain committed, and the proof restores the Badger backup and re-derives that digest from the restored bytes. Since app-v28 the committed AppHash is the public-memory composite commitment — the app-v13 digest of the state WITHOUT the public-memory index nodes, composed with the sparse index root — and the proof only knew the three earlier eras. Every app-v28 node therefore refused its own recovery snapshot, and the field report was exactly this shape: `Failed to install signed app update: verify pre-upgrade snapshot: ... AppHash mismatch under every hash rule (legacy/app-v12/app-v13)`, with the update stuck on the snapshot step and no way forward from inside the app.
+
+**What now happens:** the composite joins the candidate set, read through the same `internal/store` implementation the commit path uses instead of a second copy of the rule — the state-sync provider verification path already went stale exactly that way once, refusing every v28 provider while every pre-v28 chain stayed green. A pre-v28 state carries no public-memory commitment, so the composite is reported as not-applicable there and the three older candidates decide alone. The mismatch message now names the rules that were actually tried.
+
+**If you are reading this from an app-v28 node on 11.23.6 or earlier, read this part.** The gate that just failed runs inside the binary you have installed, so that binary cannot install this release either — and the same gate vetoes a version-changing restart. Installing 11.23.7 once by hand is the path out: quit SAGE, drag `SAGE.app` from the DMG into `/Applications`, relaunch. Every update after that one works from inside the app again.
+
+No consensus change, no transaction-type change, no upgrade height, and no chain reset.
+
+Container: `ghcr.io/l33tdawg/sage:11.23.7`. SDK 11.23.7.
 
 ## What's New in v11.23.6
 

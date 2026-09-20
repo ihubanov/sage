@@ -11,23 +11,31 @@ import (
 
 // This file is the node's side of the signer fence's restart guard.
 //
-// WHY A COORDINATED RESTART IS THE DANGEROUS ONE. The fence in internal/tx is
-// IN-PROCESS ONLY: it remembers that some transaction carrying nonce N went out
-// and was never accounted for, and it refuses to let that key allocate anything
-// higher until N's fate is proven. Nothing about that record survives an exec.
-// A restart taken while a fence is held therefore does this:
+// WHY A COORDINATED RESTART CAN BE THE DANGEROUS ONE. The fence in internal/tx
+// remembers that some transaction carrying nonce N went out and was never
+// accounted for, and it refuses to let that key allocate anything higher until
+// N's fate is proven. Since durable intent landed, the RECORD is written to disk
+// before the bytes reach the transport (RegisterSubmittedTx → the
+// signer_fence_intent table) and re-raised at startup, so a restart no longer
+// loses it. What a restart still loses is the signed BYTES: they live only in
+// this process, and with them goes the cheapest proof, because reconciliation
+// can no longer re-submit them. So the veto asks the narrow question — is this
+// fence's record on disk? — and refuses only when it cannot confirm that:
 //
 //	the fence is discarded  ->  the allocator re-seeds from the highest
 //	COMMITTED on-chain nonce, which is still BELOW N (that is exactly what
 //	"unresolved" means)  ->  it issues some M in the gap  ->  M commits  ->  the
 //	late N finally arrives and app-v9 rejects it Code 4.
 //
-// That loss is untraceable after the fact: the operator sees an unrelated later
-// action fail as a replay. A crash or a SIGKILL can still do it to us — closing
-// that needs durable pre-broadcast intent, which is deliberately not in this
-// release. But the DOMINANT path into it is not a crash; it is this node
-// deciding, on its own schedule, to restart for an update. That one we control,
-// so we refuse it.
+// That sequence needs the RECORD to be gone: with the intent row intact the
+// next start re-raises the fence and nothing is allocated past N. That is the
+// case the veto is for, and it fails closed — no store wired, a read that fails
+// or a row that is missing all mean "unprotected". Refusing blanket-wide was
+// itself a bug: a node holding a fence could not take the restart that installs
+// the release carrying the fence's own proof reader and recovery routes, so it
+// could never be fixed. A restart over a CONFIRMED durable fence is allowed, and
+// says so (fence_restart_allowed_durable); the key still refuses to sign until a
+// fate is proven, and the restored fence re-reads the proof on its own.
 //
 // NOTHING HERE MAY SUGGEST RESTARTING ANYWAY. There is no flag, no override and
 // no operator advice to "restart to clear it", because restarting is the action

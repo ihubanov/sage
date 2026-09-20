@@ -51,19 +51,11 @@ func (h *DashboardHandler) handleSignerFenceLift(w http.ResponseWriter, r *http.
 
 	// Match the live fence by full key or by the prefix the status surface
 	// prints, so an operator can copy either one out of /health.
-	held := tx.FencedSigners()
-	var target *tx.FencedSigner
-	for i := range held {
-		if strings.EqualFold(held[i].SignerPubKeyHex, signer) ||
-			strings.EqualFold(held[i].SignerPubKeyPrefix, signer) {
-			target = &held[i]
-			break
-		}
-	}
+	target, heldCount := fenceForSigner(signer)
 	if target == nil {
 		writeJSONResp(w, http.StatusNotFound, map[string]any{
 			"error": "no signer fence is held for that signer",
-			"held":  len(held),
+			"held":  heldCount,
 		})
 		return
 	}
@@ -71,18 +63,7 @@ func (h *DashboardHandler) handleSignerFenceLift(w http.ResponseWriter, r *http.
 	// The nonce floor is the same source SetNonceFloorFunc uses to re-seed the
 	// allocator, so supersession is judged against what the chain actually
 	// committed rather than against anything a caller reported.
-	var nonceFloor func(ed25519.PublicKey) (uint64, bool)
-	if h.BadgerStore != nil {
-		nonceFloor = func(pub ed25519.PublicKey) (uint64, bool) {
-			n, err := h.BadgerStore.GetNonce(auth.PublicKeyToAgentID(pub))
-			if err != nil || n == 0 {
-				return 0, false
-			}
-			return n, true
-		}
-	}
-
-	proof, err := tx.ProveFenceLiftFromChain(r.Context(), h.CometBFTRPC, nonceFloor, *target)
+	proof, err := tx.ProveFenceLiftFromChain(r.Context(), h.CometBFTRPC, h.signerFenceNonceFloor(), *target)
 	if err != nil {
 		var unproven *tx.FenceLiftUnprovenError
 		if errors.As(err, &unproven) {
@@ -121,4 +102,36 @@ func (h *DashboardHandler) handleSignerFenceLift(w http.ResponseWriter, r *http.
 		"note": "the fence is lifted and its durable intent retired; a superseded lift means the fenced " +
 			"transaction can never commit and its payload is permanently lost",
 	})
+}
+
+// fenceForSigner matches one held fence by full public key or by the prefix the
+// status surface prints, and reports how many fences were held so a 404 can say.
+// Shared with the abandon route so both operator surfaces match a signer the
+// same way — a prefix that works on one and not the other would be its own
+// small trap during an incident.
+func fenceForSigner(signer string) (*tx.FencedSigner, int) {
+	held := tx.FencedSigners()
+	for i := range held {
+		if strings.EqualFold(held[i].SignerPubKeyHex, signer) ||
+			strings.EqualFold(held[i].SignerPubKeyPrefix, signer) {
+			return &held[i], len(held)
+		}
+	}
+	return nil, len(held)
+}
+
+// signerFenceNonceFloor reads the committed nonce floor from the same store the
+// allocator seeds from. Nil when no store is wired — the fence treats that as
+// "no floor evidence", never as "nonce zero".
+func (h *DashboardHandler) signerFenceNonceFloor() func(ed25519.PublicKey) (uint64, bool) {
+	if h.BadgerStore == nil {
+		return nil
+	}
+	return func(pub ed25519.PublicKey) (uint64, bool) {
+		n, err := h.BadgerStore.GetNonce(auth.PublicKeyToAgentID(pub))
+		if err != nil || n == 0 {
+			return 0, false
+		}
+		return n, true
+	}
 }

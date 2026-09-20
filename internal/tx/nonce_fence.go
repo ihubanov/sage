@@ -2,6 +2,7 @@ package tx
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -224,6 +225,31 @@ const (
 	// fence whose signed bytes did not survive a restart. The payload IS lost:
 	// unlike a rejection, there is no question of it applying later.
 	TxVerdictSuperseded
+	// TxVerdictSpent means the signer's COMMITTED nonce has reached the fenced
+	// allocation (it equals it, rather than being above it). App-v9 refuses a
+	// transaction whose nonce is <= the committed one, so the fenced bytes can
+	// never commit again and no nonce inversion is possible once the key
+	// reopens — the same safety property as TxVerdictRejected and
+	// TxVerdictSuperseded.
+	//
+	// WHY IT IS ITS OWN LABEL RATHER THAN "superseded": a committed floor
+	// exactly equal to the fenced nonce is reached either by the fenced
+	// transaction ITSELF committing or by a different allocation of the same
+	// nonce committing first, and the nonce floor alone cannot tell those
+	// apart. Calling it "superseded" would assert the payload was lost when it
+	// may be exactly the payload that landed. The honest claim is narrower:
+	// the allocation is spent. Whether these bytes ever executed is only
+	// knowable from the node's transaction index, which is precisely what a
+	// fence restored from durable intent may not have.
+	TxVerdictSpent
+	// TxVerdictAbandoned is an OPERATOR DECISION, not a proof: the operator
+	// accepted that a restored fence's payload may be lost, after the node
+	// reported the evidence it could read (no peers, no copy in the mempool,
+	// no committed fate, nonce not spent). It exists because the alternative
+	// was a node that could never restart and never sign that key again, and
+	// it is recorded as its own fate precisely so nobody later mistakes it for
+	// evidence. See AbandonUnprovableFence.
+	TxVerdictAbandoned
 )
 
 func (v TxVerdict) String() string {
@@ -234,6 +260,10 @@ func (v TxVerdict) String() string {
 		return "rejected by consensus"
 	case TxVerdictSuperseded:
 		return "superseded by a higher committed nonce"
+	case TxVerdictSpent:
+		return "spent (the signer's committed nonce has reached this allocation)"
+	case TxVerdictAbandoned:
+		return "abandoned by operator decision without proof of its fate"
 	default:
 		return "unresolved"
 	}
@@ -308,6 +338,91 @@ func txResolverFallback() TxResolveFunc {
 	processTxResolverMu.RLock()
 	f := processTxResolver
 	processTxResolverMu.RUnlock()
+	return f
+}
+
+// FenceProofFunc re-reads the proofs available for a fence whose signed bytes
+// did not survive the process that sent them.
+//
+// WHY THIS IS A SEPARATE HOOK FROM TxResolveFunc. A resolver is given the bytes
+// and re-submits them; that is the right instrument for a fence raised in THIS
+// process. A fence restored from durable intent has no bytes — the record
+// deliberately carries identity (signer, hash, nonce) and not payload — so the
+// only question left is the one an operator used to have to answer by hand:
+// has the chain already proven this transaction's fate? The prover answers it
+// by reading, not by sending: the recorded hash against the node's transaction
+// index, and the signer's committed nonce against the fenced allocation.
+//
+// The proof is read from consensus state by the implementation, never asserted
+// by the caller, and the fence still validates whatever it returns (see
+// validateFenceLiftProof). Returning an error means "not proven yet" and is
+// never a lift.
+type FenceProofFunc func(ctx context.Context, fence FencedSigner) (FenceLiftProof, error)
+
+// processFenceProverMu guards processFenceProver, the hook restored fences use
+// to re-read their fate.
+var (
+	processFenceProverMu sync.RWMutex
+	processFenceProver   FenceProofFunc
+)
+
+// SetFenceProverFunc installs the process-wide prover for fences restored from
+// durable intent. Wire it once at boot (cmd/sage-gui/node.go does, from the
+// same CometBFT RPC URL and nonce floor the rest of the node uses). Passing nil
+// clears it.
+//
+// LEAVING IT UNWIRED IS THE BUG THIS HOOK EXISTS TO FIX, so it is worth being
+// exact about the failure it used to cause. A restored fence has no
+// reconciler: before this hook, its goroutine parked on the fence channel and
+// reported "waiting for proof" once, and nothing ever asked the chain whether
+// the proof had arrived. The fence could therefore only be lifted by an
+// operator POST, and the restart veto — which is what an update must pass —
+// refused for as long as the fence stood. Users upgrading a node that had been
+// killed mid-submission saw exactly that: "SAGE is not safe to restart yet",
+// held for hours, with the recovery the message named (re-submission)
+// impossible by construction.
+//
+// It is read on EVERY attempt rather than captured when the fence is raised, so
+// installing it later rescues fences that are already held.
+func SetFenceProverFunc(f FenceProofFunc) {
+	processFenceProverMu.Lock()
+	processFenceProver = f
+	processFenceProverMu.Unlock()
+}
+
+func fenceProverFallback() FenceProofFunc {
+	processFenceProverMu.RLock()
+	f := processFenceProver
+	processFenceProverMu.RUnlock()
+	return f
+}
+
+// FenceAutoResolverFunc resolves a restored fence that the node can prove
+// NOTHING can deliver back (see AutoResolveUnprovableFence). It returns
+// resolved=false to say "not this time" — the usual answer while the node is
+// still catching up — and an error only when it could not even ask.
+type FenceAutoResolverFunc func(ctx context.Context, fence FencedSigner) (resolved bool, detail string, err error)
+
+var (
+	processFenceAutoResolverMu sync.RWMutex
+	processFenceAutoResolver   FenceAutoResolverFunc
+)
+
+// SetFenceAutoResolverFunc installs the startup resolution for restored fences
+// that no proof can settle and no peer can deliver back. It is deliberately a
+// separate hook from SetFenceProverFunc: proving a fate and concluding that no
+// fate can ever exist are different claims, and only the second one is allowed
+// to discard a payload — so it is wired, read, and reviewed on its own.
+func SetFenceAutoResolverFunc(f FenceAutoResolverFunc) {
+	processFenceAutoResolverMu.Lock()
+	processFenceAutoResolver = f
+	processFenceAutoResolverMu.Unlock()
+}
+
+func fenceAutoResolverFallback() FenceAutoResolverFunc {
+	processFenceAutoResolverMu.RLock()
+	f := processFenceAutoResolver
+	processFenceAutoResolverMu.RUnlock()
 	return f
 }
 
@@ -497,6 +612,19 @@ const (
 	// are fixed by wiring, not by waiting.
 	fenceCauseNoResolver  fenceCause = "no_resolver"
 	fenceCauseNoEncodedTx fenceCause = "no_encoded_tx"
+	// fenceCauseNoProver: the fence was restored from durable intent (so there
+	// are no bytes to re-submit) and no proof reader is wired, so the node
+	// cannot even ask whether the chain has already settled the transaction.
+	// Like no_resolver this is fixed by wiring, not by waiting: the proof
+	// reader is re-read on every attempt, so installing it late rescues the
+	// fence.
+	fenceCauseNoProver fenceCause = "no_fence_prover"
+	// fenceCauseNoProof: the proof reader answered, but with nothing this fence
+	// will accept — no verdict yet, or a proof about another signer,
+	// transaction or allocation. Labelled apart from "pending" because the
+	// transaction may well be settled on-chain; what is missing is a readable
+	// proof, and the detail says which.
+	fenceCauseNoProof fenceCause = "no_proof"
 	// fenceCausePending: the attempt reached the node and the node declined to
 	// answer definitively — a duplicate already in the mempool, a commit wait
 	// that expired, a non-permanent CheckTx refusal. The healthiest of the
@@ -526,6 +654,14 @@ func classifyFenceCause(err error) fenceCause {
 		return fenceCauseTimeout
 	case errors.Is(err, context.Canceled):
 		return fenceCauseCanceled
+	}
+	// Checked by TYPE, before the network sentinels: "the chain has not proven
+	// this yet" is a reply, not a fault, and filing it under rpc would send an
+	// operator reading the log to look at connectivity during exactly the
+	// healthy case (a fence whose transaction is simply still unresolved).
+	var unproven *FenceLiftUnprovenError
+	if errors.As(err, &unproven) {
+		return fenceCauseNoProof
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) {
@@ -1170,8 +1306,7 @@ func fenceSubmission(key string, ind *indeterminateSubmit) {
 		fenceKV("tx_hash", txHash),
 		fenceNonceField(nonce, hasNonce),
 		fenceKV("cause", string(ind.cause)),
-		fenceKV("note", "no transaction will be signed with this key until that exact transaction's fate is "+
-			"PROVEN; reconciliation re-submits the identical bytes to force an answer"))
+		fenceKV("note", fenceSetNote(ind)))
 
 	// Reconciliation is per SUBMISSION — each one owns proving its own bytes and
 	// retiring its own pending count. The alarm is per FENCE, so it starts only
@@ -1181,6 +1316,22 @@ func fenceSubmission(key string, ind *indeterminateSubmit) {
 	if raised {
 		go alarmHeldFence(key, fence)
 	}
+}
+
+// fenceSetNote says what will actually settle THIS fence. The two shapes do not
+// settle the same way: a live fence holds the exact bytes and reconciliation
+// re-submits them, while a fence restored from durable intent has no bytes and
+// is settled by reading the chain. Telling an operator that a restored fence is
+// being re-submitted is the kind of small falsehood that costs an afternoon,
+// because it is the line they read first.
+func fenceSetNote(ind *indeterminateSubmit) string {
+	if len(ind.encoded) == 0 {
+		return "no transaction will be signed with this key until that exact transaction's fate is PROVEN; " +
+			"the signed bytes did not survive the previous process, so this fence is settled by READING the " +
+			"chain (the recorded hash in a committed block, or a committed nonce at or above the allocation)"
+	}
+	return "no transaction will be signed with this key until that exact transaction's fate is PROVEN; " +
+		"reconciliation re-submits the identical bytes to force an answer"
 }
 
 // liftFence retires one reconciliation and opens the key once none remain.
@@ -1233,10 +1384,15 @@ func liftFence(key string, fence *keyFence, verdict TxVerdict, detail string) {
 		fenceKV("detail", detail))
 }
 
-// metricFate is the stable label/field for the proven outcome that lifted a
-// fence. Only the two definitive verdicts can appear here; "unresolved" would
+// metricFate is the stable label/field for the outcome that lifted a fence.
+// Only verdicts that are safe to lift on can appear here; "unresolved" would
 // mean something lifted a fence without proof, which is the bug this file
 // exists to prevent, so it is named loudly enough to be spotted in a dashboard.
+//
+// "abandoned" is deliberately its own label rather than folded into
+// "superseded": it is an operator decision made in the absence of proof, and a
+// dashboard that showed it as a proven fate would hide the one lift in this
+// system whose payload the chain never gave a verdict on.
 func (v TxVerdict) metricFate() string {
 	switch v {
 	case TxVerdictCommitted:
@@ -1245,6 +1401,10 @@ func (v TxVerdict) metricFate() string {
 		return "rejected"
 	case TxVerdictSuperseded:
 		return "superseded"
+	case TxVerdictSpent:
+		return "spent"
+	case TxVerdictAbandoned:
+		return "abandoned"
 	default:
 		return "unresolved_BUG"
 	}
@@ -1285,6 +1445,37 @@ func keyIsFenced(key string) bool {
 	defer fenceMu.Unlock()
 	_, ok := fences[key]
 	return ok
+}
+
+// FenceForSigner reports the fence currently held for sk's signing key, if any.
+//
+// WHY A READ-ONLY ACCESSOR EXISTS. The lease's own fence wait BLOCKS, bounded
+// only by the caller's context. That is right for a background producer — the
+// voter, a federation drain — which would rather wait a moment behind a
+// transient fence than drop its work. It is wrong for a path that has to answer
+// a person or an agent: a fence held for hours consumes that caller's entire
+// deadline, and a typed, actionable refusal arrives — if at all — as a bare
+// client timeout, which is exactly how a fenced node read to the agents that
+// reported "writes timed out, no error". Those paths ask this first and refuse
+// immediately with ErrSignerFenced (HTTP 503 + Retry-After); the lease still
+// covers the window where a fence appears after the check.
+func FenceForSigner(sk ed25519.PrivateKey) (FencedSigner, bool) {
+	if len(sk) != ed25519.PrivateKeySize {
+		return FencedSigner{}, false
+	}
+	pub, ok := sk.Public().(ed25519.PublicKey)
+	if !ok {
+		return FencedSigner{}, false
+	}
+	key := string(pub)
+	fenceMu.Lock()
+	fence := fences[key]
+	var held FencedSigner
+	if fence != nil {
+		held = fence.snapshotLocked(key, time.Now())
+	}
+	fenceMu.Unlock()
+	return held, fence != nil
 }
 
 // FencedSigner is a diagnostic snapshot of one HELD fence.
@@ -1339,20 +1530,7 @@ func FencedSigners() []FencedSigner {
 	fenceMu.Lock()
 	out := make([]FencedSigner, 0, len(fences))
 	for key, fence := range fences {
-		out = append(out, FencedSigner{
-			SignerPubKeyHex:    signerHex(key),
-			SignerPubKeyPrefix: signerPrefix(key),
-			TxHash:             fence.txHash,
-			Nonce:              fence.nonce,
-			HasNonce:           fence.hasNonce,
-			Cause:              string(fence.cause),
-			Since:              fence.since,
-			HeldFor:            now.Sub(fence.since),
-			Attempts:           fence.attempts,
-			LastAttemptAt:      fence.lastAt,
-			LastCause:          string(fence.lastCause),
-			LastDetail:         fence.lastDetail,
-		})
+		out = append(out, fence.snapshotLocked(key, now))
 	}
 	fenceMu.Unlock()
 
@@ -1363,6 +1541,28 @@ func FencedSigners() []FencedSigner {
 		return out[i].Since.Before(out[j].Since)
 	})
 	return out
+}
+
+// snapshotLocked renders one fence for the diagnostics surfaces and for the
+// prover hook. The caller MUST hold fenceMu, and the returned value is a copy:
+// handing the live struct (or its channel) to a prover would let an adopter
+// observe or race the fence's own state — and no caller outside this file ever
+// needs more than what the diagnostics already publish.
+func (f *keyFence) snapshotLocked(key string, now time.Time) FencedSigner {
+	return FencedSigner{
+		SignerPubKeyHex:    signerHex(key),
+		SignerPubKeyPrefix: signerPrefix(key),
+		TxHash:             f.txHash,
+		Nonce:              f.nonce,
+		HasNonce:           f.hasNonce,
+		Cause:              string(f.cause),
+		Since:              f.since,
+		HeldFor:            now.Sub(f.since),
+		Attempts:           f.attempts,
+		LastAttemptAt:      f.lastAt,
+		LastCause:          string(f.lastCause),
+		LastDetail:         f.lastDetail,
+	}
 }
 
 // errNoTxResolver and errNoEncodedTx are the two ways a fence can be raised with
@@ -1384,6 +1584,9 @@ var (
 	errNoEncodedTx = errors.New("the indeterminate submission carried no encoded transaction, " +
 		"so it can be neither identified nor re-submitted; the adopter must pass the exact bytes " +
 		"it put on the wire to tx.Indeterminate")
+	errNoFenceProver = errors.New("no fence proof reader is wired, so a fence restored from durable " +
+		"intent cannot be re-checked against the chain; install one with tx.SetFenceProverFunc — " +
+		"it is re-read on every attempt, so a late install rescues this fence")
 )
 
 // ErrSigningQuiesced is returned by WithNonceLease once signing has been
@@ -1493,17 +1696,107 @@ func RestartVetoReason() string {
 	if len(held) == 0 {
 		return ""
 	}
+	// WHICH FENCES STILL NEED THIS VETO. Its argument is that a restart
+	// "discards the only record that a transaction may still be in flight" —
+	// and since durable intent landed, that is only true for a fence whose
+	// record is NOT on disk. A fence shadowed by an intent row is re-raised at
+	// the next start (RestoreFencesFromIntents), so the restart cannot lose the
+	// record, and the allocator cannot re-seed past the abandoned nonce. What a
+	// restart DOES cost is the re-submission ability, because the signed bytes
+	// live in this process only — which is why the restored fence re-reads its
+	// proofs and the abandon route exists.
+	//
+	// Leaving the veto blanket-wide made an unprovable fence an upgrade dead
+	// end: the node refused the restart that would install the fix, and the fix
+	// was the only thing that could clear the fence. That is the shape users
+	// reported. A restart is now refused only when the record itself is at
+	// stake, and the store read FAILS CLOSED: an unwired, unreadable or empty
+	// store leaves every fence protected.
+	if durableSigners, ok := durableFenceIntentSigners(); ok {
+		unprotected := held[:0:0]
+		for _, f := range held {
+			if _, durable := durableSigners[strings.ToLower(f.SignerPubKeyHex)]; !durable {
+				unprotected = append(unprotected, f)
+			}
+		}
+		if len(unprotected) == 0 {
+			emitFenceEvent("fence_restart_allowed_durable",
+				fenceNum("fences", uint64(len(held))), // #nosec G115 -- non-negative count
+				fenceKV("note", "every held fence is shadowed by a durable intent record, so this restart "+
+					"re-raises them at the next start instead of discarding them; each key stays refusing to "+
+					"sign until a fate is proven (the node re-reads the proofs) or an operator abandons it"))
+			return ""
+		}
+		held = unprotected
+	}
 	oldest := held[0]
 	detail := fmt.Sprintf("signing key %s is fenced on tx %s", oldest.SignerPubKeyPrefix, oldest.TxHash)
 	if oldest.HasNonce {
 		detail += fmt.Sprintf(" (nonce %d)", oldest.Nonce)
 	}
+	// The closing advice has to describe what will ACTUALLY end the hold. Every
+	// fence that reaches this point is UNPROTECTED — no durable record could be
+	// read for it — so the first question is why the record is missing, because
+	// the record is what re-raises the fence after a restart.
+	tail := "Restarting now would discard the only record that this transaction may still be in " +
+		"flight, and a later transaction would then be rejected as a replay. Keep the node running: " +
+		"reconciliation is re-submitting the identical bytes and lifts the fence the moment a fate is " +
+		"proven, and the missing durable record is itself a fault to chase (fence_intent_write_failed " +
+		"and fence_intent_clear_failed events in the node log)."
+	if oldest.Cause == string(fenceCauseRestored) {
+		tail = "Its signed bytes did not survive the previous shutdown, and its durable record could not " +
+			"be read: that record is what re-raises this fence at the next start, so without it a restart " +
+			"would let the allocator seed past the abandoned nonce. Check the intent store first. A proof " +
+			"readable from the chain lifts this fence through POST /v1/dashboard/signer-fence/lift, and a " +
+			"transaction nothing can deliver back — no peers, no mempool copy, no committed fate, unspent " +
+			"allocation — through POST /v1/dashboard/signer-fence/abandon, which records the decision " +
+			"rather than claiming a proof. See the node log for nonce_fence events."
+	}
 	return fmt.Sprintf(
-		"%d signing key(s) are awaiting proof of an earlier submission's fate — %s, held for %s. "+
-			"Restarting now would discard that record while the transaction may still be in flight, "+
-			"and a later transaction would then be rejected as a replay. Wait for reconciliation to "+
-			"resolve it (see the node log for nonce_fence events).",
-		len(held), detail, oldest.HeldFor.Round(time.Second))
+		"%d signing key(s) are awaiting proof of an earlier submission's fate — %s, held for %s. %s",
+		len(held), detail, oldest.HeldFor.Round(time.Second), tail)
+}
+
+// durableFenceIntentSigners reads the durable records once and reports the
+// signers they cover. ok=false means the question could not be answered — no
+// store wired, the read failed, or it did not finish inside the bound — and the
+// caller must treat every fence as unprotected. The read is bounded because it
+// sits on the restart path: a store that hangs must not hang a restart, and
+// "we could not check" resolves to the safe answer (veto), never to the
+// convenient one.
+func durableFenceIntentSigners() (map[string]struct{}, bool) {
+	store := currentFenceIntentStore()
+	if store == nil {
+		return nil, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	type readResult struct {
+		intents []FenceIntent
+		err     error
+	}
+	// Buffered, so a store that ignores ctx cannot leak the goroutine forever
+	// on the send. The goroutine itself may outlive the deadline (a synchronous
+	// SQLite call cannot be canceled); the restart path tolerates that, and the
+	// read is a single small table.
+	done := make(chan readResult, 1)
+	go func() {
+		intents, err := store.ListFenceIntents(ctx)
+		done <- readResult{intents: intents, err: err}
+	}()
+	select {
+	case res := <-done:
+		if res.err != nil {
+			return nil, false
+		}
+		signers := make(map[string]struct{}, len(res.intents))
+		for _, intent := range res.intents {
+			signers[strings.ToLower(strings.TrimSpace(intent.SignerPubKeyHex))] = struct{}{}
+		}
+		return signers, true
+	case <-ctx.Done():
+		return nil, false
+	}
 }
 
 // ReportFencesDroppedAtShutdown writes one final fence_dropped_at_shutdown
@@ -1551,24 +1844,14 @@ func ReportFencesDroppedAtShutdown(reason string) {
 // the key on a clock — the failure this file was reworked to remove.
 func reconcileFencedSubmission(key string, fence *keyFence, ind *indeterminateSubmit) {
 	if len(ind.encoded) == 0 && ind.recordedTxHash != "" {
-		// Restored from durable intent. There is nothing to re-submit and
-		// nothing to look up by content: the bytes died with the previous
-		// process. Polling a resolver with no bytes would retry forever against
-		// a question that cannot be asked, so this holds the key open and waits
-		// for the one thing that can settle it — a proven fate, delivered by
-		// LiftFenceWithProof. It does NOT retire its own pending count, because
-		// that count is what the operator's lift consumes.
-		emitFenceEvent("fence_restored_waiting_for_proof",
-			fenceKV("signer", signerPrefix(key)),
-			fenceKV("tx_hash", fenceTxHash(fence)),
-			fenceNonceField(fence.nonce, fence.hasNonce),
-			fenceKV("note", "the signed bytes did not survive the restart, so this fence cannot be resolved "+
-				"by re-submission; it lifts only on a proven fate (committed hash, or a higher committed nonce)"))
-		<-fence.ch
+		reconcileRestoredFence(key, fence)
 		return
 	}
 	unresolved := 0
 	for {
+		if fenceResolved(key, fence) {
+			return
+		}
 		timing := currentFenceTimings()
 
 		outcome, cause, err := resolveOnce(key, fence, ind, timing.attempt)
@@ -1608,11 +1891,187 @@ func reconcileFencedSubmission(key string, fence *keyFence, ind *indeterminateSu
 	}
 }
 
-func fateEventName(verdict TxVerdict) string {
-	if verdict == TxVerdictCommitted {
-		return "fate_committed"
+// fenceResolved reports whether this reconciliation's fence is already over —
+// lifted on a proven fate, or replaced by a later fence for the same key.
+//
+// WHY THE LOOP MUST ASK. Reconciliation retries for as long as the fence
+// stands, and the fence can now also be lifted from OUTSIDE this goroutine:
+// LiftFenceWithProof retires a restored fence on an operator-read proof, and
+// AbandonUnprovableFence retires one on an explicit operator decision. Without
+// this check the goroutine keeps its backoff running against a fence that no
+// longer exists — on the live path it would go on RE-SUBMITTING bytes whose
+// fate the lift already settled, which is pointless traffic at best. The
+// counter it would decrement no longer belongs to a held fence.
+func fenceResolved(key string, fence *keyFence) bool {
+	fenceMu.Lock()
+	defer fenceMu.Unlock()
+	return fence.lifted || fences[key] != fence
+}
+
+// reconcileRestoredFence drives the only instrument a byte-less fence has: the
+// process-wide proof reader (SetFenceProverFunc), re-read on the same backoff as
+// live reconciliation for as long as the fence stands.
+//
+// WHY "PROVEN FATE" IS NOT THE SAME AS "WAITING FOR AN OPERATOR". An earlier
+// revision emitted one fence_restored_waiting_for_proof event and parked on the
+// fence channel. That was defensible while the only proof surface was the
+// operator's POST — but the proofs the fence accepts are read from the NODE
+// (the recorded hash in the transaction index, the signer's committed nonce),
+// and a node is perfectly capable of reading them itself. Parking meant nobody
+// did: a fence whose transaction had committed before the process died held
+// its key, and refused every coordinated restart (i.e. every update), for as
+// long as the node ran.
+func reconcileRestoredFence(key string, fence *keyFence) {
+	emitFenceEvent("fence_restored_waiting_for_proof",
+		fenceKV("signer", signerPrefix(key)),
+		fenceKV("tx_hash", fenceTxHash(fence)),
+		fenceNonceField(fence.nonce, fence.hasNonce),
+		fenceKV("note", "the signed bytes did not survive the restart, so this fence cannot be resolved "+
+			"by re-submission; it lifts on a proven fate (the recorded hash in a committed block, or a "+
+			"committed nonce at or above the fenced allocation), which the node re-reads on every attempt"))
+
+	unresolved := 0
+	for {
+		if fenceResolved(key, fence) {
+			return
+		}
+		timing := currentFenceTimings()
+
+		proof, cause, detail, err := proveRestoredOnce(key, fence, timing.attempt)
+		if err != nil {
+			// No proof. Before recording another retry, ask whether this fence
+			// can be settled WITHOUT one: a node that is caught up, has never
+			// had a peer this run, holds no mempool copy and sees no committed
+			// fate is the one case where the payload cannot come back, and on
+			// the desktop product there is no operator standing by to declare
+			// it — the node would otherwise refuse every write and every update
+			// for as long as it ran.
+			if resolved, resolveDetail, resolveErr := autoResolveRestoredOnce(key, fence, timing.attempt); resolveErr == nil && resolved {
+				emitFenceEvent("fate_abandoned",
+					fenceKV("signer", signerPrefix(key)),
+					fenceKV("tx_hash", fenceTxHash(fence)),
+					fenceNum("attempt", uint64(fenceAttempts(fence))), // #nosec G115 -- non-negative counter
+					fenceKV("detail", resolveDetail))
+				liftFence(key, fence, TxVerdictAbandoned, resolveDetail)
+				return
+			}
+			// A failed proof read is never a verdict: "we could not ask" and
+			// "the chain has not proven it yet" both leave the fence standing.
+			unresolved++
+			attempt := recordFenceAttempt(fence, cause, detail)
+			metrics.NonceFenceReconcileFailuresTotal.WithLabelValues(string(cause)).Inc()
+			reportReconcileRetry(key, fence, cause, detail, attempt)
+			time.Sleep(fenceRetryDelay(timing, unresolved))
+			continue
+		}
+
+		// Re-validate against THIS fence before lifting. The prover is caller
+		// supplied, and a proof for a different signer, a different transaction
+		// or a lower nonce must be refused here exactly as it is on the
+		// operator path — the validation is the fence's, not the prover's.
+		verdict, liftDetail, validateErr := validateFenceLiftProof(signerPrefix(key), fence, proof)
+		if validateErr != nil {
+			unresolved++
+			detail := scrubFenceText(validateErr.Error(), nil)
+			attempt := recordFenceAttempt(fence, fenceCauseNoProof, detail)
+			metrics.NonceFenceReconcileFailuresTotal.WithLabelValues(string(fenceCauseNoProof)).Inc()
+			reportReconcileRetry(key, fence, fenceCauseNoProof, detail, attempt)
+			time.Sleep(fenceRetryDelay(timing, unresolved))
+			continue
+		}
+
+		emitFenceEvent(fateEventName(verdict),
+			fenceKV("signer", signerPrefix(key)),
+			fenceKV("tx_hash", fenceTxHash(fence)),
+			fenceNum("attempt", uint64(fenceAttempts(fence))), // #nosec G115 -- non-negative counter
+			fenceKV("detail", liftDetail))
+		liftFence(key, fence, verdict, liftDetail)
+		return
 	}
-	return "fate_rejected"
+}
+
+// autoResolveRestoredOnce runs one startup-resolution attempt. A refusal from
+// the resolver is NOT an error here: the common answer is "not yet" (the node
+// is still catching up, or a peer has been seen), and it leaves the fence in
+// place with its retry loop running.
+func autoResolveRestoredOnce(key string, fence *keyFence, attempt time.Duration) (bool, string, error) {
+	resolve := fenceAutoResolverFallback()
+	if resolve == nil {
+		return false, "", nil
+	}
+	fenceMu.Lock()
+	held := fence.snapshotLocked(key, time.Now())
+	fenceMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), attempt)
+	defer cancel()
+	resolved, detail, err := resolve(ctx, held)
+	if err != nil {
+		var refused *FenceAbandonRefusedError
+		if errors.As(err, &refused) {
+			// A refused resolution is information, not a fault: record WHY and
+			// keep asking, so the status surface says what is holding the fence
+			// rather than only that it is held.
+			return false, refused.Reason, nil
+		}
+		return false, "", err
+	}
+	return resolved, detail, nil
+}
+
+// proveRestoredOnce runs one proof read under its own deadline, and converts a
+// panic in the prover into an unresolved attempt exactly as resolveOnce does for
+// a resolver: a panic is caller code failing, not an answer about a transaction.
+func proveRestoredOnce(key string, fence *keyFence, attempt time.Duration) (proof FenceLiftProof, cause fenceCause, detail string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicked := scrubFenceText(fmt.Sprint(r), nil)
+			proof = FenceLiftProof{}
+			cause = fenceCausePanic
+			detail = "fence prover panicked: " + panicked
+			err = errors.New("fence prover panicked")
+			reportResolverPanic(key, fence, panicked, scrubFenceText(string(debug.Stack()), nil))
+		}
+	}()
+
+	prove := fenceProverFallback()
+	if prove == nil {
+		return FenceLiftProof{}, fenceCauseNoProver, errNoFenceProver.Error(), errNoFenceProver
+	}
+	fenceMu.Lock()
+	held := fence.snapshotLocked(key, time.Now())
+	fenceMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), attempt)
+	defer cancel()
+	proof, err = prove(ctx, held)
+	if err != nil {
+		return FenceLiftProof{}, classifyFenceCause(err), scrubFenceText(err.Error(), nil), err
+	}
+	return proof, "", "", nil
+}
+
+func fenceAttempts(fence *keyFence) int {
+	fenceMu.Lock()
+	defer fenceMu.Unlock()
+	return fence.attempts
+}
+
+func fateEventName(verdict TxVerdict) string {
+	switch verdict {
+	case TxVerdictCommitted:
+		return "fate_committed"
+	case TxVerdictSpent:
+		return "fate_spent"
+	case TxVerdictAbandoned:
+		return "fate_abandoned"
+	default:
+		// Rejected and superseded keep the event name they have always had:
+		// both are "consensus refused to commit these bytes again", and no
+		// operator alert or doc should have to learn a second spelling for it
+		// in a bug-fix release.
+		return "fate_rejected"
+	}
 }
 
 func fenceTxHash(fence *keyFence) string {

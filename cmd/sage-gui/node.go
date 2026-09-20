@@ -992,13 +992,14 @@ func runServe(startupProof string) (rerr error) {
 
 	// Seed the replay-nonce allocator from the final chain store. This callback
 	// must never capture the closed pre-state-sync Badger instance.
-	tx.SetNonceFloorFunc(func(pub ed25519.PublicKey) (uint64, bool) {
+	chainNonceFloor := func(pub ed25519.PublicKey) (uint64, bool) {
 		n, gerr := badgerStore.GetNonce(auth.PublicKeyToAgentID(pub))
 		if gerr != nil || n == 0 {
 			return 0, false
 		}
 		return n, true
-	})
+	}
+	tx.SetNonceFloorFunc(chainNonceFloor)
 
 	// Badger is canonical scoped content; SQLite is only the serving projection.
 	// Verify/rebuild only after the final app/store graph is frozen.
@@ -1178,6 +1179,35 @@ func runServe(startupProof string) (rerr error) {
 	// broadcasters use, makes an unreconcilable fence unreachable rather than
 	// merely unlikely.
 	tx.SetTxResolverFunc(tx.CometTxResolver(cometRPC))
+
+	// The proof reader for fences RESTORED from durable intent
+	// (internal/tx/nonce_fence.go). Those fences have no bytes left to
+	// re-submit, so before this was wired the only thing that could ever lift
+	// one was an operator POST — and a node that came back holding one refused
+	// to sign that key, and refused every coordinated restart (every update),
+	// for as long as it ran. The proofs it needs are read from the node itself:
+	// the recorded hash against CometBFT's transaction index, and the signer's
+	// committed nonce against the fenced allocation. Both sources are the ones
+	// the rest of the node already trusts — the same RPC URL the broadcasters
+	// use, and the same store the allocator seeds from — so a restored fence
+	// resolves the moment the chain can prove its fate.
+	tx.SetFenceProverFunc(func(proveCtx context.Context, fence tx.FencedSigner) (tx.FenceLiftProof, error) {
+		return tx.ProveFenceLiftFromChain(proveCtx, cometRPC, chainNonceFloor, fence)
+	})
+
+	// The startup resolution for a restored fence that no proof can settle and
+	// nothing can deliver back. This is what makes the desktop recovery work
+	// without a terminal: a user whose node came back fenced (writes refused,
+	// updater refused) replaces the app bundle and relaunches, and the first
+	// boot resolves the fence when the evidence says the transaction cannot
+	// return — caught up, no peer ever seen this run, no mempool copy, no
+	// committed fate, allocation unspent — recording the decision instead of
+	// asking a person to run a command. A node that has talked to a peer keeps
+	// its fence: there the transaction CAN come back, and only a proof (or an
+	// operator who knows the topology) may lift it.
+	tx.SetFenceAutoResolverFunc(func(resolveCtx context.Context, fence tx.FencedSigner) (bool, string, error) {
+		return tx.AutoResolveUnprovableFence(resolveCtx, cometRPC, chainNonceFloor, fence)
+	})
 
 	// Durable fence intent, and the restore that makes it matter. The fence
 	// itself is in-process state: a restart, crash or SIGKILL used to discard it,

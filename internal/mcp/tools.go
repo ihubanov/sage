@@ -2842,7 +2842,8 @@ func signerFenceGuidance(fences map[string]any) string {
 	}
 
 	reconciling, proofOrOperator, unknown := 0, 0, 0
-	rows, _ := fences["signers"].([]any)
+	rawRows, disclosed := fences["signers"]
+	rows, rowsAreArray := rawRows.([]any)
 	for _, raw := range rows {
 		row, ok := raw.(map[string]any)
 		if !ok {
@@ -2861,7 +2862,14 @@ func signerFenceGuidance(fences map[string]any) string {
 	prefix := fmt.Sprintf("%.0f signing key(s) are fenced, so writes that use them are refused with 503 "+
 		"(nothing was signed or sent for those requests).", active)
 	switch {
-	case len(rows) == 0:
+	case disclosed && !rowsAreArray:
+		// The node answered with a signers value of a shape this build cannot
+		// read. That is a version-skew problem, not a withheld detail, and it
+		// must not be reported as either a fence that clears itself or one that
+		// needs an operator.
+		return prefix + " This node reported its per-fence detail in a form this build cannot read, so how the " +
+			"fence ends is not knowable from here."
+	case !disclosed || len(rows) == 0:
 		// The per-fence detail is operator-gated on some nodes; the count alone
 		// still tells the agent that the refusal is a deliberate hold.
 		return prefix + " This node did not disclose per-fence detail to this caller, so how each fence ends " +

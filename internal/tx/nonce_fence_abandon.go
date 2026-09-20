@@ -273,6 +273,12 @@ var peersEverSeen atomic.Bool
 // kept, because only the newest fence's window can be current.
 type fencePeerObservation struct {
 	FenceSince time.Time
+	// ObservedAt is when the sighting was recorded. Nothing reads it — the
+	// decision turns on whether a sighting belongs to THIS fence, which
+	// FenceSince answers by itself — but a diagnostics surface or a future
+	// "how long into the hold did the peer appear" question needs the timestamp
+	// next to the anchor it was taken against, and reconstructing it later is
+	// impossible.
 	ObservedAt time.Time
 }
 

@@ -104,7 +104,6 @@ type abandonFixture struct {
 	signer  string
 	peers   *atomic.Int32
 	txHash  string
-	cleanUp func(t *testing.T)
 }
 
 func newAbandonFixture(t *testing.T) abandonFixture {

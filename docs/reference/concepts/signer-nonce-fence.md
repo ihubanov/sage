@@ -1,6 +1,6 @@
 # The signer fence — same-key nonce ordering, and what it cannot prove
 
-**Status: v11.23.5. This document describes a fence that survives the process
+**Status: v11.23.6. This document describes a fence that survives the process
 that raised it: a restart no longer loses the record, a restored fence re-reads
 its own proofs from the chain, and the one shape no proof can settle has an
 explicit operator exit that says so. Read "What the fence still cannot do" for
@@ -144,7 +144,7 @@ Two limits remain, and both are deliberate:
 ### A restored fence re-reads its own proof
 
 A fence restored from durable intent has no bytes to re-submit, so reading the
-chain is the only thing that can settle it — and until v11.23.5 nothing did.
+chain is the only thing that can settle it — and until v11.23.6 nothing did.
 The restored path emitted one `fence_restored_waiting_for_proof` event and
 parked. That made the lift route below the ONLY way out, and it made the restart
 veto — which every update must pass — a permanent refusal for a node whose

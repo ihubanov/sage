@@ -483,6 +483,69 @@ func TestRestoredFenceRecordsWhyTheAutomaticResolutionDeclined(t *testing.T) {
 		"the recorded reason must name the fact that stopped the automatic route, not just the proof miss")
 }
 
+// TestRestoredFenceRecordsAnAutomaticRouteFault is the case the field report
+// actually hit. The reporter's v11.23.4 node recorded only the proof-read error
+// in last_detail — no refusal reason, no fault — which is indistinguishable
+// from "the automatic route never ran". The cause was this branch: a refusal was
+// annotated and a FAULT was silently dropped, so a node whose auto route could
+// not read its own evidence looked exactly like a node that was merely waiting.
+// Every outcome must now be visible.
+func TestRestoredFenceRecordsAnAutomaticRouteFault(t *testing.T) {
+	setFenceTimingsForTest(t, fastFenceTimings())
+	peersEverSeen.Store(false)
+	store := intentStoreForTest(t)
+	sk := newLeaseTestKey(t)
+	signerHex := signerHexFor(t, sk)
+
+	// An RPC surface that answers the proof read but fails the evidence read:
+	// /net_info is broken while /tx kept working. That is a fault, not a refusal.
+	rpc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/net_info":
+			http.Error(w, "net_info unavailable", http.StatusInternalServerError)
+		case "/tx":
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{"code": -32603, "message": "Internal error", "data": "tx not found"},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(rpc.Close)
+
+	require.NoError(t, store.SaveFenceIntent(context.Background(), FenceIntent{
+		SignerPubKeyHex: signerHex,
+		TxHash:          strings.Repeat("56", 32),
+		Nonce:           88,
+		HasNonce:        true,
+		CreatedAt:       time.Now().UTC(),
+	}))
+	SetFenceProverFunc(nil)
+	SetFenceAutoResolverFunc(func(ctx context.Context, fence FencedSigner) (bool, string, error) {
+		return AutoResolveUnprovableFence(ctx, rpc.URL, nil, fence)
+	})
+	t.Cleanup(func() {
+		SetFenceAutoResolverFunc(nil)
+		SetFenceProverFunc(nil)
+	})
+
+	_, err := RestoreFencesFromIntents(context.Background())
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		for _, candidate := range FencedSigners() {
+			if candidate.SignerPubKeyHex == signerHex &&
+				strings.Contains(candidate.LastDetail, "the automatic resolution errored") {
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, 10*time.Millisecond,
+		"a fault in the automatic route must be recorded, not silently dropped")
+}
+
 // TestRestoredFenceAutoResolveIgnoresAPeerSeenBeforeThisFence pins the OTHER
 // half of the same rule, and it is the half that used to strand nodes: the peer
 // observation is anchored to the fence, not to the process. A node that saw a

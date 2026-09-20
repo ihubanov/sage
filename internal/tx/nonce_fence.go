@@ -2010,8 +2010,22 @@ func reconcileRestoredFence(key string, fence *keyFence) {
 			// the status row and the held-fence alarm could only ever show the
 			// proof-read error. That is why a node whose self-heal was refusing
 			// on evidence read exactly like a node whose self-heal was broken.
-			if resolveErr == nil && resolveDetail != "" {
+			// EVERY outcome of the automatic route is recorded — a refusal AND a
+			// fault. The refusal branch was added first and the error branch was
+			// left out, which reproduced the exact blind spot this annotation
+			// exists to close: on a node where the auto route could not even read
+			// its evidence (an RPC surface answering unexpectedly, for instance),
+			// the status row and the alarm stayed identical to a node whose
+			// self-heal was merely waiting, and the field report read as "the
+			// automatic route does not run at all".
+			switch {
+			case resolveErr != nil:
+				detail = detail + "; the automatic resolution errored: " + scrubFenceText(resolveErr.Error(), nil)
+			case !resolved && resolveDetail != "":
 				detail = detail + "; the automatic resolution is declining: " + resolveDetail
+			case !resolved:
+				detail = detail + "; the automatic resolution declined without a reason (this is a bug: " +
+					"every refusal path is expected to name its predicate)"
 			}
 			unresolved++
 			attempt := recordFenceAttempt(fence, cause, detail)

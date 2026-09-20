@@ -48,7 +48,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.5`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.6`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -208,7 +208,23 @@ uses re-enrollment; historical memory authorship is preserved.
 
 ---
 
-## What's New in v11.23.5
+## What's New in v11.23.6
+
+**A fence on a quiet chain settles itself, and the operator has a way in when it cannot.** SAGE chains are idle by design: since app-v12 every node sets `create_empty_blocks=false`, so a block is minted exactly when a signed transaction enters the mempool and the chain sits still otherwise. A fence restored from durable intent refuses to sign, and its signed bytes did not survive the process — so on a chain that was already quiet when the fence was raised, the fence was holding the only thing that could produce the proof it was waiting for. No transaction meant no block; no block meant no committed hash and no advanced committed nonce. The key was held forever, every write and every cleanup on that node was refused, and the field report was exactly this shape on a single-validator personal node.
+
+**What now happens:** when the node is caught up, has no peer and has seen none while this fence was held, holds no mempool copy of the transaction, sees no committed fate for its hash, holds an unspent allocation, and the chain's tip was minted before this fence was raised, the node settles the fence itself, records `fence_abandoned` with `mode=automatic_quiescent` and the full evidence (including the tip height and time), reserves the abandoned allocation so the next transaction cannot reuse it, and lets the next write mint the block that wakes the chain.
+
+**What still holds the fence:** a tip that has minted since the fence was raised, any connected peer, a peer seen under this fence, a mempool that holds the transaction — that is a chain with something to mint and the fence is what stops it, so it stays an operator decision — a node still catching up, a tip that cannot be read, a live fence whose exact bytes still exist, and any record without a nonce.
+
+**Every outcome of the automatic route is now visible.** Its refusal reason reaches the fence's `last_detail`, and so does a FAULT — the fault branch was previously dropped silently, which made a node whose self-heal could not read its own evidence look identical to one that was merely waiting. A field report read that as "the automatic route never ran".
+
+**The operator has a real entry.** `sage-gui fence list` prints every recorded fence with its signer, transaction, nonce and age, and says whether the chain can already settle it. `sage-gui fence abandon --signer <key> --reason <why> --acknowledge-payload-loss` retires one record from the node host through the same evidence gate the daemon's operator route applies — no credential, no browser, and it says plainly that a running daemon keeps its in-process fence until it restarts. This closes a field gap: the dashboard had no control for this action, and an HTTP MCP bearer token is not accepted by the operator gate, so the only local entry was a browser console.
+
+No consensus change, no transaction-type change, no upgrade height, and no chain reset.
+
+Container: `ghcr.io/l33tdawg/sage:11.23.6`. SDK 11.23.6.
+
+## What's New in v11.23.4
 
 **A fence on a quiet chain settles itself.** SAGE chains are idle by design: since app-v12 every node sets `create_empty_blocks=false`, so a block is minted exactly when a signed transaction enters the mempool and the chain sits still otherwise. A fence restored from durable intent refuses to sign, and its signed bytes did not survive the process — so on a chain that was already quiet when the fence was raised, the fence was holding the only thing that could produce the proof it was waiting for. No transaction meant no block; no block meant no committed hash and no advanced committed nonce. The key was held forever, every write and every cleanup on that node was refused, and on a single-validator personal node the hold had no exit at all — the operator route needed a credential the operator could not present.
 
@@ -218,9 +234,9 @@ uses re-enrollment; historical memory authorship is preserved.
 
 No consensus change, no transaction-type change, no upgrade height, and no chain reset.
 
-Container: `ghcr.io/l33tdawg/sage:11.23.5`. SDK 11.23.5.
+Container: `ghcr.io/l33tdawg/sage:11.23.4`. SDK 11.23.4.
 
-## What's New in v11.23.4
+## What's New in v11.23.3
 
 **The fence fixes now reach the nodes that keep a peer.** v11.23.3 could prove a restored fence's fate and settle the shape no proof can reach — but only on a node that had never seen a peer since it started, and its operator abandon route refused outright whenever any peer was connected. A federated desktop node, or any validator with a persistent peer, therefore sat behind a fence that no proof could settle with **both** recovery routes closed: writes refused, updates vetoed, indefinitely. That is the report this release answers.
 
@@ -234,7 +250,7 @@ Container: `ghcr.io/l33tdawg/sage:11.23.5`. SDK 11.23.5.
 
 No consensus change, no transaction-type change, no upgrade height, and no chain reset: this decides when a key may sign again, not what the chain accepts.
 
-Container: `ghcr.io/l33tdawg/sage:11.23.4`. SDK 11.23.4.
+Container: `ghcr.io/l33tdawg/sage:11.23.3`. SDK 11.23.3.
 
 ## What's New in v11.23.3
 
@@ -250,7 +266,7 @@ Container: `ghcr.io/l33tdawg/sage:11.23.4`. SDK 11.23.4.
 
 No consensus change, no transaction-type change, no upgrade height, and no chain reset: this decides when a key may sign again, not what the chain accepts.
 
-Container: `ghcr.io/l33tdawg/sage:11.23.3`. SDK 11.23.3.
+Container: `ghcr.io/l33tdawg/sage:11.23.2`. SDK 11.23.2.
 
 ## What's New in v11.23.2
 

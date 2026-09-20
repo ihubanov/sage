@@ -433,6 +433,56 @@ func TestRestoredFenceAutoResolveRefusesOnceAPeerHasBeenSeen(t *testing.T) {
 	require.True(t, store.held(signerHex))
 }
 
+// TestRestoredFenceRecordsWhyTheAutomaticResolutionDeclined pins the answer to
+// the question a held fence raises first. The automatic route's refusal — peers
+// connected, still catching up, mempool holds it — was computed and then DROPPED
+// on the failure path, so the status row and the held-fence alarm could only
+// show the proof-read error. A node whose self-heal was refusing on evidence
+// therefore read exactly like a node whose self-heal was broken, which is the
+// report that came back from the field.
+func TestRestoredFenceRecordsWhyTheAutomaticResolutionDeclined(t *testing.T) {
+	setFenceTimingsForTest(t, fastFenceTimings())
+	peersEverSeen.Store(false)
+	store := intentStoreForTest(t)
+	sk := newLeaseTestKey(t)
+	signerHex := signerHexFor(t, sk)
+	state, rpc := newAutoResolveRPC(t)
+	state.peers.Store(1)
+
+	require.NoError(t, store.SaveFenceIntent(context.Background(), FenceIntent{
+		SignerPubKeyHex: signerHex,
+		TxHash:          strings.Repeat("34", 32),
+		Nonce:           77,
+		HasNonce:        true,
+		CreatedAt:       time.Now().UTC(),
+	}))
+	SetFenceProverFunc(nil)
+	SetFenceAutoResolverFunc(func(ctx context.Context, fence FencedSigner) (bool, string, error) {
+		return AutoResolveUnprovableFence(ctx, rpc.URL, nil, fence)
+	})
+	t.Cleanup(func() {
+		SetFenceAutoResolverFunc(nil)
+		SetFenceProverFunc(nil)
+	})
+
+	_, err := RestoreFencesFromIntents(context.Background())
+	require.NoError(t, err)
+
+	var held FencedSigner
+	require.Eventually(t, func() bool {
+		for _, candidate := range FencedSigners() {
+			if candidate.SignerPubKeyHex == signerHex && strings.Contains(candidate.LastDetail, "peer") {
+				held = candidate
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, 10*time.Millisecond,
+		"the health row must say the automatic resolution is declining because a peer is connected")
+	require.Contains(t, held.LastDetail, "1 peer(s) are connected",
+		"the recorded reason must name the fact that stopped the automatic route, not just the proof miss")
+}
+
 // TestRestoredFenceAutoResolveIgnoresAPeerSeenBeforeThisFence pins the OTHER
 // half of the same rule, and it is the half that used to strand nodes: the peer
 // observation is anchored to the fence, not to the process. A node that saw a

@@ -1990,7 +1990,8 @@ func reconcileRestoredFence(key string, fence *keyFence) {
 			// the desktop product there is no operator standing by to declare
 			// it — the node would otherwise refuse every write and every update
 			// for as long as it ran.
-			if resolved, resolveDetail, resolveErr := autoResolveRestoredOnce(key, fence, timing.attempt); resolveErr == nil && resolved {
+			resolved, resolveDetail, resolveErr := autoResolveRestoredOnce(key, fence, timing.attempt)
+			if resolveErr == nil && resolved {
 				emitFenceEvent("fate_abandoned",
 					fenceKV("signer", signerPrefix(key)),
 					fenceKV("tx_hash", fenceTxHash(fence)),
@@ -2001,6 +2002,17 @@ func reconcileRestoredFence(key string, fence *keyFence) {
 			}
 			// A failed proof read is never a verdict: "we could not ask" and
 			// "the chain has not proven it yet" both leave the fence standing.
+			//
+			// WHEN THE AUTOMATIC ROUTE DECLINED, SAY WHY. Its refusal is the
+			// answer to "why is this not clearing itself?" — peers connected,
+			// node still catching up, or the mempool holding the transaction —
+			// and it used to be computed and then dropped on the floor here, so
+			// the status row and the held-fence alarm could only ever show the
+			// proof-read error. That is why a node whose self-heal was refusing
+			// on evidence read exactly like a node whose self-heal was broken.
+			if resolveErr == nil && resolveDetail != "" {
+				detail = detail + "; the automatic resolution is declining: " + resolveDetail
+			}
 			unresolved++
 			attempt := recordFenceAttempt(fence, cause, detail)
 			metrics.NonceFenceReconcileFailuresTotal.WithLabelValues(string(cause)).Inc()

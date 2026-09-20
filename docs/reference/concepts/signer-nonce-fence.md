@@ -438,6 +438,13 @@ explicit operator abandon. The block's `explanation` is rendered from the same
 distinction, so it no longer promises self-healing for a fence that has nothing
 to re-submit.
 
+For a `proof_or_operator` fence, `last_detail` also carries the automatic
+route's own refusal when it declined — "the node is still catching up", "N
+peer(s) are connected", "a peer was connected while this fence was held". Those
+reasons used to be computed and then discarded, so a node whose self-heal was
+correctly refusing on evidence read identically to one whose self-heal was
+broken; the status row now answers "why is this not clearing itself?" directly.
+
 **Metrics** — `sage_nonce_fences_active`,
 `sage_nonce_fence_oldest_age_seconds`, `sage_nonce_fence_indeterminate_total`,
 `sage_nonce_fence_reconcile_failures_total{cause}`,

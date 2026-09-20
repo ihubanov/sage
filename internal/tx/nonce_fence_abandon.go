@@ -364,8 +364,25 @@ func AutoResolveUnprovableFence(
 	if err != nil {
 		return false, "", err
 	}
-	if !ev.NodeCaughtUp || ev.PeersObservedSinceFence || ev.Peers > 0 {
-		return false, "", nil
+	// EACH REFUSAL NAMES THE FACT THAT STOPPED IT. Returning an empty reason
+	// here was its own diagnostic hole: the caller records this string with the
+	// held fence, and without it the status row could only show the proof-read
+	// error — which reads identically for "the chain has no proof yet" and "the
+	// node has evidence that the transaction could still come back". A node
+	// whose self-heal was refusing on evidence then looked broken.
+	if !ev.NodeCaughtUp {
+		return false, "the node is still catching up, so a transaction that DID commit may not be indexed " +
+			"yet and absence of a committed fate is not yet an answer", nil
+	}
+	if ev.Peers > 0 {
+		return false, fmt.Sprintf("%d peer(s) are connected, so a peer can still deliver this transaction "+
+			"back into the mempool; the operator route (POST /v1/dashboard/signer-fence/abandon) is the one "+
+			"that can be taken against an explicit acknowledgement of this route", ev.Peers), nil
+	}
+	if ev.PeersObservedSinceFence {
+		return false, "a peer was connected while this fence was held, so these bytes could still be " +
+			"delivered back into the mempool; the operator route (POST /v1/dashboard/signer-fence/abandon) " +
+			"is the one that can be taken against an explicit acknowledgement of this route", nil
 	}
 	raw, decodeErr := hex.DecodeString(strings.TrimSpace(fence.SignerPubKeyHex))
 	if decodeErr != nil || len(raw) != ed25519.PublicKeySize {

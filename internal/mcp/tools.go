@@ -186,6 +186,30 @@ func (s *Server) registerTools() map[string]Tool {
 			},
 			Handler: s.toolStatus,
 		},
+		"sage_node_health": {
+			Name: "sage_node_health",
+			Description: "Read this node's health, including its signer-fence state. CALL THIS when a write " +
+				"fails with \"Signing key temporarily held\" (HTTP 503 + Retry-After): the fence block says which " +
+				"key is held, on which transaction and nonce, for how long, why reconciliation last failed, and — " +
+				"the field that decides what to do next — how the fence can END. resolution=\"reconciling\" means " +
+				"the node still holds the exact signed bytes and is re-submitting them until consensus answers, so " +
+				"it clears itself; resolution=\"proof_or_operator\" means the fence was restored from durable " +
+				"intent and its signed bytes did not survive, so it lifts only on a proof read from the chain or " +
+				"on an explicit operator abandon. Read-only: this tool signs a local read and changes nothing.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"timeout_seconds": map[string]any{
+						"type":        "integer",
+						"description": "Bound on the local health read, 1-30 seconds (default 10).",
+						"minimum":     1,
+						"maximum":     30,
+						"default":     10,
+					},
+				},
+			},
+			Handler: s.toolNodeHealth,
+		},
 		"sage_domains": {
 			Name:        "sage_domains",
 			Description: "List this signed caller's authoritative current owned domains without reading a global domain roster or scanning memories. Results are stable, bounded, and cursor-paginated; continue with next_cursor until has_more is false. Use sage_status for the cheap first policy sample of readable and writable domains.",
@@ -2733,6 +2757,136 @@ func (s *Server) toolStatus(ctx context.Context, _ map[string]any) (any, error) 
 		return nil, fmt.Errorf("get caller-scoped memory status: %w", err)
 	}
 	return stats, nil
+}
+
+// toolNodeHealth reports the node's own health, and the signer-fence block it
+// carries, to an agent that cannot read /v1/dashboard/health for itself.
+//
+// WHY THIS TOOL EXISTS. A fenced node answers every signed write with 503
+// "Signing key temporarily held" and points at the operator view. An agent has
+// no such view, so the only thing it can do with that answer is retry — and the
+// two cases that 503 covers need opposite responses. A fence raised by a live
+// indeterminate submit still holds the exact bytes that went out and is being
+// re-submitted, so waiting is correct and the node clears itself. A fence
+// restored from durable intent has no bytes left, so nothing but a chain-read
+// proof or an explicit operator decision will ever end it, and waiting is
+// forever. Field reports ("the self-heal is not releasing it") read exactly
+// like that, because the agent had no way to tell the two apart.
+//
+// The fence block is forwarded VERBATIM. It is already shaped by the node for
+// this reader (active, oldest_age_seconds, explanation, and per-fence rows for
+// an operator caller), it is public-on-chain data, and re-shaping it here would
+// give every future field a second place to be forgotten.
+func (s *Server) toolNodeHealth(ctx context.Context, params map[string]any) (any, error) {
+	timeoutSeconds := intParam(params, "timeout_seconds", 10)
+	if timeoutSeconds < 1 || timeoutSeconds > 30 {
+		return nil, fmt.Errorf("timeout_seconds must be between 1 and 30")
+	}
+	readCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
+	defer cancel()
+
+	var health struct {
+		Version      string         `json:"version"`
+		BootID       string         `json:"boot_id"`
+		Uptime       string         `json:"uptime"`
+		Encrypted    bool           `json:"encrypted"`
+		VaultLocked  bool           `json:"vault_locked"`
+		SignerFences map[string]any `json:"signer_fences"`
+	}
+	if err := s.doSignedJSON(readCtx, http.MethodGet, "/v1/dashboard/health", nil, &health); err != nil {
+		var problem *apiProblemError
+		if errors.As(err, &problem) && (problem.StatusCode == http.StatusNotFound ||
+			problem.StatusCode == http.StatusMethodNotAllowed) {
+			return nil, fmt.Errorf(
+				"this node's build does not expose the health surface (/v1/dashboard/health): %w", err)
+		}
+		return nil, fmt.Errorf("read node health: %w", err)
+	}
+
+	result := map[string]any{
+		"version":       health.Version,
+		"boot_id":       health.BootID,
+		"uptime":        health.Uptime,
+		"encrypted":     health.Encrypted,
+		"vault_locked":  health.VaultLocked,
+		"signer_fences": health.SignerFences,
+	}
+	if guidance := signerFenceGuidance(health.SignerFences); guidance != "" {
+		result["signer_fence_guidance"] = guidance
+	}
+	return result, nil
+}
+
+// signerFenceGuidance turns the node's fence block into the one sentence an
+// agent needs: is a write being refused because the node is working on it, or
+// because nothing will end it without a proof or an operator?
+//
+// It reads the per-fence `resolution` the node reports and never invents one:
+// on a node too old to send it, saying "this node did not report how the fence
+// ends" is the honest answer, and guessing would produce exactly the confident
+// wrong diagnosis this tool exists to prevent.
+func signerFenceGuidance(fences map[string]any) string {
+	if fences == nil {
+		return ""
+	}
+	active, ok := fences["active"].(float64)
+	if !ok {
+		// A JSON integer decodes as float64; any other shape means the node
+		// answered with something this build does not understand. Say so
+		// instead of reporting "no fence".
+		return "the node's health surface did not report a usable signer_fences.active count, so fence " +
+			"state could not be interpreted"
+	}
+	if active == 0 {
+		return "no signing key is fenced: writes are not being refused by the fence."
+	}
+
+	reconciling, proofOrOperator, unknown := 0, 0, 0
+	rows, _ := fences["signers"].([]any)
+	for _, raw := range rows {
+		row, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch resolution, _ := row["resolution"].(string); resolution {
+		case "reconciling":
+			reconciling++
+		case "proof_or_operator":
+			proofOrOperator++
+		default:
+			unknown++
+		}
+	}
+
+	prefix := fmt.Sprintf("%.0f signing key(s) are fenced, so writes that use them are refused with 503 "+
+		"(nothing was signed or sent for those requests).", active)
+	switch {
+	case len(rows) == 0:
+		// The per-fence detail is operator-gated on some nodes; the count alone
+		// still tells the agent that the refusal is a deliberate hold.
+		return prefix + " This node did not disclose per-fence detail to this caller, so how each fence ends " +
+			"is not visible here; the refusal itself is a deliberate hold, not a failure to sign."
+	case reconciling > 0 && proofOrOperator == 0 && unknown == 0:
+		return prefix + " resolution=reconciling: the node still holds the exact signed bytes and is " +
+			"re-submitting them until consensus answers, so the fence clears itself. Do not resubmit the write " +
+			"and do not restart the node; retry after it lifts."
+	case proofOrOperator > 0 && reconciling == 0 && unknown == 0:
+		return prefix + " resolution=proof_or_operator: this fence was restored from a previous process's " +
+			"durable intent and its signed bytes did not survive, so re-submission cannot settle it. It lifts " +
+			"only on a proof read from the chain (the recorded transaction in a committed block, or the " +
+			"signer's committed nonce having reached the fenced allocation) or on an explicit operator abandon " +
+			"(POST /v1/dashboard/signer-fence/abandon). It will NOT clear on its own: report the fence's " +
+			"signer, tx_hash, nonce and last_detail to the operator."
+	case unknown > 0:
+		return prefix + " The node did not report a resolution class for at least one fence, so how it ends " +
+			"is not knowable from here. Report signer, tx_hash, nonce, cause and last_detail to the operator " +
+			"rather than retrying blind."
+	default:
+		return prefix + " Both classes are present: a fence with resolution=reconciling clears itself, while " +
+			"resolution=proof_or_operator needs a chain-read proof or an explicit operator abandon " +
+			"(POST /v1/dashboard/signer-fence/abandon). Read each row's resolution before deciding whether to " +
+			"wait."
+	}
 }
 
 func (s *Server) toolDomains(ctx context.Context, params map[string]any) (any, error) {

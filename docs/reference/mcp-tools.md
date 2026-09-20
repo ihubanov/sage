@@ -773,6 +773,52 @@ read/status surface for that evidence.
 
 ---
 
+### sage_node_health
+
+**Purpose:** Read this node's health, including its signer-fence state, when a
+signed write has been refused. Use it to tell a fence that is still being worked
+on from one that will not clear without an operator.
+
+**Source:** `internal/mcp/tools.go` (`registerTools` entry `sage_node_health`;
+`Server.toolNodeHealth`, `signerFenceGuidance`).
+
+**Parameters:** `timeout_seconds` (optional integer, 1–30, default 10) bounds
+the local health read. No other parameters.
+
+**Returns:** `version`, `boot_id`, `uptime`, `encrypted`, `vault_locked`, the
+node's `signer_fences` block forwarded verbatim, and a computed
+`signer_fence_guidance` sentence. The fence block carries `active` and
+`oldest_age_seconds` for every caller, plus `explanation`; for an operator
+caller it also carries per-fence rows (`signer`, `tx_hash`, `nonce`,
+`held_seconds`, `attempts`, `cause`, `resolution`, `last_cause`,
+`last_detail`). Everything in the block is public-on-chain data.
+
+`resolution` is the field that decides what an agent should do, and the guidance
+is rendered from it:
+
+- `reconciling` — the fence still holds the exact signed bytes and reconciliation
+  is re-submitting them until consensus answers, so it clears itself. Wait; do
+  not resubmit the write and do not restart the node.
+- `proof_or_operator` — the fence was restored from a previous process's durable
+  intent and its signed bytes did not survive, so re-submission cannot settle
+  it. It lifts only on a proof read from the chain (the recorded transaction in
+  a committed block, or the signer's committed nonce having reached the fenced
+  allocation) or on an explicit operator abandon
+  (`POST /v1/dashboard/signer-fence/abandon`). Report `signer`, `tx_hash`,
+  `nonce` and `last_detail` to the operator; waiting is not a recovery.
+
+When the node reports no `resolution` (an older build) or withholds per-fence
+rows from this caller, the guidance says the answer is not knowable from here
+rather than guessing.
+
+**REST:** Signed `GET /v1/dashboard/health`.
+
+**When to call:** After a write is refused with `503` and the message names a
+held signing key, and whenever an agent needs to explain a stalled write rather
+than retry it blind. It is read-only and changes nothing.
+
+---
+
 ### sage_domains
 
 **Purpose:** Page through the signed caller's complete current owned-domain set

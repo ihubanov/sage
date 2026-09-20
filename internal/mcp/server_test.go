@@ -577,7 +577,7 @@ func TestHandleToolsList(t *testing.T) {
 
 	result := resp.Result.(map[string]any)
 	tools := result["tools"].([]map[string]any)
-	assert.Len(t, tools, 34)
+	assert.Len(t, tools, 35)
 
 	// Collect tool names
 	names := make(map[string]bool)
@@ -623,6 +623,7 @@ func TestHandleToolsList(t *testing.T) {
 		"sage_link", "sage_list", "sage_message_handoff", "sage_message_reply", "sage_message_send",
 		"sage_message_history", "sage_message_replies", "sage_message_status",
 		"sage_messages_receive",
+		"sage_node_health",
 		"sage_recall", "sage_reflect", "sage_register", "sage_reinstate",
 		"sage_remember", "sage_rename", "sage_scope_get", "sage_scope_list",
 		"sage_status", "sage_task", "sage_timeline", "sage_turn",

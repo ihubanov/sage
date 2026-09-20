@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -255,6 +256,188 @@ func ReadFenceAbandonEvidence(
 // case is the safe direction: the operator can retry when the node is quieter.
 const fenceAbandonMempoolLimit = 100
 
+// cometTip is the subset of CometBFT's block response the idle-chain rule
+// needs: the height, and when that block was minted.
+type cometTip struct {
+	Result *struct {
+		Block *struct {
+			Header *struct {
+				Height json.Number `json:"height"`
+				Time   time.Time   `json:"time"`
+			} `json:"header"`
+		} `json:"block"`
+	} `json:"result"`
+}
+
+// readChainTip returns the current block height and the time that block was
+// minted, or ok=false when it cannot be read. Callers must treat ok=false as
+// "not knowable", never as height zero or as an ancient tip.
+func readChainTip(ctx context.Context, endpoint string) (height int64, minted time.Time, ok bool) {
+	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
+	if endpoint == "" {
+		return 0, time.Time{}, false
+	}
+	var out cometTip
+	resultOK, err := cometGetJSON(ctx, "comet block", endpoint+"/block", nil, &out)
+	if err != nil || !resultOK || out.Result == nil || out.Result.Block == nil || out.Result.Block.Header == nil {
+		return 0, time.Time{}, false
+	}
+	parsed, parseErr := out.Result.Block.Header.Height.Int64()
+	if parseErr != nil || parsed <= 0 {
+		return 0, time.Time{}, false
+	}
+	return parsed, out.Result.Block.Header.Time, true
+}
+
+// AutoResolveQuiescentFence settles a restored fence on a chain that is healthy
+// but has minted nothing since the fence was raised.
+//
+// THE SHAPE THIS EXISTS FOR. Since app-v12 every node runs with
+// CreateEmptyBlocks=false, so a chain mints a block exactly when a signed
+// transaction enters the mempool and sits still otherwise. A fence restored
+// from durable intent refuses to sign, and its signed bytes did not survive, so
+// nothing can enter that mempool. If the chain was already quiet when the fence
+// was raised — a personal node between writes — then the fence is holding the
+// only mechanism that could produce the proof it is waiting for, and the wait
+// has no exit: no transaction, no block; no block, no committed hash and no
+// advanced committed nonce. The held key is not protecting a live transaction
+// from being overtaken; it is preventing the chain from ever speaking again.
+//
+// WHAT MAKES THIS EVIDENCE RATHER THAN A TIMER. Tip age is not a clock: what is
+// read is that the chain exists, is caught up, and has not advanced past the
+// height it had BEFORE this fence's process started. A chain that has minted
+// nothing since the fence appeared has had no opportunity to prove or deliver
+// this transaction, so "no proof yet" carries no information about whether the
+// bytes could still return — which is exactly what the operator route already
+// accepts on this evidence, minus the operator.
+//
+// WHAT IS STILL REQUIRED. Every other gate the automatic route applies is
+// unchanged and is checked by validateAbandonEvidence: restored-from-intent
+// only, a recorded nonce, a readable zero peer count, no peer seen while this
+// fence was held, a complete mempool read that does not hold the transaction,
+// no committed or rejected fate for the hash, and an unspent allocation. In
+// particular the idle-chain rule does NOT overrule a live mempool copy: a node
+// whose own mempool holds the transaction is a node where the chain has a
+// reason to mint, and that case keeps the fence and stays an operator decision.
+//
+// The resolution is recorded exactly like the startup one — fence_abandoned
+// with mode=automatic_quiescent, the full evidence, and the abandoned
+// allocation reserved so the next transaction cannot reuse it — and its
+// residual is the same: if a copy of those bytes still exists somewhere and
+// lands before the signer's next commit, it commits and the abandoned payload
+// is lost.
+func AutoResolveQuiescentFence(
+	ctx context.Context,
+	cometRPC string,
+	nonceFloor func(ed25519.PublicKey) (uint64, bool),
+	fence FencedSigner,
+) (bool, string, error) {
+	ev, err := ReadFenceAbandonEvidence(ctx, cometRPC, nonceFloor, fence)
+	if err != nil {
+		return false, "", err
+	}
+	if !ev.NodeCaughtUp {
+		return false, "", nil
+	}
+	if ev.Peers > 0 || ev.PeersObservedSinceFence {
+		// A route back into this node's mempool exists; the operator route is
+		// the one that may accept it explicitly.
+		return false, "", nil
+	}
+	if ev.MempoolHolds {
+		// The chain has something to mint and this fence is what stands between
+		// it and a block: refuse, so the case lands with an operator rather than
+		// being resolved by an automatic decision.
+		return false, "this node's mempool is holding the fenced transaction, so the chain has a reason to " +
+			"mint and the fence is what prevents it; refusing to settle it automatically", nil
+	}
+
+	raw, decodeErr := hex.DecodeString(strings.TrimSpace(fence.SignerPubKeyHex))
+	if decodeErr != nil || len(raw) != ed25519.PublicKeySize {
+		return false, "", &FenceAbandonRefusedError{
+			Signer: fence.SignerPubKeyPrefix,
+			Reason: "the fence does not name a valid ed25519 signer",
+		}
+	}
+	key := string(raw)
+
+	fenceMu.Lock()
+	live := fences[key]
+	var held FencedSigner
+	var cause fenceCause
+	if live != nil {
+		held = live.snapshotLocked(key, time.Now())
+		cause = live.cause
+	}
+	fenceMu.Unlock()
+	if live == nil {
+		return false, "", nil
+	}
+	// Restored fences only, and the durable record must survive: this decision
+	// retires it, and a fence whose record cannot be confirmed must keep failing
+	// closed.
+	if cause != fenceCauseRestored {
+		return false, "", nil
+	}
+	if !held.HasNonce {
+		return false, "", &FenceAbandonRefusedError{
+			Signer: held.SignerPubKeyPrefix,
+			Reason: "the durable record carries no nonce, so there is no allocation to reserve and no way " +
+				"to keep a later transaction from colliding with it",
+		}
+	}
+
+	height, minted, ok := readChainTip(ctx, cometRPC)
+	if !ok {
+		return false, "", nil
+	}
+	// THE IDLE RULE: the chain has minted a block since this fence was raised.
+	// A chain that answers the proof request with "nothing yet" while it is
+	// still minting is a chain that may yet prove these bytes' fate, so the
+	// rule stands down; only a tip that PREDATES the fence (or one whose time
+	// cannot be read) counts as quiet. On a restored fence, "since the fence
+	// was raised" means since this process restored it, which is the anchor the
+	// decision is made on — the bytes are already gone, and the question is
+	// whether the chain can still speak to their fate from here.
+	if held.Since.IsZero() || minted.IsZero() || !minted.Before(held.Since) {
+		return false, "", nil
+	}
+
+	if err := validateAbandonEvidence(held, cause, ev); err != nil {
+		return false, "", err
+	}
+
+	detail := fmt.Sprintf("resolved without a proof because the chain is idle: the node is caught up, has "+
+		"no peer and has seen none while this fence was held, holds no mempool copy, sees no committed fate "+
+		"for the recorded hash and an unspent allocation, and the chain has minted nothing since this fence "+
+		"was raised — so the proof this fence waits for cannot be produced while the key stays held. "+
+		"Evidence: tx_lookup=%s, committed_nonce=%s, peers=%d, mempool=%d/%d, tip_height=%d. If a copy of "+
+		"this transaction still exists it can still commit before the signer's next commit, and is refused "+
+		"as a replay after it.", ev.TxLookup, committedNonceText(ev), ev.Peers, ev.MempoolCount, ev.MempoolTotal, height)
+	reserveNonceFloor(key, held.Nonce)
+	emitFenceEvent("fence_abandoned",
+		fenceKV("signer", held.SignerPubKeyPrefix),
+		fenceKV("tx_hash", held.TxHash),
+		fenceNonceField(held.Nonce, held.HasNonce),
+		fenceAge("held_for", held.HeldFor),
+		fenceKV("mode", "automatic_quiescent"),
+		fenceKV("tx_lookup", ev.TxLookup),
+		fenceNum("peers", uint64(ev.Peers)),                // #nosec G115 -- non-negative count
+		fenceNum("mempool_count", uint64(ev.MempoolCount)), // #nosec G115 -- non-negative count
+		fenceNum("tip_height", uint64(height)),             // #nosec G115 -- positive height
+		fenceKV("note", "NODE DECISION, NOT A PROOF: the chain is healthy and idle, so this fence was holding "+
+			"the only thing that could mint the block that would prove it; the node reserves the abandoned "+
+			"allocation and records the decision instead of refusing every write and every update forever"))
+
+	fenceMu.Lock()
+	if live.pending > 0 {
+		live.pending = 1
+	}
+	fenceMu.Unlock()
+	liftFence(key, live, TxVerdictAbandoned, detail)
+	return true, detail, nil
+}
+
 // peersEverSeen is the process-lifetime latch described on
 // FenceAbandonEvidence.PeersEverSeen. Monotonic on purpose: once a peer has been
 // seen, it stays seen for the rest of this run.
@@ -360,6 +543,9 @@ func peersObservedSinceFence(signerHex string, fenceSince time.Time) bool {
 // reserved so the next allocation is above it, and the decision is recorded as
 // `fence_abandoned` with mode=automatic and the full evidence — never as a
 // proven fate.
+// The same predicate set, strengthened by the idle-chain rule below, is what
+// AutoResolveQuiescentFence applies; see that function for why a quiet chain is
+// evidence rather than a reason to keep waiting.
 func AutoResolveUnprovableFence(
 	ctx context.Context,
 	cometRPC string,

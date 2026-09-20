@@ -1205,8 +1205,25 @@ func runServe(startupProof string) (rerr error) {
 	// asking a person to run a command. A node that has talked to a peer keeps
 	// its fence: there the transaction CAN come back, and only a proof (or an
 	// operator who knows the topology) may lift it.
+	//
+	// THE SECOND HALF IS THE QUIET CHAIN. Since app-v12 every node runs with
+	// CreateEmptyBlocks=false, so a chain mints a block exactly when a signed
+	// transaction enters its mempool. A restored fence refuses to sign and its
+	// bytes are gone, so on a chain that was already quiet when the fence was
+	// raised the fence is holding the only mechanism that could produce its own
+	// proof: no transaction, no block; no block, no provable fate. That is the
+	// shape a personal node reaches after an upgrade restart between writes, and
+	// it is why a fence can outlive every write and every update attempt on an
+	// otherwise healthy node. The quiescent rule settles it from evidence the
+	// node reads itself — caught up, no peer and none seen while this fence was
+	// held, no mempool copy, allocation unspent, and a tip that predates this
+	// fence — and records mode=automatic_quiescent. A tip that has minted since
+	// the fence was raised, a peer, or a mempool copy all stand it down.
 	tx.SetFenceAutoResolverFunc(func(resolveCtx context.Context, fence tx.FencedSigner) (bool, string, error) {
-		return tx.AutoResolveUnprovableFence(resolveCtx, cometRPC, chainNonceFloor, fence)
+		if resolved, detail, err := tx.AutoResolveUnprovableFence(resolveCtx, cometRPC, chainNonceFloor, fence); resolved || err != nil {
+			return resolved, detail, err
+		}
+		return tx.AutoResolveQuiescentFence(resolveCtx, cometRPC, chainNonceFloor, fence)
 	})
 
 	// Durable fence intent, and the restore that makes it matter. The fence

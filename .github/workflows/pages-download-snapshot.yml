@@ -1,0 +1,54 @@
+name: Pages Download Snapshot
+
+# The landing page reads downloads.json from its own origin. That file is refreshed here, with a
+# token, so a visit costs GitHub no unauthenticated API calls and the page never has to fall back
+# to a count that was baked into index.html by hand.
+#
+# The gh-pages branch is not protected; this bot commit is the only writer of downloads.json, and
+# it also refreshes the no-JS fallback (the number, its timestamp, the release chip) in index.html.
+# The counter's own rules live in gh-pages/download-counter.mjs, which the script imports, so the
+# snapshot and the page cannot disagree about what counts as a package.
+
+on:
+  schedule:
+    # Four times a day, off the hour, because the number moves by tens per day.
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: sage-pages-download-snapshot
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    name: Refresh downloads.json
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: gh-pages
+          path: pages
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Refresh the snapshot
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/pages-download-snapshot.mjs --pages pages
+      - name: Commit the refresh
+        working-directory: pages
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Snapshot already current."
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- downloads.json index.html
+          git commit -m 'chore(pages): refresh the download snapshot'
+          git push

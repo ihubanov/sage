@@ -492,6 +492,19 @@ per-fence `signer`, `tx_hash`, `nonce`, `held_seconds`, `attempts`, `cause`,
 `resolution`, `last_cause` and `last_detail`. Everything in it is public-on-chain
 data, but do not mistake the gate for credential-only access.
 
+**Dashboard** — CEREBRUM's System Status panel renders that block
+(`web/static/js/signer-fences.js`): a row that appears only while a key is held,
+the server's explanation of why, and one line per fence naming its `resolution`
+with the exit that belongs to it — reconciling means the identical bytes are
+still being re-submitted, waiting-on-proof means the chain or an operator has to
+settle it. The panel carries the same copy rule the rest of this document does:
+it never suggests restarting, because a restart discards the fence rather than
+settling it. Before this row existed the dashboard was silent about a hold,
+which is how the reported incident read from the outside as "reads are fine,
+writes time out, no error". The `nonce` crosses the wire as a decimal **string**
+because a nanosecond allocation exceeds JavaScript's safe integer range, and a
+rounded nonce is a wrong answer where the operator compares it against the chain.
+
 `resolution` is the field that says **how a fence can end**, and it exists
 because "the fence is held" without it is ambiguous in a way that misled
 callers: `reconciling` means the fence still holds the exact bytes that went out

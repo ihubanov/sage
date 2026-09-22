@@ -512,6 +512,16 @@ func TestSignerFenceHealthHidesIdentifiersFromUnauthenticatedCallers(t *testing.
 	for _, field := range []string{"signer", "tx_hash", "held_seconds", "attempts", "cause"} {
 		assert.Contains(t, row, field, "the operator surface omits %q, which triage needs", field)
 	}
+	// The nonce crosses the wire as a decimal STRING. It is a nanosecond
+	// allocation, so it exceeds JavaScript's safe integer range and a JSON
+	// number would reach the dashboard silently rounded — and the dashboard is
+	// where it gets compared against the chain's committed nonce.
+	nonce, hasNonce := row["nonce"]
+	require.True(t, hasNonce, "a fence raised by a signed broadcast must report its nonce")
+	nonceText, isString := nonce.(string)
+	require.True(t, isString, "the nonce must be a string so the dashboard cannot round it, got %T", nonce)
+	_, parseErr := strconv.ParseUint(nonceText, 10, 64)
+	require.NoError(t, parseErr, "the nonce must be decimal: %q", nonceText)
 	// The resolution class is what turns "a key is held" into an actionable
 	// answer: this fence was raised by a live indeterminate broadcast, so the
 	// node holds its bytes and reconciliation will keep re-submitting them. A

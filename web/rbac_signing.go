@@ -965,7 +965,14 @@ func signerFenceHealth(operator bool) map[string]any {
 		if fence.HasNonce {
 			// The nonce is what makes a fence actionable: it can be compared
 			// against what the chain has committed for this signer.
-			row["nonce"] = fence.Nonce
+			//
+			// A STRING, not a number, because the comparison happens in the
+			// dashboard: SAGE nonces are nanosecond allocations and routinely
+			// exceed JavaScript's safe integer range (2^53), where JSON.parse
+			// silently rounds. A rounded nonce is worse than no nonce — the
+			// operator compares it against the chain's committed value and draws
+			// a wrong conclusion from the last digits being different.
+			row["nonce"] = strconv.FormatUint(fence.Nonce, 10)
 		}
 		if !fence.LastAttemptAt.IsZero() {
 			row["last_attempt_at"] = fence.LastAttemptAt.UTC().Format(time.RFC3339)

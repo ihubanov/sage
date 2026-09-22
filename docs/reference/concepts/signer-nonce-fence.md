@@ -241,7 +241,8 @@ committed nonce), the hash is in no block, the signed bytes died with the only
 process that had them, and the fence therefore refuses to sign AND refuses every
 update for as long as the node runs. That is what a process killed mid-submission
 leaves behind, and the only exits used to be "wait forever" and hand-editing the
-intent table.
+intent table. The daemon route below, the first-boot resolution, and the operator
+CLI are the three exits that replaced it.
 
 ```
 POST /v1/dashboard/signer-fence/abandon
@@ -287,6 +288,62 @@ shutdown, or a client that kept the signed bytes, can still deliver it; it
 commits if it lands before the signer's next transaction, and is refused as a
 replay if it lands after. Verify the effect on-chain before redoing that action by
 hand.
+
+### A live fence with no permanent refusal: the decision, and the operator CLI
+
+One shape has neither a proof nor an automatic exit, and it is why the operator
+CLI exists. A **live** fence — raised by the process that is still running, so
+the signed bytes still exist — keeps re-submitting them, and the re-submission is
+refused with a CheckTx code that is **not** the nonce gate: authorization, agent
+proof, unknown tx type, a decode or signature code, admission backpressure.
+`checkTxRefusalIsPermanent` accepts code 4 only, deliberately (its doc walks the
+whole taxonomy), so those bytes are never labelled REJECTED and the fence never
+lifts. The supersession proof is unreachable for the same fence, because it needs
+the signer's committed nonce to move past the fenced allocation and a fenced key
+cannot sign anything new: nothing it signed has committed, and it is not allowed
+to sign again. On a node where no peer will ever deliver the transaction back, no
+proof can exist and the hold has no exit.
+
+Three exits were considered, and the third is the decision:
+
+1. **Widen the permanent-refusal class.** Rejected on the evidence. Only the
+   nonce gate is monotone. Decode, signature and unknown-type codes are
+   fork-gated — the same bytes are code 1 on one binary and code 10 on another —
+   and authorization, agent proof, clearance and the resource limit are ordinary
+   mutable state that can be granted back in a later block. Promoting any of them
+   to "permanent" would silently lose a transaction consensus had not refused.
+2. **Extend the in-product abandon route to live fences.** Rejected. The daemon
+   is itself re-submitting those bytes on a timer, so an in-product abandon races
+   its own reconciler, and the reason the route is restricted to restored fences
+   stays true for a live one: the bytes still exist and consensus can still
+   settle them.
+3. **Keep the hold, and give the operator a supported, evidence-checked exit.**
+   Chosen, and shipped as `sage-gui fence list` and `sage-gui fence abandon`.
+
+```
+sage-gui fence list
+sage-gui fence abandon --signer <hex-or-prefix> --reason "<why>" --acknowledge-payload-loss \
+    [--peer-redelivery-acknowledged]
+```
+
+`fence list` prints every durable record and, for each one, asks the node whether
+a proof is readable yet, so "stuck" and "pending" are told apart without a
+dashboard. `fence abandon` runs the **same** validator the daemon's route runs
+(`tx.RetireFenceIntent` → `validateAbandonEvidence`): a record with a nonce, a
+readable peer count (connected peers require the second acknowledgement, exactly
+as on the daemon route), a complete mempool read that does not hold the
+transaction, no committed or rejected fate for the hash, and an unspent
+allocation. An accepted decision reserves the abandoned allocation, deletes the
+durable record, and records `fence_abandoned` with `mode=operator_cli` — never a
+proven fate, so a post-mortem can still tell the two apart.
+
+The command does not reach into a running process. A daemon that is up keeps its
+in-process fence for that key until it restarts; the DURABLE record is what the
+next start restores from, so the supported sequence is **retire, then restart**,
+and the first boot will not re-raise it. The residual is the one the daemon route
+states: a copy of those bytes that still exists somewhere commits if it lands
+before the signer's next transaction, and is refused as a replay if it lands
+after.
 
 ### The same decision at first boot, because the desktop has no operator
 
@@ -507,7 +564,14 @@ the ambiguity arrived as the same opaque 500 as a genuine internal fault.
    `fate_rejected` can describe a transaction that actually **committed**.
    Verify the effect on-chain before redoing the action by hand, or you can
    apply it twice.
-3. Do **not** restart to clear it. See above.
+3. If `last_detail` keeps reporting `no_proof` with `attempts` climbing, and the
+   fence is a **live** one whose re-submission is refused by anything other than
+   the nonce gate, no proof can arrive: take the operator exit in "A live fence
+   with no permanent refusal" (`sage-gui fence list`, then `fence abandon` with a
+   reason and the acknowledgements).
+4. Do **not** restart to clear it. A restart alone re-raises the fence from its
+   durable record — that is the whole point of the record. Only after the CLI has
+   retired it does a restart apply the decision.
 
 ### Tuning
 

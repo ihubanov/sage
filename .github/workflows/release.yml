@@ -212,10 +212,14 @@ jobs:
           cd natter
           golangci-lint run ./...
 
-  test:
-    name: Test
+  # Split for the same reason as ci.yml: the suite and the race checks are
+  # independent, both are slow, and bundling them put the whole publication run
+  # behind one job budget that a slow suite run could exhaust. `test` stays the
+  # fan-in `quality-gate` depends on, so the gate set is unchanged.
+  test-suite:
+    name: Test Suite
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -225,7 +229,20 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Run complete test suite
-        run: go test ./... -count=1 -timeout 20m
+        run: go test ./... -count=1 -timeout 30m
+
+  test-race:
+    name: Race Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
       - name: Race-check shared-state boundaries
         run: >-
           go test -race -count=1 -timeout 25m
@@ -246,6 +263,20 @@ jobs:
         run: |
           cd natter
           go test ./... -count=1 -race
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [test-suite, test-race]
+    if: always()
+    steps:
+      - name: Both test suites passed
+        run: |
+          echo "test-suite: ${{ needs.test-suite.result }}"
+          echo "test-race:  ${{ needs.test-race.result }}"
+          test "${{ needs.test-suite.result }}" = "success"
+          test "${{ needs.test-race.result }}" = "success"
 
   vulncheck:
     name: Vulnerability Scan

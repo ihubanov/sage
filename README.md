@@ -48,7 +48,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.7`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.8`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -208,6 +208,16 @@ uses re-enrollment; historical memory authorship is preserved.
 
 ---
 
+## What's New in v11.23.8
+
+**A node stops manufacturing signer fences on an ordinary quit.** Since the fence landed, every coordinated restart has drained signing before it committed, so its teardown could not sever a broadcast mid-flight. A plain signal or a serve error had no such drain: the HTTP force-close could catch a submission, raise an indeterminate outcome, write a durable fence record, and cost that payload at the next start — the fence can only lift on a proof, and a live one whose re-submission is refused by anything other than the nonce gate has no proof to reach. The ordinary exit now drains the same way the restart does: signing is quiesced, in-flight submissions get a bounded five-second window to finish, and only then do the listeners close. Signing is deliberately not resumed, because the process is leaving; an operator-ordered exit is never vetoed by the drain; and a submission that cannot finish in the window fails closed onto the durable record and the restored fence.
+
+**`sage-gui fence abandon` works on a node that keeps a peer.** The credential-free operator exit added in 11.23.6 applies the same evidence gate as the daemon's abandon route, including its second acknowledgement for connected peers — a peer is a route the abandoned bytes could still take back into this node's mempool. The CLI had no way to carry that acknowledgement, so on a federated desktop node or a validator with a persistent peer it could only ever refuse and point at a field it had no way to set. `--peer-redelivery-acknowledged` now carries it, `fence list` names the requirement when peers are connected, and every unproven record states the restart step: a running daemon keeps holding the key until it restarts, and the durable record is what the next boot restores from.
+
+No consensus change, no transaction-type change, no upgrade height, and no chain reset.
+
+Container: `ghcr.io/l33tdawg/sage:11.23.8`. SDK 11.23.8.
+
 ## What's New in v11.23.7
 
 **A node that has activated app-v28 can install its own updates again.** The signed update flow takes a pre-upgrade recovery snapshot and proves it before it touches the installed app: the manifest carries the AppHash the running chain committed, and the proof restores the Badger backup and re-derives that digest from the restored bytes. Since app-v28 the committed AppHash is the public-memory composite commitment — the app-v13 digest of the state WITHOUT the public-memory index nodes, composed with the sparse index root — and the proof only knew the three earlier eras. Every app-v28 node therefore refused its own recovery snapshot, and the field report was exactly this shape: `Failed to install signed app update: verify pre-upgrade snapshot: ... AppHash mismatch under every hash rule (legacy/app-v12/app-v13)`, with the update stuck on the snapshot step and no way forward from inside the app.
@@ -218,7 +228,7 @@ uses re-enrollment; historical memory authorship is preserved.
 
 No consensus change, no transaction-type change, no upgrade height, and no chain reset.
 
-Container: `ghcr.io/l33tdawg/sage:11.23.7`. SDK 11.23.7.
+Container: `ghcr.io/l33tdawg/sage:11.23.8`. SDK 11.23.7.
 
 ## What's New in v11.23.6
 

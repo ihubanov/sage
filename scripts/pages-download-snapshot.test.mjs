@@ -10,7 +10,7 @@ import {
 
 const workflow = readFileSync(new URL('../.github/workflows/pages-download-snapshot.yml', import.meta.url), 'utf8');
 const at = Date.parse('2026-09-20T00:30:00Z');
-const snapshot = { version: 1, count: 8803, latest: 'v11.23.8', updatedAt: '2026-09-20T00:30:00.000Z' };
+const snapshot = { version: 1, count: 8803, latest: 'v11.23.9', updatedAt: '2026-09-20T00:30:00.000Z' };
 // Deliberately not the repo's current version: the release bump rewrites the version strings it
 // knows about, and this fixture has to stay older than the snapshot it is supposed to lag.
 const previous = 'v11.20.0';

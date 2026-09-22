@@ -48,7 +48,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.8`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.9`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -208,6 +208,18 @@ uses re-enrollment; historical memory authorship is preserved.
 
 ---
 
+## What's New in v11.23.9
+
+**CEREBRUM now shows a held signing key.** A signer fence refuses every write from its key and every coordinated restart while it waits for proof of an earlier submission's fate, and until this release the dashboard said nothing about it — the field report that produced the fence workstream read from the outside as *reads are fine, writes time out, no error*. System Status gains a row that appears only while a key is held: how many keys and how long, the node's own explanation of why the hold is deliberate, and one line per fence naming its resolution. `reconciling` means the identical bytes are still being re-submitted and it clears itself; `waiting on proof` means the signed bytes did not survive the process, so the chain or an operator has to settle it. Each line carries the nonce, how long the key has been held, the attempt count and the last recorded detail.
+
+**A hold that ends stays visible.** The row above disappears with the fence, which left no way to tell *it lifted while I was reading* from *it never happened*. The last resolution is now kept and rendered — `committed`, `rejected`, `spent`, or resolved without a proof — so a fence that cleared itself is still on screen afterwards.
+
+**Two details that make the numbers trustworthy.** The nonce crosses the wire as a string: SAGE nonces are nanosecond allocations that exceed JavaScript's safe integer range, and as a JSON number it reached the browser silently rounded, in the one place the operator compares it against the chain. And the panel never suggests restarting to clear a hold — a restart discards the fence and loses the transaction it protects, which is the failure the whole mechanism exists to prevent.
+
+No consensus change, no transaction-type change, no upgrade height, and no chain reset.
+
+Container: `ghcr.io/l33tdawg/sage:11.23.9`. SDK 11.23.9.
+
 ## What's New in v11.23.8
 
 **A node stops manufacturing signer fences on an ordinary quit.** Since the fence landed, every coordinated restart has drained signing before it committed, so its teardown could not sever a broadcast mid-flight. A plain signal or a serve error had no such drain: the HTTP force-close could catch a submission, raise an indeterminate outcome, write a durable fence record, and cost that payload at the next start — the fence can only lift on a proof, and a live one whose re-submission is refused by anything other than the nonce gate has no proof to reach. The ordinary exit now drains the same way the restart does: signing is quiesced, in-flight submissions get a bounded five-second window to finish, and only then do the listeners close. Signing is deliberately not resumed, because the process is leaving; an operator-ordered exit is never vetoed by the drain; and a submission that cannot finish in the window fails closed onto the durable record and the restored fence.
@@ -228,7 +240,7 @@ Container: `ghcr.io/l33tdawg/sage:11.23.8`. SDK 11.23.8.
 
 No consensus change, no transaction-type change, no upgrade height, and no chain reset.
 
-Container: `ghcr.io/l33tdawg/sage:11.23.8`. SDK 11.23.7.
+Container: `ghcr.io/l33tdawg/sage:11.23.7`. SDK 11.23.7.
 
 ## What's New in v11.23.6
 

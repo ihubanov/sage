@@ -229,8 +229,8 @@ func runFenceAbandon() error {
 		printFenceUsage()
 		return nil
 	}
-	if err := flags.validate(); err != nil {
-		return err
+	if validateErr := flags.validate(); validateErr != nil {
+		return validateErr
 	}
 	signer, reason := flags.Signer, flags.Reason
 

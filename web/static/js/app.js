@@ -14,6 +14,7 @@ fedConnections, fedPause, fedRevoke, fedPeerStatus, fedGetNetworkName, fedSetNet
 import { mountMriBrain } from './mri-brain.js';
 import { restartBaselineBootID, requestedRestartIsReady } from './restart-proof.js';
 import { buildUpdateBanner } from './update-banner.js';
+import { describeSignerFences, describeLastFenceResolution, fenceSummary } from './signer-fences.js';
 import { computeReorderedColumn, applyColumnOrder } from './task-reorder.js';
 import { runSequential, summarizeClearedTasks, summarizeDroppedTasks, summarizeForgottenMemories } from './bulk-sequence.js';
 import { refreshTaskSnapshot } from './task-refresh.js';
@@ -6685,6 +6686,15 @@ function SettingsPage({ onRunSetup, requestedTab }) {
     // older servers only set the `ollama` string. Derive a normalized view
     // so the row below this can render any provider without branching twice.
     const embedderStatus = describeEmbedder(health);
+    // A held signer fence blocks every write from its key and every coordinated
+    // restart, and until this row existed the dashboard said nothing about it:
+    // the field report read as "reads fine, writes time out, no error". The
+    // health block is operator-gated, so rows appear for the local dashboard
+    // session and the summary alone for a non-operator payload.
+    const fenceStatus = describeSignerFences(health);
+    // The fence that ENDED, so a hold that resolved while the operator was
+    // reading is still visible once the held-fence row above disappears.
+    const lastFenceResolution = describeLastFenceResolution(health);
     const chooseEmbeddingProvider = async (provider) => {
         if (provider === embedderStatus.provider || embeddingSwitching) return;
         if (provider === 'ollama') {
@@ -6836,6 +6846,40 @@ function SettingsPage({ onRunSetup, requestedTab }) {
                         <div class="settings-section">
                             <h3>System Status</h3>
                             <div class="settings-row"><span class="label">${statusDot(true)} SAGE</span><span class="value" style="color:var(--accent)">Running</span></div>
+                            ${fenceStatus.active > 0 && html`
+                                <div class="settings-row" style="align-items:flex-start;">
+                                    <span class="label" style="color:var(--danger)">${statusDot(false)} Signing key on hold</span>
+                                    <span class="value" style="color:var(--danger);max-width:55%;text-align:right;">${fenceSummary(fenceStatus)}</span>
+                                </div>
+                                <div class="settings-row" style="align-items:flex-start;">
+                                    <span class="label" style="font-size:12px;">${fenceStatus.explanation}</span>
+                                    <span class="value"></span>
+                                </div>
+                                ${fenceStatus.rows.map(row => html`
+                                    <div class="settings-row" style="align-items:flex-start;" key=${'fence-' + (row.signerFull || row.signer)}>
+                                        <span class="label" style="font-size:12px;">
+                                            ${row.resolutionLabel}${row.signerShort ? ` · ${row.signerShort}` : ''}
+                                        </span>
+                                        <span class="value" style="font-size:12px;font-weight:400;color:var(--text-muted);max-width:60%;text-align:right;">
+                                            ${row.nonceText ? `nonce ${row.nonceText} · ` : ''}held ${row.heldLabel} · ${row.attemptsLabel}
+                                            <br/>${row.resolutionHint}
+                                            ${row.detail ? html`<br/><span style="color:var(--text-dim);">${row.detail}</span>` : ''}
+                                        </span>
+                                    </div>
+                                `)}
+                            `}
+                            ${lastFenceResolution && html`
+                                <div class="settings-row" style="align-items:flex-start;">
+                                    <span class="label" style="font-size:12px;color:${lastFenceResolution.abandoned ? 'var(--warning, var(--danger))' : 'var(--text-dim)'};">
+                                        ${lastFenceResolution.label}${lastFenceResolution.signerShort ? ` · ${lastFenceResolution.signerShort}` : ''}
+                                    </span>
+                                    <span class="value" style="font-size:12px;font-weight:400;color:var(--text-muted);max-width:60%;text-align:right;">
+                                        ${lastFenceResolution.atLabel}${lastFenceResolution.heldLabel ? ` · held ${lastFenceResolution.heldLabel}` : ''}${lastFenceResolution.nonceText ? ` · nonce ${lastFenceResolution.nonceText}` : ''}
+                                        <br/>${lastFenceResolution.hint}
+                                        ${lastFenceResolution.detail ? html`<br/><span style="color:var(--text-dim);">${lastFenceResolution.detail}</span>` : ''}
+                                    </span>
+                                </div>
+                            `}
                             <div class="settings-row"><span class="label">${statusDot(embedderStatus.online)} ${embedderStatus.displayName}</span><span class="value" style="color: ${embedderStatus.online ? 'var(--accent)' : 'var(--text-muted)'}" title="${embedderStatus.detail || ''}">${embedderStatus.online ? (embedderStatus.detail ? embedderStatus.detail : 'Connected') : 'Offline'}</span></div>
                             ${(embedderStatus.provider === 'hash' || (embStatus && (embStatus.need_reembed > 0 || embStatus.unreadable > 0 || embStatus.errored > 0))) && html`
                                 <div class="settings-row" style="align-items:center;">

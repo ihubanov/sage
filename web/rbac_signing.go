@@ -918,6 +918,16 @@ func signerFenceHealth(operator bool) map[string]any {
 		"active":             len(held),
 		"oldest_age_seconds": 0,
 	}
+	// The last resolution is reported BEFORE the empty check on purpose: its
+	// whole job is to keep a hold that ENDED visible once there is no held fence
+	// left to describe. Operator-only, like the per-fence rows: it names a signer
+	// and a transaction, and the public tier gets the count and the explanation
+	// only.
+	if operator {
+		if last, ok := tx.LastFenceResolution(); ok {
+			out["last_resolution"] = fenceResolutionRow(last)
+		}
+	}
 	if len(held) == 0 {
 		return out
 	}
@@ -965,7 +975,14 @@ func signerFenceHealth(operator bool) map[string]any {
 		if fence.HasNonce {
 			// The nonce is what makes a fence actionable: it can be compared
 			// against what the chain has committed for this signer.
-			row["nonce"] = fence.Nonce
+			//
+			// A STRING, not a number, because the comparison happens in the
+			// dashboard: SAGE nonces are nanosecond allocations and routinely
+			// exceed JavaScript's safe integer range (2^53), where JSON.parse
+			// silently rounds. A rounded nonce is worse than no nonce — the
+			// operator compares it against the chain's committed value and draws
+			// a wrong conclusion from the last digits being different.
+			row["nonce"] = strconv.FormatUint(fence.Nonce, 10)
 		}
 		if !fence.LastAttemptAt.IsZero() {
 			row["last_attempt_at"] = fence.LastAttemptAt.UTC().Format(time.RFC3339)
@@ -974,6 +991,24 @@ func signerFenceHealth(operator bool) map[string]any {
 	}
 	out["signers"] = signers
 	return out
+}
+
+// fenceResolutionRow renders the last fence outcome for the dashboard.
+func fenceResolutionRow(last tx.FenceResolution) map[string]any {
+	row := map[string]any{
+		"mode":         last.Mode,
+		"signer":       last.SignerPubKeyPrefix,
+		"tx_hash":      last.TxHash,
+		"held_seconds": int(last.HeldFor.Round(time.Second).Seconds()),
+		"at":           last.At.UTC().Format(time.RFC3339),
+		"detail":       last.Detail,
+	}
+	if last.HasNonce {
+		// A string for the same reason the held rows use one: the dashboard
+		// compares it against the chain, and JSON numbers round past 2^53.
+		row["nonce"] = strconv.FormatUint(last.Nonce, 10)
+	}
+	return row
 }
 
 // signerFenceRoutes renders what can still end each held fence, by resolution

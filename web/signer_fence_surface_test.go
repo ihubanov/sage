@@ -512,6 +512,16 @@ func TestSignerFenceHealthHidesIdentifiersFromUnauthenticatedCallers(t *testing.
 	for _, field := range []string{"signer", "tx_hash", "held_seconds", "attempts", "cause"} {
 		assert.Contains(t, row, field, "the operator surface omits %q, which triage needs", field)
 	}
+	// The nonce crosses the wire as a decimal STRING. It is a nanosecond
+	// allocation, so it exceeds JavaScript's safe integer range and a JSON
+	// number would reach the dashboard silently rounded — and the dashboard is
+	// where it gets compared against the chain's committed nonce.
+	nonce, hasNonce := row["nonce"]
+	require.True(t, hasNonce, "a fence raised by a signed broadcast must report its nonce")
+	nonceText, isString := nonce.(string)
+	require.True(t, isString, "the nonce must be a string so the dashboard cannot round it, got %T", nonce)
+	_, parseErr := strconv.ParseUint(nonceText, 10, 64)
+	require.NoError(t, parseErr, "the nonce must be decimal: %q", nonceText)
 	// The resolution class is what turns "a key is held" into an actionable
 	// answer: this fence was raised by a live indeterminate broadcast, so the
 	// node holds its bytes and reconciliation will keep re-submitting them. A
@@ -530,6 +540,37 @@ func TestSignerFenceHealthHidesIdentifiersFromUnauthenticatedCallers(t *testing.
 	require.NoError(t, err)
 	assert.NotContains(t, string(rendered), "broadcast_tx_commit?tx=0x",
 		"the status surface carries a broadcast URL, which contains the signed transaction")
+
+	// A fence that has ENDED stays visible to the operator. The held-fence block
+	// is empty by then, so the last resolution is the only trace the dashboard
+	// has — and lifting it must not hand the public tier the signer identity
+	// through the new field.
+	var fenced tx.FencedSigner
+	for _, candidate := range tx.FencedSigners() {
+		if candidate.SignerPubKeyHex == agentIDForKey(key) {
+			fenced = candidate
+			break
+		}
+	}
+	require.NotEmpty(t, fenced.SignerPubKeyHex, "the fixture fence disappeared before it could be lifted")
+	require.True(t, fenced.HasNonce, "a fence raised by a signed broadcast must carry a nonce")
+	require.NoError(t, tx.LiftFenceWithProof(context.Background(), agentIDForKey(key), tx.FenceLiftProof{
+		Kind:            "superseded",
+		SignerPubKeyHex: agentIDForKey(key),
+		Nonce:           fenced.Nonce,
+		HasNonce:        true,
+		CommittedNonce:  fenced.Nonce + 1,
+		Detail:          "test proof",
+	}))
+
+	resolved := signerFenceHealth(true)
+	assert.Equal(t, 0, resolved["active"], "the lift must clear the held-fence count")
+	last, ok := resolved["last_resolution"].(map[string]any)
+	require.True(t, ok, "a resolved fence must stay visible on the operator surface")
+	assert.Equal(t, "superseded", last["mode"])
+	assert.Equal(t, fenced.SignerPubKeyPrefix, last["signer"])
+	assert.NotContains(t, signerFenceHealth(false), "last_resolution",
+		"the public status surface must not learn which signer resolved")
 }
 
 // TestSignerFenceRoutesNamesTheRouteOutOfEachClass pins the sentence the status

@@ -2550,6 +2550,21 @@ func runServe(startupProof string) (rerr error) {
 		}
 	}
 	signal.Stop(quit)
+	// An ORDINARY exit (a signal, or a serve error that is not a scheduled
+	// restart) gets the drain the coordinated path already ran: signing is
+	// stopped and the in-flight submissions are given a small bounded window to
+	// finish BEFORE any listener is force-closed under them. Without it the
+	// teardown below is a fence factory — a broadcast severed mid-flight ends
+	// with an unobserved fate, and the next start pays for it with one lost
+	// payload. The error is logged and never vetoes an operator-ordered
+	// shutdown; whatever did not make it is covered by the durable intent and
+	// the restored fence.
+	if !restarting {
+		if err := drainSigningForOrdinaryShutdown(ordinaryShutdownSigningIdleBudget); err != nil {
+			logger.Warn().Err(err).Msg("in-flight signing did not reach idle before the shutdown drain — " +
+				"a submission whose fate is still unobserved is fenced, and the fence is restored at the next start")
+		}
+	}
 	if nativeControl != nil {
 		_ = nativeControl.SetState(shellcontrol.StateDraining)
 	}

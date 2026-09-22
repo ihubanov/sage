@@ -1651,9 +1651,12 @@ var ErrSigningQuiesced = errors.New("signing is quiesced for a coordinated resta
 var signingQuiesced atomic.Bool
 
 // QuiesceSigningForRestart stops new nonce allocations and returns the function
-// that resumes them. Call it once a coordinated restart is actually committed;
-// call the returned function if the restart is abandoned, or the node will keep
-// running with signing off.
+// that resumes them. Call it once a RESTART is actually committed, or when an
+// ORDINARY exit (a signal or a serve error) begins draining — both teardowns are
+// the most likely moment in the process's life for a submission to end with an
+// unobserved outcome. Call the returned function if the restart is abandoned,
+// or the node will keep running with signing off; an ordinary exit never
+// resumes, because it is leaving.
 //
 // It does NOT wait for in-flight submissions and deliberately does not block:
 // every caller fails fast with ErrSigningQuiesced instead of parking inside a
@@ -1665,7 +1668,7 @@ var signingQuiesced atomic.Bool
 // something happened twice that happened once.
 func QuiesceSigningForRestart() (resume func()) {
 	if signingQuiesced.CompareAndSwap(false, true) {
-		emitFenceEvent("signing_quiesced", fenceKV("reason", "coordinated restart draining"))
+		emitFenceEvent("signing_quiesced", fenceKV("reason", "restart or shutdown draining"))
 	}
 	return func() {
 		if signingQuiesced.CompareAndSwap(true, false) {

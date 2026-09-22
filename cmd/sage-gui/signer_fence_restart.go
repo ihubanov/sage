@@ -169,3 +169,44 @@ func commitRestartAfterSigningDrain(prepared *preparedRestartRequest, veto func(
 	}
 	return nil
 }
+
+// ordinaryShutdownSigningIdleBudget bounds how long an ordinary exit — a
+// signal, or a serve error that is not a scheduled restart — waits for the
+// in-flight signing population to reach zero before the listeners are
+// force-closed under it.
+//
+// Deliberately well below signingIdleDrainBudget (node.go): that budget exists
+// so a restart can still be ABANDONED when the wait fails, while this one is
+// only a courtesy to work already in flight, and the operator who pressed
+// Ctrl-C or quit from the tray is waiting on the exit. Whatever does not make
+// it is covered by the durable intent and the restored fence.
+const ordinaryShutdownSigningIdleBudget = 5 * time.Second
+
+// drainSigningForOrdinaryShutdown applies step 2's guarantee to the exit that
+// has no veto and no ordered re-check: stop new nonce allocations, then give
+// the in-flight and queued submissions a small bounded window to finish before
+// the HTTP force-close can sever them.
+//
+// WHY THIS EXISTS AT ALL. Every coordinated restart drains signing before it
+// commits, so its teardown cannot manufacture a fence. A plain signal or serve
+// error had no such drain: it drained HTTP for its budget and then
+// force-closed, and a broadcast caught in that window raised an indeterminate
+// outcome, wrote a durable intent, and came back at the next start as a fence
+// that costs its payload. The fix is not to teach the exit to resolve fences;
+// it is to stop making them.
+//
+// SIGNING IS DELIBERATELY LEFT QUIESCED, exactly as the committed-restart path
+// leaves it, and this function never resumes. The process is going away, and a
+// transaction signed into a teardown is the likeliest one in its life to end
+// with an unobserved fate — the one thing the in-process fence cannot carry
+// across an exec. A caller refused with ErrSigningQuiesced here is being told
+// the truth about the node it is talking to.
+//
+// The returned error is not a veto. An exit the operator ordered has to win,
+// so the caller logs it and proceeds.
+func drainSigningForOrdinaryShutdown(budget time.Duration) error {
+	tx.QuiesceSigningForRestart()
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	return tx.WaitForSigningIdle(ctx)
+}

@@ -353,13 +353,20 @@ deciding to restart**. That one we control, so:
   with it. The pre-drain re-check is the only guard that actually preserves a
   fence, which is why it must never be weakened as "redundant with the
   tripwire".
-- **Signing quiesces once a restart is actually committed**
+- **Signing quiesces for every teardown, not only a committed restart**
   (`tx.QuiesceSigningForRestart`), so no new transaction is signed into a
   teardown — the most likely moment for a submission to end with an unobserved
   outcome. The quiesce is re-checked **after** a caller acquires its lease slot
   and after a fence wait, so callers already queued behind a slow commit when
   the restart begins are refused (`ErrSigningQuiesced`) instead of signing into
-  the drain.
+  the drain. An **ordinary exit** (a signal, or a serve error that is not a
+  scheduled restart) drains the same way before anything force-closes a
+  listener: signing is quiesced, `tx.WaitForSigningIdle` is given a small
+  bounded window (five seconds) for submissions already in flight, and signing
+  is **not** resumed afterwards — the process is leaving, and the point is to
+  stop manufacturing fences, not to resolve them. A submission that outlasts
+  the window is the fail-closed case and is covered by the durable intent and
+  the restored fence.
 
 A `kill -9`, a power cut, or a crash during the original RPC no longer loses the
 RECORD — durable pre-broadcast intent landed in v11.20.4, so the fence is

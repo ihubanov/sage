@@ -69,7 +69,8 @@ func printFenceUsage() {
 
 Usage:
   sage-gui fence list
-  sage-gui fence abandon --signer <hex-or-prefix> --reason <why> --acknowledge-payload-loss
+  sage-gui fence abandon --signer <hex-or-prefix> --reason <why> --acknowledge-payload-loss \
+      [--peer-redelivery-acknowledged]
 
 Notes:
   A fence refuses to let its signing key sign anything new until the fate of one
@@ -77,6 +78,11 @@ Notes:
   that the transaction's payload may be lost. It is refused when a proof exists,
   when the durable record carries no nonce, or when the transaction is still in
   this node's mempool.
+
+  --peer-redelivery-acknowledged is required when peers are connected. A peer is
+  a route the abandoned bytes could still take back into this node's mempool, and
+  the daemon's own abandon route requires the same second acknowledgement on the
+  same evidence.
 
   A running daemon holds its own in-process fence for the same key; this command
   retires the DURABLE record, so the hold ends when that daemon restarts (or
@@ -146,49 +152,87 @@ func runFenceList() error {
 				evidence.TxLookup)
 		default:
 			fmt.Printf("  proven:     no — no committed fate is readable (%s)\n", evidence.TxLookup)
-			fmt.Printf("  settle it:  sage-gui fence abandon --signer %s --reason \"<why>\" --acknowledge-payload-loss\n\n",
+			fmt.Printf("  settle it:  sage-gui fence abandon --signer %s --reason \"<why>\" --acknowledge-payload-loss\n",
 				fenceSignerPrefix(intent.SignerPubKeyHex))
+			if evidence.Peers > 0 {
+				fmt.Printf("              %d peer(s) connected: add --peer-redelivery-acknowledged to accept that a\n",
+					evidence.Peers)
+				fmt.Printf("              peer could still deliver those bytes here, losing the payload\n")
+			}
+			fmt.Printf("              a running daemon keeps holding this key until it restarts\n\n")
 		}
 	}
 	return nil
 }
 
-func runFenceAbandon() error {
-	args := os.Args[3:]
-	var signer, reason string
-	acknowledged := false
+// fenceAbandonFlags is everything `fence abandon` accepts. The parser is a
+// function so the acknowledgement mapping can be tested without a store, an RPC
+// endpoint or a running node.
+type fenceAbandonFlags struct {
+	Signer                     string
+	Reason                     string
+	PayloadLossAcknowledged    bool
+	PeerRedeliveryAcknowledged bool
+	Help                       bool
+}
+
+func parseFenceAbandonArgs(args []string) (fenceAbandonFlags, error) {
+	var flags fenceAbandonFlags
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--signer" || strings.HasPrefix(args[i], "--signer="):
 			value, next, err := fenceFlagValue(args, i, "--signer")
 			if err != nil {
-				return err
+				return flags, err
 			}
-			signer, i = value, next
+			flags.Signer, i = value, next
 		case args[i] == "--reason" || strings.HasPrefix(args[i], "--reason="):
 			value, next, err := fenceFlagValue(args, i, "--reason")
 			if err != nil {
-				return err
+				return flags, err
 			}
-			reason, i = value, next
+			flags.Reason, i = value, next
 		case args[i] == "--acknowledge-payload-loss":
-			acknowledged = true
+			flags.PayloadLossAcknowledged = true
+		case args[i] == "--peer-redelivery-acknowledged":
+			flags.PeerRedeliveryAcknowledged = true
 		case args[i] == "--help" || args[i] == "-h":
-			printFenceUsage()
-			return nil
+			flags.Help = true
 		default:
-			return fmt.Errorf("unknown argument %q for 'fence abandon'; run 'sage-gui fence help'", args[i])
+			return flags, fmt.Errorf("unknown argument %q for 'fence abandon'; run 'sage-gui fence help'", args[i])
 		}
 	}
-	if strings.TrimSpace(signer) == "" {
+	return flags, nil
+}
+
+// validate mirrors the three refusals this command has always made, in the order
+// an operator meets them.
+func (f fenceAbandonFlags) validate() error {
+	if strings.TrimSpace(f.Signer) == "" {
 		return fmt.Errorf("--signer is required (the full key or the prefix 'fence list' prints)")
 	}
-	if strings.TrimSpace(reason) == "" {
+	if strings.TrimSpace(f.Reason) == "" {
 		return fmt.Errorf("--reason is required: this decision accepts that a transaction's payload may be lost, and the record must say why")
 	}
-	if !acknowledged {
+	if !f.PayloadLossAcknowledged {
 		return fmt.Errorf("--acknowledge-payload-loss is required: the transaction this fence protects may be discarded, and if a copy of it still exists it will be refused as a replay once a higher nonce commits")
 	}
+	return nil
+}
+
+func runFenceAbandon() error {
+	flags, err := parseFenceAbandonArgs(os.Args[3:])
+	if err != nil {
+		return err
+	}
+	if flags.Help {
+		printFenceUsage()
+		return nil
+	}
+	if err := flags.validate(); err != nil {
+		return err
+	}
+	signer, reason := flags.Signer, flags.Reason
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -214,11 +258,22 @@ func runFenceAbandon() error {
 	if err != nil {
 		return fmt.Errorf("read the node's own evidence (nothing was changed): %w", err)
 	}
+	// The peer acknowledgement travels with the decision exactly as it does on
+	// the daemon route: without it the validator refuses a fence on a node that
+	// keeps a peer, which used to leave those nodes with no reachable exit at
+	// all. It is set only when the operator asked for it.
+	if flags.PeerRedeliveryAcknowledged {
+		evidence.PeerRedeliveryAcknowledged = true
+	}
 	if err := tx.RetireFenceIntent(ctx, intentStore, target, reason, evidence); err != nil {
 		return err
 	}
 
 	fmt.Printf("Fence retired for signer %s (nonce %s).\n\n", fenceSignerPrefix(target.SignerPubKeyHex), fenceNonceText(target))
+	if evidence.Peers > 0 {
+		fmt.Printf("Peer redelivery was acknowledged with %d peer(s) connected; the decision records it.\n\n",
+			evidence.Peers)
+	}
 	fmt.Println("The durable record is gone, so this key is free at the next start. A RUNNING daemon still")
 	fmt.Println("holds its in-process fence for this key until it restarts: restart the node to apply the")
 	fmt.Println("decision, and the first boot will not re-raise it.")

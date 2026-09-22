@@ -540,6 +540,37 @@ func TestSignerFenceHealthHidesIdentifiersFromUnauthenticatedCallers(t *testing.
 	require.NoError(t, err)
 	assert.NotContains(t, string(rendered), "broadcast_tx_commit?tx=0x",
 		"the status surface carries a broadcast URL, which contains the signed transaction")
+
+	// A fence that has ENDED stays visible to the operator. The held-fence block
+	// is empty by then, so the last resolution is the only trace the dashboard
+	// has — and lifting it must not hand the public tier the signer identity
+	// through the new field.
+	var fenced tx.FencedSigner
+	for _, candidate := range tx.FencedSigners() {
+		if candidate.SignerPubKeyHex == agentIDForKey(key) {
+			fenced = candidate
+			break
+		}
+	}
+	require.NotEmpty(t, fenced.SignerPubKeyHex, "the fixture fence disappeared before it could be lifted")
+	require.True(t, fenced.HasNonce, "a fence raised by a signed broadcast must carry a nonce")
+	require.NoError(t, tx.LiftFenceWithProof(context.Background(), agentIDForKey(key), tx.FenceLiftProof{
+		Kind:            "superseded",
+		SignerPubKeyHex: agentIDForKey(key),
+		Nonce:           fenced.Nonce,
+		HasNonce:        true,
+		CommittedNonce:  fenced.Nonce + 1,
+		Detail:          "test proof",
+	}))
+
+	resolved := signerFenceHealth(true)
+	assert.Equal(t, 0, resolved["active"], "the lift must clear the held-fence count")
+	last, ok := resolved["last_resolution"].(map[string]any)
+	require.True(t, ok, "a resolved fence must stay visible on the operator surface")
+	assert.Equal(t, "superseded", last["mode"])
+	assert.Equal(t, fenced.SignerPubKeyPrefix, last["signer"])
+	assert.NotContains(t, signerFenceHealth(false), "last_resolution",
+		"the public status surface must not learn which signer resolved")
 }
 
 // TestSignerFenceRoutesNamesTheRouteOutOfEachClass pins the sentence the status

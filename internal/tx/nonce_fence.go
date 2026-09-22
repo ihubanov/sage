@@ -1374,6 +1374,9 @@ func liftFence(key string, fence *keyFence, verdict TxVerdict, detail string) {
 	discardFenceIntent(key)
 	metrics.NonceFenceResolvedTotal.WithLabelValues(verdict.metricFate()).Inc()
 	publishFenceGauges()
+	// Keep the outcome visible after the fence (and the status row that shows
+	// it) is gone. See FenceResolution.
+	recordFenceResolution(verdict.metricFate(), signerPrefix(key), txHash, nonce, hasNonce, held, detail)
 	emitFenceEvent("fence_lift",
 		fenceKV("signer", signerPrefix(key)),
 		fenceKV("tx_hash", txHash),

@@ -14,7 +14,7 @@ fedConnections, fedPause, fedRevoke, fedPeerStatus, fedGetNetworkName, fedSetNet
 import { mountMriBrain } from './mri-brain.js';
 import { restartBaselineBootID, requestedRestartIsReady } from './restart-proof.js';
 import { buildUpdateBanner } from './update-banner.js';
-import { describeSignerFences, fenceSummary } from './signer-fences.js';
+import { describeSignerFences, describeLastFenceResolution, fenceSummary } from './signer-fences.js';
 import { computeReorderedColumn, applyColumnOrder } from './task-reorder.js';
 import { runSequential, summarizeClearedTasks, summarizeDroppedTasks, summarizeForgottenMemories } from './bulk-sequence.js';
 import { refreshTaskSnapshot } from './task-refresh.js';
@@ -6692,6 +6692,9 @@ function SettingsPage({ onRunSetup, requestedTab }) {
     // health block is operator-gated, so rows appear for the local dashboard
     // session and the summary alone for a non-operator payload.
     const fenceStatus = describeSignerFences(health);
+    // The fence that ENDED, so a hold that resolved while the operator was
+    // reading is still visible once the held-fence row above disappears.
+    const lastFenceResolution = describeLastFenceResolution(health);
     const chooseEmbeddingProvider = async (provider) => {
         if (provider === embedderStatus.provider || embeddingSwitching) return;
         if (provider === 'ollama') {
@@ -6864,6 +6867,18 @@ function SettingsPage({ onRunSetup, requestedTab }) {
                                         </span>
                                     </div>
                                 `)}
+                            `}
+                            ${lastFenceResolution && html`
+                                <div class="settings-row" style="align-items:flex-start;">
+                                    <span class="label" style="font-size:12px;color:${lastFenceResolution.abandoned ? 'var(--warning, var(--danger))' : 'var(--text-dim)'};">
+                                        ${lastFenceResolution.label}${lastFenceResolution.signerShort ? ` · ${lastFenceResolution.signerShort}` : ''}
+                                    </span>
+                                    <span class="value" style="font-size:12px;font-weight:400;color:var(--text-muted);max-width:60%;text-align:right;">
+                                        ${lastFenceResolution.atLabel}${lastFenceResolution.heldLabel ? ` · held ${lastFenceResolution.heldLabel}` : ''}${lastFenceResolution.nonceText ? ` · nonce ${lastFenceResolution.nonceText}` : ''}
+                                        <br/>${lastFenceResolution.hint}
+                                        ${lastFenceResolution.detail ? html`<br/><span style="color:var(--text-dim);">${lastFenceResolution.detail}</span>` : ''}
+                                    </span>
+                                </div>
                             `}
                             <div class="settings-row"><span class="label">${statusDot(embedderStatus.online)} ${embedderStatus.displayName}</span><span class="value" style="color: ${embedderStatus.online ? 'var(--accent)' : 'var(--text-muted)'}" title="${embedderStatus.detail || ''}">${embedderStatus.online ? (embedderStatus.detail ? embedderStatus.detail : 'Connected') : 'Offline'}</span></div>
                             ${(embedderStatus.provider === 'hash' || (embStatus && (embStatus.need_reembed > 0 || embStatus.unreadable > 0 || embStatus.errored > 0))) && html`

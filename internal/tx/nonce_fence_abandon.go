@@ -364,9 +364,14 @@ func RetireFenceIntent(
 		fenceNum("peers", uint64(ev.Peers)),                // #nosec G115 -- non-negative count
 		fenceNum("mempool_count", uint64(ev.MempoolCount)), // #nosec G115 -- non-negative count
 		fenceKV("reason", reason),
-		fenceKV("note", "OPERATOR DECISION FROM THE NODE HOST, NOT A PROOF: the record was retired through the "+
-			"same evidence gate the daemon's operator route applies; a running daemon still holds its "+
-			"in-process fence for this key until it restarts"))
+	fenceKV("note", "OPERATOR DECISION FROM THE NODE HOST, NOT A PROOF: the record was retired through the "+
+		"same evidence gate the daemon's operator route applies; a running daemon still holds its "+
+		"in-process fence for this key until it restarts"))
+	// The CLI retires a durable record without a live fence to lift, so this is
+	// the one resolution that does not pass through liftFence's recording.
+	recordFenceResolution("abandoned:operator_cli", held.SignerPubKeyPrefix, held.TxHash, held.Nonce, held.HasNonce,
+		time.Since(intent.CreatedAt), "operator decision from the node host: the record was retired through the "+
+			"same evidence gate the daemon's route applies; the abandoned payload may be lost")
 	return nil
 }
 

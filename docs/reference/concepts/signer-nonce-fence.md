@@ -504,6 +504,13 @@ which is how the reported incident read from the outside as "reads are fine,
 writes time out, no error". The `nonce` crosses the wire as a decimal **string**
 because a nanosecond allocation exceeds JavaScript's safe integer range, and a
 rounded nonce is a wrong answer where the operator compares it against the chain.
+The panel also keeps the **last resolution** visible after a hold has ended
+(`signer_fences.last_resolution`, operator-only like the per-fence rows): a fence
+that lifted leaves no held-fence row behind, and "it resolved itself" is the
+outcome worth showing. Both paths record it — the proof lifts (`committed`,
+`rejected`, `spent`) and the operator or automatic decisions taken without a
+proof (`abandoned:<route>`) — so the fates stay as distinguishable in the UI as
+they are in the log.
 
 `resolution` is the field that says **how a fence can end**, and it exists
 because "the fence is held" without it is ambiguous in a way that misled

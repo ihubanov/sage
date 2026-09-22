@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
+    describeLastFenceResolution,
     describeSignerFences,
     fenceSummary,
     formatFenceAge,
@@ -138,9 +139,14 @@ test('held durations read like an operator wrote them', () => {
 // into advising opposite things.
 test('no rendered string advises restarting to clear the fence', () => {
     const status = describeSignerFences(operatorPayload);
+    const resolved = describeLastFenceResolution({
+        signer_fences: { last_resolution: { mode: 'abandoned:operator_cli', signer: '916058bf00112233' } },
+    });
     const strings = [
         status.explanation,
         fenceSummary(status),
+        resolved.label,
+        resolved.hint,
         ...status.rows.flatMap((row) => [
             row.resolutionLabel,
             row.resolutionHint,
@@ -163,9 +169,76 @@ test('no rendered string advises restarting to clear the fence', () => {
     assert.match(reconciling.resolutionHint, /restarting to clear it would discard the fence and lose that transaction/);
 });
 
+test('the last resolution is absent until a fence actually ends', () => {
+    for (const health of [undefined, null, {}, { signer_fences: {} }, { signer_fences: { last_resolution: {} } }]) {
+        assert.equal(describeLastFenceResolution(health), null);
+    }
+});
+
+// A fence that ended is the one thing the held-fence row cannot show: it is gone
+// by then. The record answers "what happened to the hold I was just looking at".
+test('a resolved fence keeps its fate, its identifiers and how long it was held', () => {
+    const committed = describeLastFenceResolution({
+        signer_fences: {
+            last_resolution: {
+                mode: 'committed',
+                signer: '3d73cdbdffaacac7',
+                tx_hash: 'AABBCCDDEEFF0011',
+                nonce: '1770000000000000001',
+                held_seconds: 301,
+                at: '2026-09-22T11:31:04Z',
+                detail: 'committed in block 5',
+            },
+        },
+    });
+    assert.equal(committed.label, 'Resolved: committed');
+    assert.equal(committed.abandoned, false);
+    assert.equal(committed.signerShort, '3d73cdbd…');
+    assert.equal(committed.txHashShort, 'AABBCCDD…');
+    assert.equal(committed.nonceText, '1770000000000000001');
+    assert.equal(committed.heldLabel, '5m');
+    assert.equal(committed.atLabel, '2026-09-22 11:31 UTC');
+    assert.equal(committed.detail, 'committed in block 5');
+});
+
+test('a resolution with no proof says the payload may be lost', () => {
+    const abandoned = describeLastFenceResolution({
+        signer_fences: {
+            last_resolution: { mode: 'abandoned:operator_cli', signer: '916058bf00112233', held_seconds: 3720 },
+        },
+    });
+    assert.equal(abandoned.label, 'Resolved without a proof');
+    assert.equal(abandoned.abandoned, true);
+    assert.match(abandoned.hint, /payload may be lost/);
+
+    // The automatic routes carry their detail through the same field.
+    const automatic = describeLastFenceResolution({
+        signer_fences: { last_resolution: { mode: 'abandoned:automatic_quiescent', signer: '916058bf00112233' } },
+    });
+    assert.equal(automatic.label, 'Resolved without a proof');
+});
+
+test('the rejected fate keeps the code-4 caveat', () => {
+    const rejected = describeLastFenceResolution({
+        signer_fences: { last_resolution: { mode: 'rejected', signer: '3d73cdbdffaacac7' } },
+    });
+    assert.equal(rejected.label, 'Resolved: rejected');
+    assert.match(rejected.hint, /verify the effect on-chain before redoing the action/);
+});
+
+test('an unrecognised fate admits it instead of guessing', () => {
+    const unknown = describeLastFenceResolution({ signer_fences: { last_resolution: { mode: 'vanished' } } });
+    assert.equal(unknown.label, 'Resolved');
+    assert.match(unknown.hint, /does not recognise the resolution/);
+});
+
 test('the System Status panel renders the hold and its rows', () => {
-    assert.match(appSource, /import \{ describeSignerFences, fenceSummary \} from '\.\/signer-fences\.js';/);
+    assert.match(
+        appSource,
+        /import \{ describeSignerFences, describeLastFenceResolution, fenceSummary \} from '\.\/signer-fences\.js';/,
+    );
     assert.match(appSource, /const fenceStatus = describeSignerFences\(health\);/);
+    assert.match(appSource, /const lastFenceResolution = describeLastFenceResolution\(health\);/);
 
     const start = appSource.indexOf('<h3>System Status</h3>');
     assert.notEqual(start, -1, 'the System Status section must exist');
@@ -180,4 +253,6 @@ test('the System Status panel renders the hold and its rows', () => {
     assert.match(section, /fenceStatus\.rows\.map/, 'operator rows render individually');
     assert.match(section, /row\.resolutionHint/);
     assert.match(section, /row\.detail/, 'the recorded last_detail reaches the panel');
+    assert.match(section, /lastFenceResolution && html`/, 'a resolved fence renders after the hold is gone');
+    assert.match(section, /lastFenceResolution\.hint/);
 });

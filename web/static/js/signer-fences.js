@@ -137,3 +137,69 @@ export function fenceSummary(fenceStatus) {
     const keys = fenceStatus.active === 1 ? '1 signing key' : `${fenceStatus.active} signing keys`;
     return fenceStatus.oldestLabel ? `${keys} held (oldest ${fenceStatus.oldestLabel})` : `${keys} held`;
 }
+
+// The fates a lift records, plus the abandoned:* modes an operator or automatic
+// decision records. The rejected copy keeps the caveat the fence docs make:
+// code 4 proves supersession OR self-commit, so "rejected" is not licence to
+// redo the action by hand without checking the chain.
+const FATE_COPY = {
+    committed: {
+        label: 'Resolved: committed',
+        hint: 'The recorded transaction is in a committed block, so the hold ended with its payload intact.',
+    },
+    rejected: {
+        label: 'Resolved: rejected',
+        hint: 'Consensus refused these bytes. Code 4 means either a higher nonce has committed or this ' +
+            'transaction did — verify the effect on-chain before redoing the action by hand.',
+    },
+    spent: {
+        label: 'Resolved: allocation spent',
+        hint: 'The signer\'s committed nonce reached the fenced allocation, so these bytes can never commit ' +
+            'again. Whether they were the transaction that committed or were overtaken is what the index ' +
+            'decides, and this label admits it cannot tell.',
+    },
+    abandoned: {
+        label: 'Resolved without a proof',
+        hint: 'The node or the operator ended this hold without a fate from the chain, so the payload may be ' +
+            'lost. If a copy of those bytes still exists and lands before the signer\'s next commit, it ' +
+            'commits and the next transaction is refused as a replay.',
+    },
+    unknown: {
+        label: 'Resolved',
+        hint: 'This build does not recognise the resolution the node reported. The log line for the fence ' +
+            'carries the detail.',
+    },
+};
+
+function shortTimestamp(value) {
+    const text = typeof value === 'string' ? value : '';
+    const parsed = Date.parse(text);
+    if (Number.isNaN(parsed)) return '';
+    return `${new Date(parsed).toISOString().replace('T', ' ').slice(0, 16)} UTC`;
+}
+
+// describeLastFenceResolution normalizes the operator-only `last_resolution`
+// block: the fence that ended, and what ended it. Returns null when the process
+// has not resolved a fence (or when the caller is not an operator session, in
+// which case the node does not send the block at all).
+export function describeLastFenceResolution(health) {
+    const block = health?.signer_fences?.last_resolution;
+    if (!block || typeof block !== 'object') return null;
+    const mode = typeof block.mode === 'string' ? block.mode.trim() : '';
+    if (!mode) return null;
+    const key = mode.startsWith('abandoned') ? 'abandoned' : (FATE_COPY[mode] ? mode : 'unknown');
+    const copy = FATE_COPY[key];
+    const nonce = block.nonce;
+    return {
+        mode,
+        label: copy.label,
+        hint: copy.hint,
+        abandoned: key === 'abandoned',
+        signerShort: shortHash(block.signer),
+        txHashShort: shortHash(block.tx_hash),
+        nonceText: nonce === null || nonce === undefined || nonce === '' ? '' : String(nonce),
+        heldLabel: formatFenceAge(block.held_seconds),
+        atLabel: shortTimestamp(block.at),
+        detail: typeof block.detail === 'string' ? block.detail.trim() : '',
+    };
+}

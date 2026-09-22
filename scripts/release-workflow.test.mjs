@@ -418,9 +418,16 @@ test('wheel smoke installs declared runtime dependencies before importing the SD
 test('PR and main CI require the same v11.9 composite proofs as release', () => {
   assert.match(ciJob('v119-fault-gates'), /require_scoped_reconfiguration: true/);
   assert.match(ciJob('v119-fault-gates'), /require_authorized_state_sync: true/);
-  for (const testJob of [ciJob('test'), job('test')]) {
-    assert.match(testJob, /go test \.\/\.\.\.(?: -v)? -count=1 -timeout 20m/);
-    assert.match(testJob, /go test -race -count=1 -timeout 25m/);
+  // Both workflows run the plain suite and the race checks as SEPARATE jobs:
+  // bundling them put both behind one 40-minute job budget, and a slow suite run
+  // (8-17 minutes) cancelled the ~23-minute race step at the wall clock rather
+  // than failing a suite. The commands are asserted where they now live, and
+  // both workflows must still run the identical set.
+  for (const suiteJob of [ciJob('test-suite'), job('test-suite')]) {
+    assert.match(suiteJob, /go test \.\/\.\.\.(?: -v)? -count=1 -timeout 30m/);
+  }
+  for (const raceJob of [ciJob('test-race'), job('test-race')]) {
+    assert.match(raceJob, /go test -race -count=1 -timeout 25m/);
     for (const sharedStatePackage of [
       './api/rest',
       './internal/store',
@@ -431,11 +438,21 @@ test('PR and main CI require the same v11.9 composite proofs as release', () => 
       './internal/statesync',
       './internal/tx',
     ]) {
-      assert.match(testJob, new RegExp(sharedStatePackage.replaceAll('/', '\\/')));
+      assert.match(raceJob, new RegExp(sharedStatePackage.replaceAll('/', '\\/')));
     }
-    assert.match(testJob, /go test -race -count=1 -timeout 5m/);
-    assert.match(testJob, /-run 'Race\|Concurrent\|TOCTOU\|Linear'/);
-    assert.match(testJob, /\.\/internal\/abci \.\/web/);
+    assert.match(raceJob, /go test -race -count=1 -timeout 5m/);
+    assert.match(raceJob, /-run 'Race\|Concurrent\|TOCTOU\|Linear'/);
+    assert.match(raceJob, /\.\/internal\/abci \.\/web/);
+  }
+  // The required "Test" context is the fan-in for both jobs, and it has to FAIL
+  // when either suite fails: without `if: always()` GitHub skips it when a
+  // dependency fails, which reports the required check as missing rather than as
+  // the failure it is.
+  for (const fanIn of [ciJob('test'), job('test')]) {
+    assert.match(fanIn, /needs: \[test-suite, test-race\]/);
+    assert.match(fanIn, /if: always\(\)/);
+    assert.match(fanIn, /needs\.test-suite\.result/);
+    assert.match(fanIn, /needs\.test-race\.result/);
   }
 });
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
+	"errors"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -489,6 +490,9 @@ func gateDecision(ctx context.Context, cfg Config, store Store, memoryID string,
 		return nil, false
 	}
 	d, err := cfg.Gate.Decide(ctx, gs, store, memoryID)
+	if errors.Is(err, ErrExempt) {
+		return nil, false
+	}
 	if err != nil {
 		logger.Warn().Err(err).Str("memory_id", memoryID).
 			Msg("write gate unavailable for this memory — voting with the built-in checks")

@@ -232,3 +232,58 @@ func TestGate_BuiltInRejectionsStillApply(t *testing.T) {
 	require.Contains(t, d.Reason, "too short")
 	require.Equal(t, 0, j.calls, "no judge call is spent on a memory the built-in checks already reject")
 }
+
+func TestGate_LeadPolicyLetsTheLeadDecideUnlessVetoed(t *testing.T) {
+	newGate := func(policy string, judges ...Judger) *Gate {
+		return &Gate{Judges: judges, Policy: policy, Neighbours: 5}
+	}
+	setup := func() *fakeGateStore {
+		gs := newFakeGateStore(rec("new", "The depot now opens at 08:00 on weekdays.", memory.TypeFact, 0.9))
+		gs.neighbours = []*memory.MemoryRecord{rec("old", "The depot opens at 07:00 on weekdays.", memory.TypeFact, 0.9)}
+		return gs
+	}
+	lead := &fakeJudge{p: map[string]float64{"lasting": 0.97, "agrees": 0.05, "replaces": 0.95}}
+	hedging := &fakeJudge{p: map[string]float64{"lasting": 0.62, "agrees": 0.05, "replaces": 0.66}}
+
+	gs := setup()
+	d, err := newGate(PolicyLead, lead, hedging).Decide(context.Background(), gs, noDups{}, "new")
+	require.NoError(t, err)
+	require.True(t, d.Accept, "a hedging second judge does not block a sure lead")
+	require.Equal(t, memory.VerdictSupersedes, gs.verdict("replaces", "old"))
+
+	gs = setup()
+	d, err = newGate(PolicyAll, lead, hedging).Decide(context.Background(), gs, noDups{}, "new")
+	require.NoError(t, err)
+	require.True(t, d.Abstain, "under PolicyAll the same hedge sends the memory to review")
+
+	objecting := &fakeJudge{p: map[string]float64{"lasting": 0.97, "agrees": 0.05, "replaces": 0.2}}
+	gs = setup()
+	_, err = newGate(PolicyLead, lead, objecting).Decide(context.Background(), gs, noDups{}, "new")
+	require.NoError(t, err)
+	require.Equal(t, memory.VerdictUncertain, gs.verdict("replaces", "old"),
+		"a clear objection (below 0.5) vetoes the lead")
+}
+
+func TestGate_DuplicatesAlwaysNeedEveryJudge(t *testing.T) {
+	gs := newFakeGateStore(rec("new", "The depot opens at 07:00 every weekday.", memory.TypeFact, 0.9))
+	gs.neighbours = []*memory.MemoryRecord{rec("old", "The depot opens at 07:00 on weekdays.", memory.TypeFact, 0.9)}
+	lead := &fakeJudge{p: map[string]float64{"lasting": 0.97, "agrees": 0.97, "replaces": 0.05}}
+	hedging := &fakeJudge{p: map[string]float64{"lasting": 0.95, "agrees": 0.7, "replaces": 0.05}}
+	_, err := (&Gate{Judges: []Judger{lead, hedging}, Policy: PolicyLead, Neighbours: 5}).Decide(
+		context.Background(), gs, noDups{}, "new")
+	require.NoError(t, err)
+	require.NotEqual(t, memory.VerdictDuplicate, gs.verdict("agrees", "old"),
+		"a duplicate joins a restatement class, so the lead alone cannot create one")
+}
+
+func TestGate_ExemptDomainsAreNotJudged(t *testing.T) {
+	m := rec("m1", "tool_x: lists files under the given directory.", memory.TypeFact, 0.95)
+	m.DomainTag = "catalog.tools"
+	gs := newFakeGateStore(m)
+	j := &fakeJudge{p: map[string]float64{"lasting": 0.01}}
+	_, err := (&Gate{Judges: []Judger{j}, ExemptDomainPrefixes: []string{"catalog."}}).Decide(
+		context.Background(), gs, noDups{}, "m1")
+	require.ErrorIs(t, err, ErrExempt)
+	require.Equal(t, 0, j.calls)
+	require.Empty(t, gs.judgements, "an exempt memory leaves no judgement behind")
+}

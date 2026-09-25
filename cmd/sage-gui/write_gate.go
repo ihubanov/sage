@@ -17,9 +17,12 @@ import (
 //
 //	SAGE_HUNCH_URL           base URL of a Hunch service (POST /v1/judge)
 //	SAGE_HUNCH_API_KEY       bearer key for it, if the service requires one
-//	SAGE_HUNCH_MODELS        comma-separated judge models; with two or more the
-//	                         gate acts only when every judge agrees (empty = the
-//	                         service's default model, one judge)
+//	SAGE_HUNCH_MODELS        comma-separated judge models, the FIRST leading
+//	                         (empty = the service's default model, one judge)
+//	SAGE_HUNCH_POLICY        "lead" (default: first judge decides, any other can
+//	                         veto) or "all" (every judge must agree)
+//	SAGE_HUNCH_EXEMPT_DOMAINS comma-separated domain prefixes whose memories are
+//	                         written by programs and are not judged
 //	SAGE_HUNCH_NEIGHBOURS    committed neighbours compared per memory (default 5)
 //	SAGE_HUNCH_DEDUP_REJECT  "1" to vote REJECT on semantic duplicates instead of
 //	                         only marking them (default off)
@@ -56,9 +59,19 @@ func writeGateFromEnv(logger zerolog.Logger) *voter.Gate {
 			g.Neighbours = n
 		}
 	}
-	g.Version = hunch.ChecksVersion + "|" + strings.Join(models, "+")
+	g.Policy = strings.TrimSpace(os.Getenv("SAGE_HUNCH_POLICY"))
+	for _, d := range strings.Split(os.Getenv("SAGE_HUNCH_EXEMPT_DOMAINS"), ",") {
+		if d = strings.TrimSpace(d); d != "" {
+			g.ExemptDomainPrefixes = append(g.ExemptDomainPrefixes, d)
+		}
+	}
+	policy := g.Policy
+	if policy != voter.PolicyAll {
+		policy = voter.PolicyLead
+	}
+	g.Version = hunch.ChecksVersion + "|" + policy + ":" + strings.Join(models, "+")
 	logger.Info().Str("hunch_url", url).Strs("judges", models).Int("neighbours", g.Neighbours).
-		Bool("dedup_reject", g.DedupReject).
+		Bool("dedup_reject", g.DedupReject).Str("policy", policy).Strs("exempt_domains", g.ExemptDomainPrefixes).
 		Msg("memory write gate ON — proposed memories are judged before this node votes")
 	return g
 }

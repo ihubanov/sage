@@ -62,14 +62,31 @@ built-in checks exactly as before and records nothing.
 
 ## Several judges
 
-`SAGE_HUNCH_MODELS=model-a,model-b` asks every check of each model. The gate
-acts only when **every** judge is at or above the act threshold and fails a
-check only when **every** judge is below the fail threshold; any disagreement
-abstains (or, for `replaces`, is recorded as `uncertain` and never acted on).
-Judges from different model families have different blind spots — one hedges on
-unit conversions, another confidently calls compatible opposite events
-("some arrived" / "some left") replacements — so requiring agreement removes
-most confident-wrong marks at the cost of one extra call per check.
+`SAGE_HUNCH_MODELS=model-a,model-b` asks every check of each model; the first
+model **leads**. Under the default policy (`SAGE_HUNCH_POLICY=lead`) a check
+passes when the lead is at or above the act threshold and **no other judge
+clearly objects** (below the fail threshold); it fails only when every judge is
+below the fail threshold. `SAGE_HUNCH_POLICY=all` instead requires every judge
+to reach the act threshold. **Duplicate links always require every judge**,
+whatever the policy: a duplicate joins two memories into one restatement
+class, so a false one would hide a refinement with its original.
+
+Judges from different model families have different blind spots — one hedges
+on unit conversions and on terse technical text, another confidently calls
+compatible opposite events ("some arrived" / "some left") replacements. On a
+real memory store with two judges, `all` sent about a quarter of genuine facts
+and most tool descriptions to review (one judge hedging); `lead` cut that to
+about a tenth of genuine facts and a few percent of tool descriptions while
+still rejecting no genuine fact, and rejected the same share of session
+remarks.
+
+## Program-written memories
+
+Catalog entries, generated records and other memories written by programs
+rather than distilled from a conversation should not be asked "is this about
+the world or about the session?" — in testing, most machine-generated records
+were rejected by that question. List their domain prefixes in
+`SAGE_HUNCH_EXEMPT_DOMAINS`; the built-in checks apply to them as before.
 
 ## Configuration (personal node)
 
@@ -77,7 +94,9 @@ most confident-wrong marks at the cost of one extra call per check.
 |---|---|
 | `SAGE_HUNCH_URL` | Hunch service base URL. **Unset = gate off.** |
 | `SAGE_HUNCH_API_KEY` | bearer key, if the service needs one |
-| `SAGE_HUNCH_MODELS` | comma-separated judge models (empty = service default, one judge) |
+| `SAGE_HUNCH_MODELS` | comma-separated judge models, first one leads (empty = service default, one judge) |
+| `SAGE_HUNCH_POLICY` | `lead` (default) or `all` — see "Several judges" |
+| `SAGE_HUNCH_EXEMPT_DOMAINS` | comma-separated domain prefixes of program-written memories, not judged |
 | `SAGE_HUNCH_NEIGHBOURS` | committed neighbours compared per memory (default 5, 0 = off) |
 | `SAGE_HUNCH_DEDUP_REJECT` | `1` to reject semantic duplicates instead of marking them |
 | `SAGE_HUNCH_TIMEOUT` | judge budget per memory (default `60s`) |

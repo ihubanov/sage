@@ -2,6 +2,7 @@ package voter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -28,15 +29,32 @@ import (
 // Everything here is a per-node opinion. It shapes this node's vote and this
 // node's annotations, never consensus state directly.
 type Gate struct {
-	// Judges are consulted on every check. With more than one, the gate acts
-	// (votes, marks) only when EVERY judge is at or above ActAt, and fails a
-	// check only when every judge is below RejectBelow; any disagreement is an
-	// abstain. Judges from different model families have different blind
-	// spots (one hedges on arithmetic, another confidently calls compatible
-	// opposite events — arrived/departed — replacements), so requiring
-	// agreement removes most confident-wrong marks at the cost of one more
-	// call per check.
+	// Judges are consulted on every check; see Policy for how several are
+	// combined. Judges from different model families have different blind
+	// spots (one hedges on arithmetic and on terse technical text, another
+	// confidently calls compatible opposite events — arrived/departed —
+	// replacements), so a second judge is a cheap guard against the first's
+	// confident mistakes.
 	Judges []Judger
+	// Policy combines several judges. PolicyLead (default): the FIRST judge
+	// leads — a check passes when the lead is at or above ActAt and no other
+	// judge is below RejectBelow (a clear objection vetoes); it fails only when
+	// every judge is below RejectBelow. PolicyAll: every judge must be at or
+	// above ActAt to pass. Duplicate links always use PolicyAll whatever this
+	// says: a duplicate joins two memories into one restatement class, so a
+	// false one hides a refinement with its original.
+	//
+	// Measured on a real memory store (two judges): requiring all judges sent
+	// a quarter of genuine facts and most tool descriptions to review, because
+	// one judge hedges on terse text; the lead-with-veto rule cut review to
+	// about a tenth of genuine facts while still rejecting none of them.
+	Policy string
+	// ExemptDomainPrefixes lists domains whose memories are written by
+	// programs (catalogs, generated records), not distilled from a
+	// conversation. The gate does not judge them; the built-in checks apply.
+	// Asking "is this about the world or about the session?" of a machine
+	// record measures nothing useful and rejected most of them in testing.
+	ExemptDomainPrefixes []string
 	// ActAt is the probability at or above which a verdict is acted on (vote,
 	// mark). Default 0.9.
 	ActAt float64
@@ -104,40 +122,84 @@ func (g *Gate) defaults() Gate {
 	if c.Version == "" {
 		c.Version = hunch.ChecksVersion
 	}
+	if c.Policy != PolicyAll {
+		c.Policy = PolicyLead
+	}
 	return c
 }
 
-// band maps the judges' lowest and highest probability to pass / abstain /
-// reject: pass needs every judge at or above ActAt, reject needs every judge
-// below RejectBelow.
-func (g Gate) band(lo, hi float64) string {
+// Judge-combination policies (see Gate.Policy).
+const (
+	PolicyLead = "lead"
+	PolicyAll  = "all"
+)
+
+// answer is every judge's p for one check.
+type answer struct{ lead, lo, hi float64 }
+
+// acts reports whether the check clears the act threshold under policy.
+func (g Gate) acts(a answer, policy string) bool {
+	if policy == PolicyAll {
+		return a.lo >= g.ActAt
+	}
+	return a.lead >= g.ActAt && a.lo >= g.RejectBelow
+}
+
+// band maps an answer to pass / abstain / reject under the gate's policy:
+// reject always needs every judge below RejectBelow.
+func (g Gate) band(a answer) string {
 	switch {
-	case lo >= g.ActAt:
+	case g.acts(a, g.Policy):
 		return memory.VerdictPass
-	case hi < g.RejectBelow:
+	case a.hi < g.RejectBelow:
 		return memory.VerdictReject
 	default:
 		return memory.VerdictAbstain
 	}
 }
 
-// ask puts one check to every judge and returns the lowest and highest p.
-func (g Gate) ask(ctx context.Context, judgeContext any, id string, check hunch.Check) (lo, hi float64, err error) {
-	lo, hi = 1, 0
-	for _, j := range g.Judges {
+// recorded is the p stored with a verdict: the value the threshold was
+// applied to (the lead's under PolicyLead, the lowest under PolicyAll).
+func (g Gate) recorded(a answer) float64 {
+	if g.Policy == PolicyAll {
+		return a.lo
+	}
+	return a.lead
+}
+
+// ask puts one check to every judge.
+func (g Gate) ask(ctx context.Context, judgeContext any, id string, check hunch.Check) (answer, error) {
+	a := answer{lo: 1}
+	for i, j := range g.Judges {
 		ps, err := j.YesNo(ctx, judgeContext, map[string]hunch.Check{id: check})
 		if err != nil {
-			return 0, 0, err
+			return answer{}, err
 		}
 		p := ps[id]
-		if p < lo {
-			lo = p
+		if i == 0 {
+			a.lead = p
 		}
-		if p > hi {
-			hi = p
+		if p < a.lo {
+			a.lo = p
+		}
+		if p > a.hi {
+			a.hi = p
 		}
 	}
-	return lo, hi, nil
+	return a, nil
+}
+
+// ErrExempt means the memory's domain is exempt from the gate; the caller
+// uses the built-in checks.
+var ErrExempt = errors.New("voter: domain exempt from the write gate")
+
+func (g Gate) exempt(domain string) bool {
+	for _, p := range g.ExemptDomainPrefixes {
+		if p != "" && strings.HasPrefix(domain, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // Decide runs the gate for one proposed memory. A memory the gate has already
@@ -167,6 +229,9 @@ func (g *Gate) Decide(ctx context.Context, gs GateStore, dup DupChecker, memoryI
 	rec, err := gs.GetMemory(ctx, memoryID)
 	if err != nil {
 		return GateDecision{}, err
+	}
+	if cfg.exempt(rec.DomainTag) {
+		return GateDecision{}, ErrExempt
 	}
 	jctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
@@ -205,12 +270,13 @@ func (g *Gate) Decide(ctx context.Context, gs GateStore, dup DupChecker, memoryI
 	if evidence, ok, eerr := gs.MemoryEvidence(ctx, memoryID); eerr != nil {
 		return GateDecision{}, eerr
 	} else if ok && strings.TrimSpace(evidence) != "" {
-		p, hi, jerr := cfg.ask(jctx, map[string]string{"memory": rec.Content, "evidence": evidence},
+		ans, jerr := cfg.ask(jctx, map[string]string{"memory": rec.Content, "evidence": evidence},
 			"supported", hunch.Supported)
 		if jerr != nil {
 			return GateDecision{}, jerr
 		}
-		v := cfg.band(p, hi)
+		p := cfg.recorded(ans)
+		v := cfg.band(ans)
 		add("supported", "", p, v)
 		switch v {
 		case memory.VerdictReject:
@@ -238,11 +304,12 @@ func (g *Gate) Decide(ctx context.Context, gs GateStore, dup DupChecker, memoryI
 		return finish(GateDecision{Reason: base.Reason})
 	}
 
-	p, hi, err := cfg.ask(jctx, map[string]string{"memory": rec.Content}, "lasting", hunch.Lasting)
+	ans, err := cfg.ask(jctx, map[string]string{"memory": rec.Content}, "lasting", hunch.Lasting)
 	if err != nil {
 		return GateDecision{}, err
 	}
-	v := cfg.band(p, hi)
+	p := cfg.recorded(ans)
+	v := cfg.band(ans)
 	add("lasting", "", p, v)
 	switch v {
 	case memory.VerdictReject:
@@ -261,17 +328,20 @@ func (g *Gate) Decide(ctx context.Context, gs GateStore, dup DupChecker, memoryI
 			if n == nil || n.MemoryID == memoryID {
 				continue
 			}
-			a, _, jerr := cfg.ask(jctx, map[string]string{"a": n.Content, "b": rec.Content}, "agrees", hunch.Agrees)
+			ansA, jerr := cfg.ask(jctx, map[string]string{"a": n.Content, "b": rec.Content}, "agrees", hunch.Agrees)
 			if jerr != nil {
 				return GateDecision{}, jerr
 			}
-			r, rHi, jerr := cfg.ask(jctx, map[string]string{"old": n.Content, "new": rec.Content}, "replaces", hunch.Replaces)
+			ansR, jerr := cfg.ask(jctx, map[string]string{"old": n.Content, "new": rec.Content}, "replaces", hunch.Replaces)
 			if jerr != nil {
 				return GateDecision{}, jerr
 			}
+			// Duplicates always need every judge (see Gate.Policy); replacements
+			// follow the gate's policy.
+			a, r := ansA.lo, cfg.recorded(ansR)
 			short := shortID(n.MemoryID)
 			switch {
-			case a >= cfg.ActAt:
+			case cfg.acts(ansA, PolicyAll):
 				// A restatement is not a replacement, even if the judge also
 				// leans "replaces": the duplicate verdict wins.
 				add("agrees", n.MemoryID, a, memory.VerdictDuplicate)
@@ -280,11 +350,11 @@ func (g *Gate) Decide(ctx context.Context, gs GateStore, dup DupChecker, memoryI
 					return finish(GateDecision{Reason: fmt.Sprintf("duplicate of %s (p=%.2f)", short, a)})
 				}
 				notes = append(notes, fmt.Sprintf("duplicate of %s (p=%.2f)", short, a))
-			case r >= cfg.ActAt:
+			case cfg.acts(ansR, cfg.Policy):
 				add("agrees", n.MemoryID, a, memory.VerdictNone)
 				add("replaces", n.MemoryID, r, memory.VerdictSupersedes)
 				notes = append(notes, fmt.Sprintf("supersedes %s (p=%.2f)", short, r))
-			case rHi >= cfg.RejectBelow:
+			case ansR.hi >= cfg.RejectBelow:
 				// Uncertain replacement: recorded for the review queue, never
 				// acted on. It does not block the new memory itself.
 				add("agrees", n.MemoryID, a, memory.VerdictNone)

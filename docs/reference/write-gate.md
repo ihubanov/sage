@@ -131,6 +131,9 @@ were rejected by that question. List their domain prefixes in
   "4000 m", both just over 0.9). Requiring two judges from different families
   to agree gave zero false duplicates on that set while keeping every true
   restatement. Synthetic-set results only; real pairs decide.
+- **Memories saved without an embedding** (the embedder was unavailable and the
+  vector is repaired later) are judged without the neighbour comparison, so
+  they are never compared for duplicates or corrections.
 - **Known blind spots:** quantities in different units (normalise in code
   before judging); opposite-direction statements that can both be true. Marks
   are reversible precisely so that these cost a hidden row, not lost data.

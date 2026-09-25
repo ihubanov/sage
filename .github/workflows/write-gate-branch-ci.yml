@@ -30,7 +30,7 @@ jobs:
       - name: Vet touched packages
         run: go vet ./internal/hunch ./internal/voter ./internal/store ./internal/memory ./api/rest ./web ./cmd/sage-gui
       - name: New tests (verbose)
-        run: go test -count=1 -v -run 'TestGate_|TestWriteGate_|TestYesNo_' ./internal/hunch ./internal/voter ./internal/store
+        run: go test -count=1 -v -run 'TestGate_|TestWriteGate|TestYesNo_' ./internal/hunch ./internal/voter ./internal/store ./cmd/sage-gui
       - name: Full tests of touched packages
         run: go test -count=1 -timeout 30m ./internal/hunch ./internal/voter ./internal/store ./internal/memory ./api/rest ./web ./cmd/sage-gui
   lint:

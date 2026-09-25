@@ -95,8 +95,9 @@ type QueryMemoryRequest struct {
 	// of the listed values (OR semantics) on both supported SQL backends.
 	Tags []string `json:"tags,omitempty"`
 	// IncludeSuperseded returns memories the write gate judged to be
-	// superseded by a later committed memory. By default they are hidden (not
-	// deleted); each result then carries superseded_by.
+	// superseded by a later committed memory when the node hides them
+	// (SAGE_HUNCH_HIDE_SUPERSEDED=1); by default they are only annotated with
+	// superseded_by and this flag changes nothing.
 	IncludeSuperseded bool `json:"include_superseded,omitempty"`
 	// Federated opts this recall into the v11 cross-network proxy: results
 	// from every active cross_fed peer are merged in (read-only, stamped with
@@ -291,7 +292,9 @@ type MemoryResult struct {
 	// never a guessed one.
 	JudgedConfidence *float64 `json:"judged_confidence,omitempty"`
 	// SupersededBy names the committed memory the write gate judged to replace
-	// this one. Only present when include_superseded was requested.
+	// this one. With hiding off (the default) it is an annotation on every
+	// result; with hiding on, superseded results appear only under
+	// include_superseded.
 	SupersededBy string `json:"superseded_by,omitempty"`
 	// CorroborationCount is the number of distinct corroborations backing this
 	// memory — the multiplier behind the corroboration boost in ConfidenceScore.
@@ -2781,8 +2784,9 @@ type SearchMemoryRequest struct {
 	TopK          int      `json:"top_k,omitempty"`
 	Tags          []string `json:"tags,omitempty"`
 	// IncludeSuperseded returns memories the write gate judged to be
-	// superseded by a later committed memory. By default they are hidden (not
-	// deleted); each result then carries superseded_by.
+	// superseded by a later committed memory when the node hides them
+	// (SAGE_HUNCH_HIDE_SUPERSEDED=1); by default they are only annotated with
+	// superseded_by and this flag changes nothing.
 	IncludeSuperseded bool `json:"include_superseded,omitempty"`
 	// v11 federated recall opt-in — see QueryMemoryRequest.
 	Federated         bool                         `json:"federated,omitempty"`
@@ -3091,8 +3095,9 @@ type HybridSearchMemoryRequest struct {
 	TopK              int               `json:"top_k,omitempty"`
 	Tags              []string          `json:"tags,omitempty"`
 	// IncludeSuperseded returns memories the write gate judged to be
-	// superseded by a later committed memory. By default they are hidden (not
-	// deleted); each result then carries superseded_by.
+	// superseded by a later committed memory when the node hides them
+	// (SAGE_HUNCH_HIDE_SUPERSEDED=1); by default they are only annotated with
+	// superseded_by and this flag changes nothing.
 	IncludeSuperseded bool `json:"include_superseded,omitempty"`
 	// v11 federated recall opt-in — see QueryMemoryRequest.
 	Federated         bool                         `json:"federated,omitempty"`

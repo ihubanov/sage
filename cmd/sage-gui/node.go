@@ -1314,6 +1314,7 @@ func runServe(startupProof string) (rerr error) {
 		logger.Error().Err(keyErr).Msg("REST governance disabled: invalid validator signing key")
 	}
 	restServer.SetSuppCache(app.SuppCache)
+	restServer.SetWriteGateHideSuperseded(os.Getenv("SAGE_HUNCH_HIDE_SUPERSEDED") == "1")
 	// Backpressure signals: hand the REST layer the REAL runtime mempool cap.
 	// cometCfg comes from config.DefaultConfig() above with Mempool.Size never
 	// overridden (CometBFT default 5000) — plumbing it instead of hardcoding

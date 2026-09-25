@@ -22,13 +22,22 @@ type writeGateEvidenceStore interface {
 	SetMemoryEvidence(ctx context.Context, memoryID, evidence string) error
 }
 
+// SetWriteGateHideSuperseded makes default recall HIDE memories the write gate
+// marked as superseded. Off by default: marks are then annotations only
+// (superseded_by on each result). Measured on a real store, the supersede
+// judgement was right about 70% of the time on memories it had not been tuned
+// on — useful as a hint, not reliable enough to silently remove memories from
+// every recall.
+func (s *Server) SetWriteGateHideSuperseded(hide bool) { s.writeGateHideSuperseded.Store(hide) }
+
 // applyWriteGateRecallFilter hides memories the write gate judged to be
-// superseded by a later committed memory, unless the caller asked for them.
-// It is a server-side default for every recall path (vector, text, hybrid), so
-// a client that never heard of the gate cannot recall a corrected fact as if it
-// were current. Hidden is not deleted: include_superseded returns them.
+// superseded by a later committed memory, when hiding is enabled and the caller
+// did not ask for them. It is server-side for every recall path (vector, text,
+// hybrid), so a client that never heard of the gate cannot recall a corrected
+// fact as if it were current. Hidden is not deleted: include_superseded
+// returns them.
 func (s *Server) applyWriteGateRecallFilter(ctx context.Context, opts *store.QueryOptions, includeSuperseded bool) {
-	if includeSuperseded {
+	if includeSuperseded || !s.writeGateHideSuperseded.Load() {
 		return
 	}
 	gs, ok := s.store.(writeGateRecallStore)

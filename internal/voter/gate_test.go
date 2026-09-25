@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -14,12 +15,15 @@ import (
 
 // fakeJudge answers each check id with a fixed p (or an error) and counts calls.
 type fakeJudge struct {
+	mu    sync.Mutex
 	p     map[string]float64
 	err   error
 	calls int
 }
 
 func (f *fakeJudge) YesNo(_ context.Context, _ any, checks map[string]hunch.Check) (map[string]float64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls++
 	if f.err != nil {
 		return nil, f.err

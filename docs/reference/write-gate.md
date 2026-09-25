@@ -39,9 +39,12 @@ Probabilities fall in three bands (defaults): **act at ≥ 0.9**, **fail below
 - **Supersedes** (`replaces` ≥ 0.9): the new memory is accepted and the old one
   is **marked**, node-locally, as superseded. It is **never challenged or
   deprecated** — SAGE has no hard delete and a deprecation cannot be undone, so
-  a wrong verdict would be data loss. A marked memory is hidden from default
-  recall and returned with `include_superseded: true` (with `superseded_by`).
-  A mark only takes effect once the correcting memory is itself committed.
+  a wrong verdict would be data loss. **By default a mark is an annotation
+  only:** every recall result carries `superseded_by`, and nothing is hidden.
+  With `SAGE_HUNCH_HIDE_SUPERSEDED=1` marked memories are hidden from default
+  recall and returned with `include_superseded: true`. A mark only takes effect
+  once the correcting memory is itself committed. Only memories **by the same
+  author** are compared (see "Measured on a real store").
 - **Duplicate** (`agrees` ≥ 0.9): marked, and the new memory is still accepted,
   unless `SAGE_HUNCH_DEDUP_REJECT=1`. Enable that only after measuring the
   duplicate check's false-positive rate on your own memories: a rejected memory
@@ -59,6 +62,26 @@ built-in "facts need ≥ 0.7" rule and is returned on recall.
 
 If the judge is unreachable or returns no verdict, the node votes with the
 built-in checks exactly as before and records nothing.
+
+## Measured on a real store
+
+Two judges (lead-with-veto), one real personal memory store, a few hundred
+memories; small samples, hand-checked by one reader.
+
+- **Lasting:** 194 memories an operator had cleaned up as stale session state:
+  60% rejected, and every one the gate let through, read by hand, was a user
+  decision or preference rather than a session remark. 38 genuine written facts:
+  **none rejected**, about 1 in 10 sent to review.
+- **Supersede, replaying the gate's own neighbour search** (each memory against
+  its nearest older memories in the same domain): with any author as a
+  candidate, only 19 of 43 marks were right — 15 of the wrong ones were
+  first-person records of *different* agents ("my identity is ...") judged as
+  one subject. Restricting candidates to the same author removed all 15 and no
+  correct mark. On a **held-out** sample of 120 other memories, same author,
+  20 marks: **14 right, 2 partly right, 4 wrong** (different issues or steps in
+  the same line of work). That is why marks are annotations by default.
+- **Latency:** a judge call took ~0.6 s (median); all calls for one memory run
+  concurrently, so the vote waits about one call, not the sum.
 
 ## Several judges
 

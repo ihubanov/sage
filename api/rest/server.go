@@ -40,6 +40,9 @@ type EventCallback func(eventType, memoryID, domain, content string, data any)
 
 type Server struct {
 	privateMedia atomic.Pointer[store.PrivateMediaStore]
+	// writeGateHideSuperseded turns the write gate's supersede marks from
+	// annotations into a default-recall filter (see write_gate.go).
+	writeGateHideSuperseded atomic.Bool
 
 	router      chi.Router
 	cometbftRPC string

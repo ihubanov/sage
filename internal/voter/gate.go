@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/l33tdawg/sage/internal/hunch"
@@ -167,15 +168,29 @@ func (g Gate) recorded(a answer) float64 {
 	return a.lead
 }
 
-// ask puts one check to every judge.
+// ask puts one check to every judge, concurrently.
 func (g Gate) ask(ctx context.Context, judgeContext any, id string, check hunch.Check) (answer, error) {
-	a := answer{lo: 1}
+	ps := make([]float64, len(g.Judges))
+	errs := make([]error, len(g.Judges))
+	var wg sync.WaitGroup
 	for i, j := range g.Judges {
-		ps, err := j.YesNo(ctx, judgeContext, map[string]hunch.Check{id: check})
-		if err != nil {
-			return answer{}, err
+		wg.Add(1)
+		go func(i int, j Judger) {
+			defer wg.Done()
+			res, err := j.YesNo(ctx, judgeContext, map[string]hunch.Check{id: check})
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			ps[i] = res[id]
+		}(i, j)
+	}
+	wg.Wait()
+	a := answer{lo: 1}
+	for i, p := range ps {
+		if errs[i] != nil {
+			return answer{}, errs[i]
 		}
-		p := ps[id]
 		if i == 0 {
 			a.lead = p
 		}
@@ -187,6 +202,51 @@ func (g Gate) ask(ctx context.Context, judgeContext any, id string, check hunch.
 		}
 	}
 	return a, nil
+}
+
+// pairAnswers holds the judges' answers for one (neighbour, new) pair.
+type pairAnswers struct {
+	agrees, replaces answer
+	err              error
+}
+
+// askPairs asks the duplicate and replacement checks for every neighbour at
+// once. Measured judge latency is ~0.6 s per call; asked one after another,
+// five neighbours x two checks x two judges kept each memory waiting ~14 s
+// for its vote. Concurrently it is about one call's time.
+func (g Gate) askPairs(ctx context.Context, neighbours []*memory.MemoryRecord, content string) []pairAnswers {
+	out := make([]pairAnswers, len(neighbours))
+	var wg sync.WaitGroup
+	for i, n := range neighbours {
+		if n == nil {
+			continue
+		}
+		wg.Add(1)
+		go func(i int, old string) {
+			defer wg.Done()
+			var aw, rw sync.WaitGroup
+			var aErr, rErr error
+			aw.Add(1)
+			go func() {
+				defer aw.Done()
+				out[i].agrees, aErr = g.ask(ctx, map[string]string{"a": old, "b": content}, "agrees", hunch.Agrees)
+			}()
+			rw.Add(1)
+			go func() {
+				defer rw.Done()
+				out[i].replaces, rErr = g.ask(ctx, map[string]string{"old": old, "new": content}, "replaces", hunch.Replaces)
+			}()
+			aw.Wait()
+			rw.Wait()
+			if aErr != nil {
+				out[i].err = aErr
+			} else {
+				out[i].err = rErr
+			}
+		}(i, n.Content)
+	}
+	wg.Wait()
+	return out
 }
 
 // ErrExempt means the memory's domain is exempt from the gate; the caller
@@ -304,7 +364,18 @@ func (g *Gate) Decide(ctx context.Context, gs GateStore, dup DupChecker, memoryI
 		return finish(GateDecision{Reason: base.Reason})
 	}
 
+	// The neighbour comparison runs alongside the lasting check.
+	var neighbours []*memory.MemoryRecord
+	if cfg.Neighbours > 0 && len(rec.Embedding) > 0 {
+		var nerr error
+		if neighbours, nerr = gs.GateNeighbours(ctx, rec, cfg.Neighbours); nerr != nil {
+			return GateDecision{}, nerr
+		}
+	}
+	pairsDone := make(chan []pairAnswers, 1)
+	go func() { pairsDone <- cfg.askPairs(jctx, neighbours, rec.Content) }()
 	ans, err := cfg.ask(jctx, map[string]string{"memory": rec.Content}, "lasting", hunch.Lasting)
+	pairs := <-pairsDone
 	if err != nil {
 		return GateDecision{}, err
 	}
@@ -319,23 +390,15 @@ func (g *Gate) Decide(ctx context.Context, gs GateStore, dup DupChecker, memoryI
 		notes = append(notes, fmt.Sprintf("lasting-memory uncertain (p=%.2f)", p))
 	}
 
-	if cfg.Neighbours > 0 && len(rec.Embedding) > 0 {
-		neighbours, nerr := gs.GateNeighbours(ctx, rec, cfg.Neighbours)
-		if nerr != nil {
-			return GateDecision{}, nerr
-		}
-		for _, n := range neighbours {
+	{
+		for i, n := range neighbours {
 			if n == nil || n.MemoryID == memoryID {
 				continue
 			}
-			ansA, jerr := cfg.ask(jctx, map[string]string{"a": n.Content, "b": rec.Content}, "agrees", hunch.Agrees)
-			if jerr != nil {
-				return GateDecision{}, jerr
+			if pairs[i].err != nil {
+				return GateDecision{}, pairs[i].err
 			}
-			ansR, jerr := cfg.ask(jctx, map[string]string{"old": n.Content, "new": rec.Content}, "replaces", hunch.Replaces)
-			if jerr != nil {
-				return GateDecision{}, jerr
-			}
+			ansA, ansR := pairs[i].agrees, pairs[i].replaces
 			// Duplicates always need every judge (see Gate.Policy); replacements
 			// follow the gate's policy.
 			a, r := ansA.lo, cfg.recorded(ansR)

@@ -8,16 +8,27 @@ COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS  = -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
+# Local builds target THIS machine, not whatever architecture the `go` toolchain
+# happens to be. An Intel toolchain on Apple silicon defaults GOARCH to amd64, so
+# a plain `go build` silently emits binaries that die with "bad CPU type in
+# executable" on the machine that produced them. Override BUILD_GOOS/BUILD_GOARCH
+# (or set them in the environment) for a deliberate cross build.
+HOST_OS      := $(shell uname -s | tr '[:upper:]' '[:lower:]')
+HOST_MACHINE := $(shell uname -m)
+BUILD_GOOS   ?= $(HOST_OS)
+BUILD_GOARCH ?= $(if $(filter arm64 aarch64,$(HOST_MACHINE)),arm64,$(if $(filter x86_64 amd64,$(HOST_MACHINE)),amd64,$(HOST_MACHINE)))
+GOBUILD       = GOOS=$(BUILD_GOOS) GOARCH=$(BUILD_GOARCH) go build
+
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
 build: ## Build the ABCI application binary
-	go build -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/amid
+	$(GOBUILD) -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/amid
 
 build-all: ## Build all binaries (amid, sage-gui, sage-cli)
-	go build -ldflags "$(LDFLAGS)" -o bin/amid ./cmd/amid
-	go build -ldflags "$(LDFLAGS)" -o bin/sage-gui ./cmd/sage-gui
-	go build -ldflags "$(LDFLAGS)" -o bin/sage-cli ./cmd/sage-cli
+	$(GOBUILD) -ldflags "$(LDFLAGS)" -o bin/amid ./cmd/amid
+	$(GOBUILD) -ldflags "$(LDFLAGS)" -o bin/sage-gui ./cmd/sage-gui
+	$(GOBUILD) -ldflags "$(LDFLAGS)" -o bin/sage-cli ./cmd/sage-cli
 
 test: ## Run unit tests
 	go test ./... -v -count=1 -race -timeout 30m

@@ -53,6 +53,11 @@ type SubmitMemoryRequest struct {
 	// by the caller's signed request and consensus-bound to the exact task and
 	// assignee.
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	// Evidence is optional source material the memory is based on. It is kept
+	// NODE-LOCAL (never in the transaction) and lets the write gate judge
+	// whether the memory is supported by it. Without evidence a memory is
+	// simply unjudged.
+	Evidence string `json:"evidence,omitempty"`
 }
 
 // SubmitMemoryResponse is the JSON body for a successful submission.
@@ -89,6 +94,10 @@ type QueryMemoryRequest struct {
 	// Tags, when non-empty, restricts results to memories tagged with ANY
 	// of the listed values (OR semantics) on both supported SQL backends.
 	Tags []string `json:"tags,omitempty"`
+	// IncludeSuperseded returns memories the write gate judged to be
+	// superseded by a later committed memory. By default they are hidden (not
+	// deleted); each result then carries superseded_by.
+	IncludeSuperseded bool `json:"include_superseded,omitempty"`
 	// Federated opts this recall into the v11 cross-network proxy: results
 	// from every active cross_fed peer are merged in (read-only, stamped with
 	// source_chain_id). FederateChains narrows the fan-out to named chains
@@ -276,6 +285,14 @@ type MemoryResult struct {
 	// it); non-nil for local memories, nil for federated results, where only the
 	// serving peer's already-decayed value is available. (v11.2.0)
 	InitialConfidence *float64 `json:"initial_confidence,omitempty"`
+	// JudgedConfidence is the write gate's probability that the memory is
+	// supported by the evidence submitted with it. Absent when no evidence was
+	// submitted or the gate is off: an unjudged memory has no judged score,
+	// never a guessed one.
+	JudgedConfidence *float64 `json:"judged_confidence,omitempty"`
+	// SupersededBy names the committed memory the write gate judged to replace
+	// this one. Only present when include_superseded was requested.
+	SupersededBy string `json:"superseded_by,omitempty"`
 	// CorroborationCount is the number of distinct corroborations backing this
 	// memory — the multiplier behind the corroboration boost in ConfidenceScore.
 	// Exposing it lets readers distinguish a low score caused by no corroboration
@@ -1409,6 +1426,10 @@ func (s *Server) handleSubmitMemory(w http.ResponseWriter, r *http.Request) {
 		req.Tags = consensusTags
 	}
 
+	if !s.storeSubmittedEvidence(w, r, memoryID, req.Evidence) {
+		return
+	}
+
 	submitTx := &tx.ParsedTx{
 		Type: tx.TxTypeMemorySubmit,
 		MemorySubmit: &tx.MemorySubmit{
@@ -2052,6 +2073,7 @@ func (s *Server) handleQueryMemory(w http.ResponseWriter, r *http.Request) {
 		opts.SubmittingAgents = allowedAgents
 	}
 	opts.CandidateFilter = s.appV23RecallCandidateFilter(queryAgentID, start)
+	s.applyWriteGateRecallFilter(r.Context(), &opts, req.IncludeSuperseded)
 	// min_confidence is a DECAYED-confidence floor (rest-api.md): hand it to the
 	// store as DecayFloor, which filters the decayed value over the full candidate
 	// set before the top-K trim, pinned to `start` so it matches what we serialize.
@@ -2224,6 +2246,7 @@ func (s *Server) handleQueryMemory(w http.ResponseWriter, r *http.Request) {
 		emitContentlessRetrievalActivity(s.OnEvent, "recall", len(results))
 	}
 
+	s.annotateWriteGateResults(r.Context(), results)
 	resp := QueryMemoryResponse{
 		Results:    results,
 		TotalCount: len(results),
@@ -2757,6 +2780,10 @@ type SearchMemoryRequest struct {
 	StatusFilter  string   `json:"status_filter,omitempty"`
 	TopK          int      `json:"top_k,omitempty"`
 	Tags          []string `json:"tags,omitempty"`
+	// IncludeSuperseded returns memories the write gate judged to be
+	// superseded by a later committed memory. By default they are hidden (not
+	// deleted); each result then carries superseded_by.
+	IncludeSuperseded bool `json:"include_superseded,omitempty"`
 	// v11 federated recall opt-in — see QueryMemoryRequest.
 	Federated         bool                         `json:"federated,omitempty"`
 	FederateChains    []string                     `json:"federate_chains,omitempty"`
@@ -2856,6 +2883,7 @@ func (s *Server) handleSearchMemory(w http.ResponseWriter, r *http.Request) {
 		opts.SubmittingAgents = allowedAgents
 	}
 	opts.CandidateFilter = s.appV23RecallCandidateFilter(queryAgentID, start)
+	s.applyWriteGateRecallFilter(r.Context(), &opts, req.IncludeSuperseded)
 	// min_confidence is a DECAYED-confidence floor (rest-api.md): hand it to the
 	// store as DecayFloor, which filters the decayed value over the full candidate
 	// set before the top-K trim, pinned to `start` so it matches what we serialize.
@@ -3012,6 +3040,7 @@ func (s *Server) handleSearchMemory(w http.ResponseWriter, r *http.Request) {
 		emitContentlessRetrievalActivity(s.OnEvent, "search", len(results))
 	}
 
+	s.annotateWriteGateResults(r.Context(), results)
 	resp := QueryMemoryResponse{
 		Results:    results,
 		TotalCount: len(results),
@@ -3061,6 +3090,10 @@ type HybridSearchMemoryRequest struct {
 	StatusFilter      string            `json:"status_filter,omitempty"`
 	TopK              int               `json:"top_k,omitempty"`
 	Tags              []string          `json:"tags,omitempty"`
+	// IncludeSuperseded returns memories the write gate judged to be
+	// superseded by a later committed memory. By default they are hidden (not
+	// deleted); each result then carries superseded_by.
+	IncludeSuperseded bool `json:"include_superseded,omitempty"`
 	// v11 federated recall opt-in — see QueryMemoryRequest.
 	Federated         bool                         `json:"federated,omitempty"`
 	FederateChains    []string                     `json:"federate_chains,omitempty"`
@@ -3187,6 +3220,7 @@ func (s *Server) handleHybridSearchMemory(w http.ResponseWriter, r *http.Request
 		opts.SubmittingAgents = allowedAgents
 	}
 	opts.CandidateFilter = s.appV23RecallCandidateFilter(queryAgentID, start)
+	s.applyWriteGateRecallFilter(r.Context(), &opts, req.IncludeSuperseded)
 	// min_confidence is a DECAYED-confidence floor (rest-api.md): hand it to the
 	// store as DecayFloor. Carried on the fused opts, both hybrid sub-queries filter
 	// the decayed value before their trim, pinned to `start` for serialize-parity.
@@ -3340,6 +3374,7 @@ func (s *Server) handleHybridSearchMemory(w http.ResponseWriter, r *http.Request
 		emitContentlessRetrievalActivity(s.OnEvent, "hybrid", len(results))
 	}
 
+	s.annotateWriteGateResults(r.Context(), results)
 	resp := QueryMemoryResponse{
 		Results:    results,
 		TotalCount: len(results),

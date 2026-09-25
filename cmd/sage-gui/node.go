@@ -2370,8 +2370,9 @@ func runServe(startupProof string) (rerr error) {
 		}
 		// Health wired in so /ready's "voter" block tracks liveness + the
 		// proposed backlog (nil-safe: amid starts the voter without one).
+		gate := writeGateFromEnv(logger)
 		startWorker(func() {
-			voter.Run(ctx, app, sqliteStore, voter.Config{Key: selfKey, CometRPC: cometRPC, PollInterval: pollInterval, Health: health}, logger)
+			voter.Run(ctx, app, sqliteStore, voter.Config{Key: selfKey, CometRPC: cometRPC, PollInterval: pollInterval, Health: health, Gate: gate}, logger)
 		})
 	case cfg.Voter.Required:
 		// Normally unreachable — the pre-serve gate before StartChain already refused

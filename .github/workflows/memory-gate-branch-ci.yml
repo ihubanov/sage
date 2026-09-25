@@ -1,0 +1,52 @@
+# TEMPORARY — runs the test suite on the write-gate branch push. Drop this
+# commit before opening any pull request.
+name: memory-gate branch CI
+
+on:
+  push:
+    branches: [feat/memory-lasting-gate]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: write-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build everything
+        run: go build ./...
+      - name: Vet touched packages
+        run: go vet ./internal/hunch ./internal/voter ./internal/store ./internal/memory ./api/rest ./web ./cmd/sage-gui
+      - name: New tests (verbose)
+        run: go test -count=1 -v -run 'TestGate_|TestMemoryGate|TestYesNo_' ./internal/hunch ./internal/voter ./internal/store ./cmd/sage-gui
+      - name: Full tests of touched packages
+        run: go test -count=1 -timeout 30m ./internal/hunch ./internal/voter ./internal/store ./internal/memory ./api/rest ./web ./cmd/sage-gui
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: golangci-lint (new issues only)
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.12.2
+          install-mode: binary
+          args: --new-from-rev=origin/main

@@ -427,7 +427,12 @@ test('PR and main CI require the same v11.9 composite proofs as release', () => 
     assert.match(suiteJob, /go test \.\/\.\.\.(?: -v)? -count=1 -timeout 30m/);
   }
   for (const raceJob of [ciJob('test-race'), job('test-race')]) {
-    assert.match(raceJob, /go test -race -count=1 -timeout 25m/);
+    // The eight shared-state packages are race-checked one GROUP PER RUNNER.
+    // Sharing one 4-core runner made internal/federation cross its per-package
+    // timeout while still making progress (main, run 36101755840), so the
+    // timeout now matches the plain suite's 30m and the assertion below still
+    // has to find every package inside the job.
+    assert.match(raceJob, /go test -race -count=1 -timeout 30m/);
     for (const sharedStatePackage of [
       './api/rest',
       './internal/store',

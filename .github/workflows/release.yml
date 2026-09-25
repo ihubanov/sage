@@ -231,10 +231,27 @@ jobs:
       - name: Run complete test suite
         run: go test ./... -count=1 -timeout 30m
 
+  # Mirrors ci.yml: one package group per runner. See that job for the evidence
+  # (internal/federation crossed a shared 4-core runner's 25-minute per-package
+  # timeout while still making progress).
   test-race:
     name: Race Checks
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: federation
+            packages: ./internal/federation
+          - group: messaging-p2p
+            packages: ./internal/mcp ./internal/p2p
+          - group: storage-snapshot
+            packages: ./internal/store ./internal/snapshot
+          - group: tx-statesync-rest
+            packages: ./internal/statesync ./internal/tx ./api/rest
+          - group: app-and-shell
+            packages: ''
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -244,22 +261,18 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Race-check shared-state boundaries
+        if: matrix.packages != ''
         run: >-
-          go test -race -count=1 -timeout 25m
-          ./api/rest
-          ./internal/store
-          ./internal/federation
-          ./internal/mcp
-          ./internal/p2p
-          ./internal/snapshot
-          ./internal/statesync
-          ./internal/tx
+          go test -race -count=1 -timeout 30m
+          ${{ matrix.packages }}
       - name: Race-check app and UI concurrency regressions
+        if: matrix.packages == ''
         run: >-
           go test -race -count=1 -timeout 5m
           -run 'Race|Concurrent|TOCTOU|Linear'
           ./internal/abci ./web
       - name: Run natter tests
+        if: matrix.packages == ''
         run: |
           cd natter
           go test ./... -count=1 -race

@@ -88,10 +88,33 @@ jobs:
       - name: Run complete test suite
         run: go test ./... -v -count=1 -timeout 30m
 
+  # ONE PACKAGE GROUP PER RUNNER. All eight race binaries used to share a single
+  # 4-core runner, where they competed for the same cores: on main (run
+  # 36101755840) internal/federation crossed its 25-minute per-package timeout
+  # and reported a package that was still making progress as hung -- the same
+  # package run alone under -race finishes in ~8.6 minutes, and every test in the
+  # dump was inside its own body, not blocked. -timeout 30m matches the plain
+  # suite's documented reasoning (a slow package is not a deadlock) and the job
+  # budget still bounds a genuine hang. The `test` fan-in is unchanged: it stays
+  # the single required "Test" context and fails when any group fails.
   test-race:
     name: Race Checks
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: federation
+            packages: ./internal/federation
+          - group: messaging-p2p
+            packages: ./internal/mcp ./internal/p2p
+          - group: storage-snapshot
+            packages: ./internal/store ./internal/snapshot
+          - group: tx-statesync-rest
+            packages: ./internal/statesync ./internal/tx ./api/rest
+          - group: app-and-shell
+            packages: ''
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -99,22 +122,18 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Race-check shared-state boundaries
+        if: matrix.packages != ''
         run: >-
-          go test -race -count=1 -timeout 25m
-          ./api/rest
-          ./internal/store
-          ./internal/federation
-          ./internal/mcp
-          ./internal/p2p
-          ./internal/snapshot
-          ./internal/statesync
-          ./internal/tx
+          go test -race -count=1 -timeout 30m
+          ${{ matrix.packages }}
       - name: Race-check app and UI concurrency regressions
+        if: matrix.packages == ''
         run: >-
           go test -race -count=1 -timeout 5m
           -run 'Race|Concurrent|TOCTOU|Linear'
           ./internal/abci ./web
       - name: Run natter tests
+        if: matrix.packages == ''
         run: |
           cd natter
           go test ./... -v -count=1 -race

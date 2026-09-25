@@ -100,6 +100,18 @@ most confident-wrong marks at the cost of one extra call per check.
   memories. Measure the checks on your own history — every correction submitted
   with `replaces_memory_id` is a labelled (old, new) pair — before relying on
   the 0.9 threshold, and before enabling duplicate rejection.
+- **The duplicate check feeds chain closure**, so a false duplicate hides a
+  refinement together with its original once either is corrected. Its v2
+  wording names "adds detail" as the look-alike but has not yet been measured
+  on real memories; until it is, pair judges from different model families in
+  `SAGE_HUNCH_MODELS`.
+  On a small synthetic set (70 decidable pairs, one run per model) v2 fixed the
+  refinement look-alike on every model tested but is a trade rather than a
+  strict improvement: one model became slightly more willing to call
+  near-misses duplicates ("site B holds 12" vs "site C holds 12"; "5 km" vs
+  "4000 m", both just over 0.9). Requiring two judges from different families
+  to agree gave zero false duplicates on that set while keeping every true
+  restatement. Synthetic-set results only; real pairs decide.
 - **Known blind spots:** quantities in different units (normalise in code
   before judging); opposite-direction statements that can both be true. Marks
   are reversible precisely so that these cost a hidden row, not lost data.

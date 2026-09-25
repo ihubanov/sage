@@ -367,8 +367,8 @@ func (s *SQLiteStore) GateAnnotationsFor(ctx context.Context, ids []string) (Gat
 	survivor := func(start string) string {
 		cur := start
 		for i := 0; i < gateClosureDepth; i++ {
-			nxt, err := s.gateCorrector(ctx, cur)
-			if err != nil || nxt == "" {
+			nxt, cerr := s.gateCorrector(ctx, cur)
+			if cerr != nil || nxt == "" {
 				return cur
 			}
 			cur = nxt

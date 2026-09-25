@@ -4,7 +4,7 @@ package hunch
 // yes_if / no_if. Wording is part of the contract: changing it changes the
 // judge's accuracy, so ChecksVersion is recorded with every judgement and must
 // be bumped whenever any wording below changes.
-const ChecksVersion = "sage-memory-checks/1"
+const ChecksVersion = "sage-memory-checks/2"
 
 // Lasting asks whether a memory belongs in long-term memory at all. The
 // failure it targets: an agent stores a remark about its own session ("the
@@ -35,12 +35,17 @@ var Replaces = Check{
 }
 
 // Agrees asks whether two memories assert the same value for the same thing
-// (a semantic duplicate, which the content-hash dedup cannot see).
+// (a semantic duplicate, which the content-hash dedup cannot see). A duplicate
+// verdict links the two into one restatement class, so a correction of either
+// hides both: a refinement wrongly called a duplicate would be hidden with its
+// original. The look-alike named here is therefore "adds detail" (v2; the
+// generic v1 wording called refinements duplicates at p=1.0 on some models).
 var Agrees = Check{
 	Kind:     "yesno",
-	Question: "Do `a` and `b` assert the SAME value for the same thing?",
-	YesIf:    "same thing and same value: they agree / restate each other",
-	NoIf:     "a different or changed value, or a different thing",
+	Question: "Do `a` and `b` assert the SAME value for the same thing, with nothing added?",
+	YesIf:    "same thing and same value, only worded differently or in other units",
+	NoIf: "a different or changed value, a different thing, or `b` adds detail or conditions that `a` " +
+		"does not state (a refinement is not a duplicate)",
 }
 
 // Supported asks whether a memory is backed by the evidence submitted with it.

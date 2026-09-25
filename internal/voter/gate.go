@@ -192,8 +192,8 @@ func (g *Gate) Decide(ctx context.Context, gs GateStore, dup DupChecker, memoryI
 		}
 		rows = append(rows, memory.Judgement{MemoryID: memoryID, Check: "final", Verdict: final,
 			Reason: truncateReason(d.Reason), JudgeVersion: cfg.Version, CreatedAt: now})
-		if err := gs.RecordJudgements(ctx, rows); err != nil {
-			return GateDecision{}, err
+		if rerr := gs.RecordJudgements(ctx, rows); rerr != nil {
+			return GateDecision{}, rerr
 		}
 		return d, nil
 	}

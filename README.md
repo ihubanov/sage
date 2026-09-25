@@ -48,7 +48,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.9`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.10`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -207,6 +207,18 @@ software updates, and encryption controls. Ordinary agent identity replacement
 uses re-enrollment; historical memory authorship is preserved.
 
 ---
+
+## What's New in v11.23.10
+
+**A held signing key can no longer park the node's whole write path.** A signer fence refuses every write from its key while it waits for proof of an earlier submission's fate, and that wait was bounded only by the caller's context — which the submit path passed as `context.Background()`, a context that never cancels and carries no deadline. The one goroutine holding the node's single signing lease sat there for as long as the fence stood — one observed node carried handlers parked 122–768 minutes — and every later writer for that key queued behind it on the same size-one lease, including the automatic reconciler whose job is to settle the fence and release it, so the hold could not clear itself. Reads stayed fast and denied writes still failed fast, which is why the incident reached the operator as *writes time out, no error*. `WithNonceLease` now derives a bounded wait (90 s) when the caller supplies no deadline, so a held fence fails retryable instead of parking, the lease is released, and the reconciler is no longer starved by the fence it exists to lift. A caller that supplies its own shorter deadline keeps it.
+
+**Background work the embedded web handler starts can no longer outlive the store it writes to.** That handler started goroutines with no lifecycle owner, and unowned work that outlived its caller's store touched a closed database and panicked the process — first seen inside this repository's own suite, where one test's projection audit tore down another test's store. Unowned background work is counted now, and a caller that owns the stores drains it with `WaitBackground` before closing them.
+
+**Build and tooling.** Local `make` builds pin to the host architecture instead of assuming amd64, and a Codex session started in a checkout inherits that checkout's Codex pin from `.codex/config.toml` — the counterpart of the existing `.mcp.json` Claude Code pin, so one workspace can carry both providers' pins. Dependency groups were refreshed.
+
+No consensus change, no transaction-type change, no upgrade height, and no chain reset.
+
+Container: `ghcr.io/l33tdawg/sage:11.23.10`. SDK 11.23.10.
 
 ## What's New in v11.23.9
 

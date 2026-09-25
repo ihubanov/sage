@@ -143,7 +143,7 @@ channel gate remains unverified. Enable it with `SAGE_CLAUDE_CHANNEL=1` only
 after confirming that delivery path. Codex is always refused because it cannot
 consume that method and must not occupy the exclusive wake lease. Other hosts
 remain off unless explicitly enabled
-(`claudeChannelEnabled`, `mcp.go:347`). Constructing an MCP `Server` never
+(`claudeChannelEnabled`, `mcp.go:407`). Constructing an MCP `Server` never
 advertises or emits the experimental protocol on its own; the executable still
 makes an explicit enablement call (`EnableRESTClaudeChannel`, `internal/mcp/claude_wake_source.go:85`)
 through `ConfigureClaudeChannel` (`internal/mcp/claude_channel.go:50`).

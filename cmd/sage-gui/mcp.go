@@ -21,6 +21,7 @@ import (
 
 	"github.com/l33tdawg/sage/internal/mcp"
 	"github.com/l33tdawg/sage/web"
+	"github.com/pelletier/go-toml/v2"
 )
 
 // Hook scripts deployed by `sage-gui mcp install`. The session-start and
@@ -343,6 +344,60 @@ func primaryWorkspaceMCPEnv(root string) (map[string]string, bool, error) {
 	return result, true, nil
 }
 
+// codexWorkspaceMCPEnv is the Codex counterpart of primaryWorkspaceMCPEnv: it
+// reads the SAGE env block from a checkout's .codex/config.toml. One checkout
+// can hold both files — .mcp.json pins the Claude Code signer and
+// .codex/config.toml pins the Codex one — so callers must select by provider
+// rather than by file precedence.
+func codexWorkspaceMCPEnv(root string) (map[string]string, bool, error) {
+	path := filepath.Join(root, ".codex", "config.toml")
+	raw, err := readBoundedConfig(path, 1<<20)
+	if os.IsNotExist(err) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	var document map[string]any
+	if err := toml.Unmarshal(raw, &document); err != nil {
+		return nil, false, fmt.Errorf("project Codex config is invalid TOML; fix it so the workspace identity can resolve: %w", err)
+	}
+	servers, _ := document["mcp_servers"].(map[string]any)
+	sage, _ := servers["sage"].(map[string]any)
+	env, _ := sage["env"].(map[string]any)
+	if env == nil {
+		return nil, false, nil
+	}
+	result := map[string]string{}
+	for _, key := range []string{"SAGE_PROVIDER", "SAGE_PROJECT", "SAGE_IDENTITY_PATH"} {
+		if value, ok := env[key].(string); ok {
+			result[key] = value
+		}
+	}
+	return result, true, nil
+}
+
+// workspaceMCPEnvs returns every pinned SAGE env block a canonical workspace
+// root declares, Claude Code first and Codex second. Reading only .mcp.json
+// meant a Codex session that resolved this workspace never saw the checkout's
+// Codex pin and minted a second, hashed identity for the same repository.
+func workspaceMCPEnvs(root string) ([]map[string]string, error) {
+	var envs []map[string]string
+	for _, read := range []func(string) (map[string]string, bool, error){
+		primaryWorkspaceMCPEnv,
+		codexWorkspaceMCPEnv,
+	} {
+		env, found, err := read(root)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			envs = append(envs, env)
+		}
+	}
+	return envs, nil
+}
+
 // claudeChannelEnabled is an explicit adapter opt-in. The shipped Claude Code
 // host registers a notifications/claude/channel handler, but delivery from a
 // plain .mcp.json server through the host's plugin-scoped channel gate remains
@@ -384,21 +439,42 @@ func resolveImplicitWorkspaceIdentity(home, projectDir, provider, project string
 	if err != nil {
 		return "", provider, project, err
 	}
-	if primary, found, configErr := primaryWorkspaceMCPEnv(root); configErr != nil {
+	envs, configErr := workspaceMCPEnvs(root)
+	if configErr != nil {
 		return "", provider, project, configErr
-	} else if found {
-		primaryProvider := strings.TrimSpace(primary["SAGE_PROVIDER"])
-		if provider == "" {
-			provider = primaryProvider
+	}
+	// A checkout's pin lives in the config that owns it: .mcp.json for Claude
+	// Code, .codex/config.toml for Codex. Provider separation remains absolute —
+	// a Codex caller never adopts a Claude signer even when that is the only pin
+	// present — but a caller whose own provider matches a pin inherits it
+	// instead of minting a second agent id for the same repository.
+	for _, env := range envs {
+		envProvider := strings.TrimSpace(env["SAGE_PROVIDER"])
+		if envProvider == "" {
+			continue
 		}
-		// Provider separation remains absolute: a root's Claude signer must
-		// never collapse a Codex session onto the same key.
-		if strings.EqualFold(provider, primaryProvider) {
-			if key := strings.TrimSpace(primary["SAGE_IDENTITY_PATH"]); key != "" {
-				if project == "" {
-					project = strings.TrimSpace(primary["SAGE_PROJECT"])
-				}
-				return filepath.Clean(expandTilde(key)), provider, project, nil
+		if provider != "" && !strings.EqualFold(provider, envProvider) {
+			continue
+		}
+		key := strings.TrimSpace(env["SAGE_IDENTITY_PATH"])
+		if key == "" {
+			continue
+		}
+		if provider == "" {
+			provider = envProvider
+		}
+		if project == "" {
+			project = strings.TrimSpace(env["SAGE_PROJECT"])
+		}
+		return filepath.Clean(expandTilde(key)), provider, project, nil
+	}
+	// Lifecycle hooks carry no provider of their own; they adopt the project's
+	// provider so hooks and MCP calls authenticate as the same agent.
+	if provider == "" {
+		for _, env := range envs {
+			if envProvider := strings.TrimSpace(env["SAGE_PROVIDER"]); envProvider != "" {
+				provider = envProvider
+				break
 			}
 		}
 	}

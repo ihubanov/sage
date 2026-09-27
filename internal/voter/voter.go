@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
-	"errors"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -135,6 +134,17 @@ func Run(ctx context.Context, app App, store Store, cfg Config, logger zerolog.L
 	if cfg.Health != nil {
 		cfg.Health.SetVoterStatus(metrics.VoterStatus{Running: true, ValidatorID: selfID})
 		defer cfg.Health.SetVoterStatus(metrics.VoterStatus{Running: false, ValidatorID: selfID})
+	}
+
+	if cfg.Gate != nil && len(cfg.Gate.Judges) > 0 {
+		if gs, ok := store.(GateStore); ok {
+			cfg.Gate.Start(ctx, gs, logger)
+		} else {
+			logger.Warn().Msg("memory gate configured but this store cannot host it — built-in checks only")
+			cfg.Gate = nil
+		}
+	} else {
+		cfg.Gate = nil
 	}
 
 	logger.Info().
@@ -351,12 +361,18 @@ func voteOnPendingMemoriesResult(
 				MemType:     string(mem.MemoryType),
 				Confidence:  mem.ConfidenceScore,
 			})
-			if gated, abstain := gateDecision(ctx, cfg, store, mem.MemoryID, logger); abstain {
-				// Uncertain: no vote. The memory waits in the review queue and is
-				// voted on a later tick once the operator has decided it.
-				continue
-			} else if gated != nil {
-				decision = *gated
+			if cfg.Gate != nil {
+				if gs, ok := store.(GateStore); ok {
+					outcome, gated := cfg.Gate.Apply(ctx, gs, mem, decision, logger)
+					if outcome == gateHold {
+						// Not judged yet, or held for operator review: no vote this
+						// tick. Judging happens in the background (Gate.Start).
+						continue
+					}
+					if outcome == gateOverride {
+						decision = gated
+					}
+				}
 			}
 			decStr := "reject"
 			if decision.Accept {
@@ -475,31 +491,4 @@ func voteOnUpgradeProposalResult(ctx context.Context, app App, cfg Config, selfI
 		return ctx.Err() != nil
 	}
 	return result.unavailable
-}
-
-// gateDecision runs the optional memory gate. It returns (nil, false) when the
-// gate is off, the store cannot host it, the domain is exempt, or the judge
-// failed — in which case the built-in decision stands, so a judge outage never
-// blocks voting and never produces a guessed verdict.
-func gateDecision(ctx context.Context, cfg Config, store Store, memoryID string, logger zerolog.Logger) (*Decision, bool) {
-	if cfg.Gate == nil || len(cfg.Gate.Judges) == 0 {
-		return nil, false
-	}
-	gs, ok := store.(GateStore)
-	if !ok {
-		return nil, false
-	}
-	d, err := cfg.Gate.Decide(ctx, gs, store, memoryID)
-	if errors.Is(err, ErrExempt) {
-		return nil, false
-	}
-	if err != nil {
-		logger.Warn().Err(err).Str("memory_id", memoryID).
-			Msg("memory gate unavailable for this memory — voting with the built-in checks")
-		return nil, false
-	}
-	if d.Abstain {
-		return nil, true
-	}
-	return &Decision{Accept: d.Accept, Reason: d.Reason}, false
 }

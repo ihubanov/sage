@@ -5,11 +5,12 @@ agent that stores a remark about its own session — "the attachment was lost;
 the user must re-send the numbers" — as a 0.9-confidence fact gets it
 committed, and later sessions recall it as if it were true of the world.
 
-The memory gate lets a node ask a [Hunch](https://github.com/ihubanov/hunch)
-judge one calibrated question before it votes on a proposed memory: *is this
-lasting knowledge, or a statement about the conversation it came from?* Hunch
-reads one constrained token's logprobs from a model you run and returns a
-probability, so the decision is a number with a threshold, not a guess.
+The memory gate lets a node ask an operator-configured judge one calibrated
+question before it votes on a proposed memory: *is this lasting knowledge, or a
+statement about the conversation it came from?* The judge returns a
+probability, so the decision is a number with a threshold, not a guess. The
+bundled adapter uses [Hunch](https://github.com/ihubanov/hunch), which reads
+one constrained token's logprobs from a model you run.
 
 It is **off by default** and changes nothing in consensus, the transaction
 format or recall.
@@ -28,16 +29,56 @@ verdict.
 
 ## What the node does with the answer
 
-- **≥ 0.9 — pass:** the built-in checks decide as before.
-- **< 0.5 — fail:** the node votes REJECT, with the probability in the vote
-  rationale.
-- **In between — abstain:** the node does **not vote**. The memory waits in the
-  operator's review queue; once the operator accepts or rejects it, the node
-  votes that decision on its next tick.
-- **Judge unreachable or no verdict:** the node votes with the built-in checks
-  exactly as before and records nothing.
+Judging never happens inside the voter loop. The loop reads a **stored**
+verdict; a proposed memory without one is handed to a small background
+evaluator (bounded workers and queue) and simply not voted on that tick. A slow
+or hung judge therefore cannot delay other votes, upgrade voting or backlog
+telemetry.
 
-A memory is judged once; its outcome is stored and reused.
+The built-in checks (dedup, quality, consistency) are **always evaluated
+fresh**, and the gate can only narrow their outcome:
+
+| Built-in checks | Stored semantic verdict | The node votes |
+|---|---|---|
+| reject | anything | **reject** (built-in reason) |
+| accept | none yet | nothing this tick — judged in the background |
+| accept | pass (≥ 0.9) | accept |
+| accept | reject (< 0.5) | **reject**, with the probability in the rationale |
+| accept | held (in between) | nothing, until the operator decides in the review queue |
+| accept | judge failed | accept (built-in checks only; retried after 10 minutes) |
+
+Verdicts are cached **per judge version** (models, policy and check wording).
+Changing the judges re-judges pending memories. An operator's review decision
+settles only the semantic question — the built-in checks still run when the
+node votes — and is final for that memory across judge versions: a human
+decision outranks a later judge.
+
+## Review queue
+
+**Settings → Memory gate** in the dashboard shows whether the gate is on, what
+it sends where, and every memory it is holding, with *Keep as memory* / *Reject*
+buttons. With the gate off it says so, and nothing is held. The same data is at
+`GET /v1/dashboard/memory/review-queue` (operator-only). Reads go through the
+dashboard's normal projection-integrity path (quarantined records are omitted);
+a memory whose content cannot be decrypted is listed as unavailable, without
+content, and cannot be decided until it can be read.
+
+## What leaves the node
+
+Only the **text** of proposed memories in scope is sent to the configured judge
+service — no ids, domains, authors or other metadata. Scope is controlled by
+`SAGE_HUNCH_INCLUDE_DOMAINS` (only these domains) and
+`SAGE_HUNCH_EXEMPT_DOMAINS` (never these); the node logs the scope and the
+judge URL at startup, and the review screen repeats it. Content that cannot be
+produced in plaintext (a locked vault, a decryption failure) is never sent.
+
+## Judges are pluggable
+
+The voter depends only on a provider-neutral interface —
+`LastingProbability(ctx, content) (float64, error)`. Hunch
+([github.com/ihubanov/hunch](https://github.com/ihubanov/hunch)) is supplied as
+one adapter (`internal/hunch.LastingJudge`); any other judge can implement the
+same method.
 
 ## Several judges
 
@@ -62,13 +103,14 @@ conversation, should not be asked this question. List their domain prefixes in
 | `SAGE_HUNCH_API_KEY` | bearer key, if the service needs one |
 | `SAGE_HUNCH_MODELS` | comma-separated judge models, first one leads (empty = service default, one judge) |
 | `SAGE_HUNCH_POLICY` | `lead` (default) or `all` |
-| `SAGE_HUNCH_EXEMPT_DOMAINS` | comma-separated domain prefixes of program-written memories |
+| `SAGE_HUNCH_INCLUDE_DOMAINS` | comma-separated domain prefixes to judge; when set, only these domains' text is sent |
+| `SAGE_HUNCH_EXEMPT_DOMAINS` | comma-separated domain prefixes never judged (e.g. program-written catalogs) |
 | `SAGE_HUNCH_TIMEOUT` | judge budget per memory (default `60s`) |
 
 ## Operator endpoints
 
 - `GET /v1/dashboard/memory/review-queue` — memories waiting for a decision
-- `GET /v1/dashboard/memory/{id}/judgements` — the verdicts for one memory
+- `GET /v1/dashboard/memory/{id}/judgements` — the stored verdicts for one memory (no content)
 - `POST /v1/dashboard/memory/{id}/review` `{"decision": "accept"|"reject", "note": "..."}`
 
 ## Measured on a real store

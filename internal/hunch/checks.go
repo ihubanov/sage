@@ -1,5 +1,7 @@
 package hunch
 
+import "context"
+
 // The check SAGE's memory gate asks. It names its look-alikes in yes_if /
 // no_if; the wording is part of the contract (changing it changes the judge's
 // accuracy), so ChecksVersion is recorded with every judgement and must be
@@ -20,4 +22,21 @@ var Lasting = Check{
 		"a later reader should follow",
 	NoIf: "a statement about the current conversation or session itself: a lost or unreadable message " +
 		"or attachment, truncated context, something that could not be done just now, a request to re-send",
+}
+
+// LastingJudge adapts a Hunch service to the memory gate's provider-neutral
+// judge interface (internal/voter.LastingJudge): it asks the Lasting check and
+// returns p_yes. Only the memory's content is sent — no id, domain, author or
+// other metadata.
+type LastingJudge struct {
+	Client *Client
+}
+
+// LastingProbability returns the probability that content is lasting memory.
+func (j LastingJudge) LastingProbability(ctx context.Context, content string) (float64, error) {
+	ps, err := j.Client.YesNo(ctx, map[string]string{"memory": content}, map[string]Check{"lasting": Lasting})
+	if err != nil {
+		return 0, err
+	}
+	return ps["lasting"], nil
 }

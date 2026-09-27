@@ -20,8 +20,10 @@ import (
 //	                         (empty = the service's default model, one judge)
 //	SAGE_HUNCH_POLICY        "lead" (default: first judge decides, any other can
 //	                         veto) or "all" (every judge must agree)
-//	SAGE_HUNCH_EXEMPT_DOMAINS comma-separated domain prefixes whose memories are
-//	                         written by programs and are not judged
+//	SAGE_HUNCH_INCLUDE_DOMAINS comma-separated domain prefixes to judge; when
+//	                         set, ONLY these domains' memory content is sent
+//	SAGE_HUNCH_EXEMPT_DOMAINS comma-separated domain prefixes never judged (e.g.
+//	                         program-written catalogs); their content is not sent
 //	SAGE_HUNCH_TIMEOUT       per-memory judge budget, e.g. "60s"
 func writeGateFromEnv(logger zerolog.Logger) *voter.Gate {
 	url := strings.TrimSpace(os.Getenv("SAGE_HUNCH_URL"))
@@ -48,21 +50,33 @@ func writeGateFromEnv(logger zerolog.Logger) *voter.Gate {
 	}
 	g := &voter.Gate{Timeout: timeout}
 	for _, m := range models {
-		g.Judges = append(g.Judges, hunch.New(url, key, m, timeout))
+		g.Judges = append(g.Judges, hunch.LastingJudge{Client: hunch.New(url, key, m, timeout)})
 	}
 	g.Policy = strings.TrimSpace(os.Getenv("SAGE_HUNCH_POLICY"))
-	for _, d := range strings.Split(os.Getenv("SAGE_HUNCH_EXEMPT_DOMAINS"), ",") {
-		if d = strings.TrimSpace(d); d != "" {
-			g.ExemptDomainPrefixes = append(g.ExemptDomainPrefixes, d)
-		}
-	}
+	g.ExemptDomainPrefixes = splitList(os.Getenv("SAGE_HUNCH_EXEMPT_DOMAINS"))
+	g.IncludeDomainPrefixes = splitList(os.Getenv("SAGE_HUNCH_INCLUDE_DOMAINS"))
 	policy := g.Policy
 	if policy != voter.PolicyAll {
 		policy = voter.PolicyLead
 	}
 	g.Version = hunch.ChecksVersion + "|" + policy + ":" + strings.Join(models, "+")
+	scope := "every domain"
+	if len(g.IncludeDomainPrefixes) > 0 {
+		scope = "domains " + strings.Join(g.IncludeDomainPrefixes, ", ")
+	}
 	logger.Info().Str("hunch_url", url).Strs("judges", models).Str("policy", policy).
-		Strs("exempt_domains", g.ExemptDomainPrefixes).
-		Msg("memory gate ON — proposed memories are judged before this node votes")
+		Strs("include_domains", g.IncludeDomainPrefixes).Strs("exempt_domains", g.ExemptDomainPrefixes).
+		Msg("memory gate ON — the CONTENT of proposed memories in " + scope +
+			" (minus exempt domains) is sent to " + url + " to be judged before this node votes; no ids, authors or other metadata")
 	return g
+}
+
+func splitList(raw string) []string {
+	var out []string
+	for _, d := range strings.Split(raw, ",") {
+		if d = strings.TrimSpace(d); d != "" {
+			out = append(out, d)
+		}
+	}
+	return out
 }

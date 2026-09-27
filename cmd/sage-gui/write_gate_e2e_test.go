@@ -103,6 +103,7 @@ func gateMemoryRaw(t *testing.T, agentKey ed25519.PrivateKey, memoryID, domain, 
 // the real voter with the memory gate against a scripted judge, and checks
 // every gate outcome on committed state: accept, reject, abstain-then-review.
 func TestMemoryGateEndToEndOnARealNode(t *testing.T) {
+	const gateVersion = "e2e-judges"
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cometHome := t.TempDir()
@@ -149,7 +150,8 @@ func TestMemoryGateEndToEndOnARealNode(t *testing.T) {
 	require.NotNil(t, selfKey)
 	go voter.Run(ctx, app, projection, voter.Config{
 		Key: selfKey, CometRPC: fmt.Sprintf("http://127.0.0.1:%d", port), PollInterval: 200 * time.Millisecond,
-		Gate: &voter.Gate{Judges: []voter.Judger{hunch.New(judge.URL, "", "", 10*time.Second)}},
+		Gate: &voter.Gate{Judges: []voter.LastingJudge{hunch.LastingJudge{Client: hunch.New(judge.URL, "", "", 10*time.Second)}},
+			Version: gateVersion},
 	}, zerolog.Nop())
 
 	agentKey := agentKeyFromBootstrap(t, bootstrap)
@@ -194,22 +196,18 @@ func TestMemoryGateEndToEndOnARealNode(t *testing.T) {
 	unsureID := "00000000-0000-4000-8000-000000000003"
 	submit(unsureID, "The quarterly shipment count was around two hundred units.")
 	require.Eventually(t, func() bool {
-		q, err := projection.ReviewQueue(ctx, 10)
+		q, err := projection.ReviewQueue(ctx, gateVersion, 10)
 		return err == nil && len(q) == 1 && q[0].MemoryID == unsureID
 	}, 45*time.Second, 200*time.Millisecond, "the uncertain memory reaches the review queue")
 	require.Equal(t, memory.StatusProposed, statusOf(unsureID), "an abstained memory stays proposed (no vote)")
-	require.NoError(t, projection.SetReviewDecision(ctx, unsureID, memory.VerdictAccept, "operator", "checked"))
+	require.NoError(t, projection.SetReviewDecision(ctx, unsureID, gateVersion, memory.VerdictAccept, "operator", "checked"))
 	waitStatus(unsureID, committed, "the reviewed memory is voted and committed")
 
-	js, err := projection.GateJudgements(ctx, remarkID)
+	v, ok, err := projection.SemanticVerdict(ctx, remarkID, gateVersion)
 	require.NoError(t, err)
-	var reason string
-	for _, j := range js {
-		if j.Check == "final" {
-			reason = j.Reason
-		}
-	}
-	require.Contains(t, reason, "not lasting memory", "the vote's reason names the judged cause")
+	require.True(t, ok)
+	require.Equal(t, memory.VerdictReject, v.Verdict)
+	require.Contains(t, v.Reason, "not lasting memory", "the stored verdict names the judged cause")
 }
 
 // startVendoredCometTestNodeWithConfig is startVendoredCometTestNode with a

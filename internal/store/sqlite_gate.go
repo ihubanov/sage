@@ -45,6 +45,13 @@ func (s *SQLiteStore) migrateWriteGate(ctx context.Context) error {
 	return nil
 }
 
+// gateTimeLayout is fixed-width (always nine fractional digits) so that the
+// stored text sorts in time order. RFC3339Nano trims trailing zeros, which
+// makes "…36.1Z" sort after "…36.12Z".
+const gateTimeLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
+func gateNow() string { return time.Now().UTC().Format(gateTimeLayout) }
+
 // ErrContentUnavailable means a memory's plaintext cannot be produced (the
 // vault is locked or the content does not decrypt). Callers must not fall
 // back to the stored value.
@@ -98,7 +105,7 @@ func (s *SQLiteStore) RecordSemanticVerdict(ctx context.Context, memoryID, versi
 	if _, err := s.writeExecContext(ctx,
 		`INSERT OR REPLACE INTO memory_gate_verdicts (memory_id, judge_version, verdict, p_yes, reason, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
-		memoryID, version, v.Verdict, v.P, v.Reason, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		memoryID, version, v.Verdict, v.P, v.Reason, gateNow()); err != nil {
 		return fmt.Errorf("record semantic verdict: %w", err)
 	}
 	return nil
@@ -174,7 +181,7 @@ func (s *SQLiteStore) SetReviewDecision(ctx context.Context, memoryID, version, 
 	res, err := s.writeExecContext(ctx,
 		`INSERT OR IGNORE INTO memory_review_decisions (memory_id, decision, decided_by, note, created_at)
 		 VALUES (?, ?, ?, ?, ?)`,
-		memoryID, decision, decidedBy, note, time.Now().UTC().Format(time.RFC3339Nano))
+		memoryID, decision, decidedBy, note, gateNow())
 	if err != nil {
 		return fmt.Errorf("set review decision: %w", err)
 	}
@@ -193,18 +200,27 @@ type HeldForReview struct {
 	P         float64   `json:"p_yes"`
 	HeldAt    time.Time `json:"held_at"`
 	JudgeVers string    `json:"judge_version"`
+	// Key is this row's position in the queue order, for keyset paging.
+	Key ReviewQueueKey `json:"-"`
+}
+
+// ReviewQueueKey is a position in the review queue's (held_at, memory_id)
+// order. Paging by key rather than by offset keeps a cursor valid when
+// decisions remove earlier rows from the queue.
+type ReviewQueueKey struct {
+	HeldAt   string
+	MemoryID string
 }
 
 // ReviewQueue lists memories held under version that are still proposed and
-// not yet decided, oldest first, as one RAW page (offset, limit). Callers that
-// filter rows for visibility must walk pages until their visible page is full
-// (see web/write_gate.go); a raw limit alone would let hidden rows starve it.
-func (s *SQLiteStore) ReviewQueue(ctx context.Context, version string, offset, limit int) ([]HeldForReview, error) {
+// not yet decided, oldest first, as one RAW page of up to limit rows strictly
+// after the key `after` (the zero key starts at the beginning). Callers that
+// filter rows for visibility walk pages until their visible page is full (see
+// web/write_gate.go). Keyset paging keeps a cursor valid when decisions remove
+// earlier rows.
+func (s *SQLiteStore) ReviewQueue(ctx context.Context, version string, after ReviewQueueKey, limit int) ([]HeldForReview, error) {
 	if limit <= 0 || limit > 1024 {
 		limit = 100
-	}
-	if offset < 0 {
-		offset = 0
 	}
 	rows, err := s.conn.QueryContext(ctx,
 		`SELECT v.memory_id, v.reason, v.p_yes, v.created_at, v.judge_version
@@ -212,7 +228,9 @@ func (s *SQLiteStore) ReviewQueue(ctx context.Context, version string, offset, l
 		 JOIN memories AS m ON m.memory_id = v.memory_id
 		 WHERE v.judge_version = ? AND v.verdict = 'abstain' AND m.status = 'proposed'
 		   AND NOT EXISTS (SELECT 1 FROM memory_review_decisions AS d WHERE d.memory_id = v.memory_id)
-		 ORDER BY v.created_at ASC, v.memory_id ASC LIMIT ? OFFSET ?`, version, limit, offset)
+		   AND (v.created_at > ? OR (v.created_at = ? AND v.memory_id > ?))
+		 ORDER BY v.created_at ASC, v.memory_id ASC LIMIT ?`,
+		version, after.HeldAt, after.HeldAt, after.MemoryID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("review queue: %w", err)
 	}
@@ -225,6 +243,7 @@ func (s *SQLiteStore) ReviewQueue(ctx context.Context, version string, offset, l
 			return nil, fmt.Errorf("review queue: %w", err)
 		}
 		it.HeldAt = parseTime(held)
+		it.Key = ReviewQueueKey{HeldAt: held, MemoryID: it.MemoryID}
 		out = append(out, it)
 	}
 	return out, rows.Err()

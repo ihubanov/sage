@@ -140,3 +140,45 @@ func TestReviewQueue_ContinuationReachesPastTheScanBudget(t *testing.T) {
 	second := reviewQueue(t, router, "?limit=100&cursor="+cursor)
 	require.Equal(t, []string{"visible"}, itemIDs(second), "the continuation reaches the visible held memory")
 }
+
+// TestReviewQueue_CursorSurvivesDecisions is the reviewer's reproduction: load
+// the first page, decide every item on it, then follow next_cursor. With an
+// offset cursor the decided rows leave the queue and the offset skips the rest.
+func TestReviewQueue_CursorSurvivesDecisions(t *testing.T) {
+	h, s := newTestHandler(t)
+	h.SetMemoryGate(&voter.Gate{Version: reviewTestVersion})
+	router := testRouter(h)
+	base := time.Now().UTC().Add(-time.Hour)
+	for i := 0; i < 100; i++ {
+		heldMemory(t, s, fmt.Sprintf("held-%03d", i), "general-notes",
+			fmt.Sprintf("held memory number %d waiting for the operator", i), base.Add(time.Duration(i)*time.Second))
+	}
+
+	first := reviewQueue(t, router, "?limit=50")
+	firstIDs := itemIDs(first)
+	require.Len(t, firstIDs, 50)
+	cursor, ok := first["next_cursor"].(string)
+	require.True(t, ok)
+	for _, id := range firstIDs {
+		rec := postReview(t, router, id, "accept")
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	next := reviewQueue(t, router, "?limit=50&cursor="+cursor)
+	nextIDs := itemIDs(next)
+	require.Len(t, nextIDs, 50, "the cursor must reach the rows still waiting after earlier ones were decided")
+	require.Equal(t, "held-050", nextIDs[0])
+	require.Equal(t, "held-099", nextIDs[49])
+
+	fresh := reviewQueue(t, router, "?limit=50")
+	require.Equal(t, nextIDs, itemIDs(fresh), "a fresh request and the continuation agree")
+}
+
+func TestReviewQueue_RejectsAForgedCursor(t *testing.T) {
+	h, _ := newTestHandler(t)
+	h.SetMemoryGate(&voter.Gate{Version: reviewTestVersion})
+	req := httptest.NewRequest(http.MethodGet, "/v1/dashboard/memory/review-queue?cursor=not!valid!base64", nil)
+	rec := httptest.NewRecorder()
+	testRouter(h).ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}

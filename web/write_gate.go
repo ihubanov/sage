@@ -147,7 +147,9 @@ func (h *DashboardHandler) handleReviewQueueUnsealed(w http.ResponseWriter, r *h
 		rawOffset = 0
 	}
 	scanStart := rawOffset
-	items := make([]reviewQueueItem, 0, limit)
+	// Capacity from a constant, never from the request (limit is clamped above,
+	// but allocation size must not depend on user input).
+	items := make([]reviewQueueItem, 0, reviewQueueDefaultSize)
 	exhausted := false
 	observedHidden := 0
 	for len(items) < limit && rawOffset-scanStart < reviewQueueScanBudget {

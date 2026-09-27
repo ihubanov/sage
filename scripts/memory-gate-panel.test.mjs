@@ -37,4 +37,5 @@ test('the panel is reachable from Settings', () => {
     assert.match(appSource, /id: 'memory-gate', label: 'Memory gate'/);
     assert.match(appSource, /settingsTab === 'memory-gate'/);
     assert.match(appSource, /<\$\{MemoryGatePanel\} \/>/);
+    assert.match(appSource, /data\?\.next_cursor && html/, 'the panel follows the server continuation cursor');
 });

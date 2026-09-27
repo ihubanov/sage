@@ -5582,8 +5582,18 @@ function MemoryGatePanel() {
 
     const load = async () => {
         setLoading(true); setErr(null);
-        try { setData(await fetchMemoryGateReviewQueue({ limit: 100 })); }
+        try { setData(await fetchMemoryGateReviewQueue({ limit: 50 })); }
         catch (e) { setErr(e.message || String(e)); }
+        setLoading(false);
+    };
+    // The server pages past rows it may not show; follow its cursor to append.
+    const loadMore = async () => {
+        if (!data?.next_cursor) return;
+        setLoading(true); setErr(null);
+        try {
+            const next = await fetchMemoryGateReviewQueue({ limit: 50, cursor: data.next_cursor });
+            setData({ ...next, items: [...(data.items || []), ...(next.items || [])] });
+        } catch (e) { setErr(e.message || String(e)); }
         setLoading(false);
     };
     useEffect(() => { load(); }, []);
@@ -5620,6 +5630,7 @@ function MemoryGatePanel() {
                             </div>`}
                     </div>`;
             })}
+            ${!loading && data?.next_cursor && html`<button class="btn" style="font-size:11px;padding:4px 10px;margin:6px 6px 0 0;" onClick=${loadMore}>Load more</button>`}
             ${!loading && html`<button class="btn" style="font-size:11px;padding:4px 10px;margin-top:6px;" onClick=${load}>Refresh</button>`}
         </div>
     `;

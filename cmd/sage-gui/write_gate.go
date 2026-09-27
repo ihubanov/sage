@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	neturl "net/url"
 	"os"
 	"strings"
 	"time"
@@ -25,6 +28,9 @@ import (
 //	SAGE_HUNCH_EXEMPT_DOMAINS comma-separated domain prefixes never judged (e.g.
 //	                         program-written catalogs); their content is not sent
 //	SAGE_HUNCH_TIMEOUT       per-memory judge budget, e.g. "60s"
+//	SAGE_HUNCH_JUDGE_REVISION free-form tag folded into the verdict-cache
+//	                         version; change it when a judge service's default
+//	                         model changes behind the same URL, to re-judge
 func writeGateFromEnv(logger zerolog.Logger) *voter.Gate {
 	url := strings.TrimSpace(os.Getenv("SAGE_HUNCH_URL"))
 	if url == "" {
@@ -59,15 +65,16 @@ func writeGateFromEnv(logger zerolog.Logger) *voter.Gate {
 	if policy != voter.PolicyAll {
 		policy = voter.PolicyLead
 	}
-	g.Version = hunch.ChecksVersion + "|" + policy + ":" + strings.Join(models, "+")
+	g.Version = gateVersion(policy, models, judgeServiceIdentity(url), os.Getenv("SAGE_HUNCH_JUDGE_REVISION"))
 	scope := "every domain"
 	if len(g.IncludeDomainPrefixes) > 0 {
 		scope = "domains " + strings.Join(g.IncludeDomainPrefixes, ", ")
 	}
-	logger.Info().Str("hunch_url", url).Strs("judges", models).Str("policy", policy).
+	shown := displayJudgeURL(url)
+	logger.Info().Str("hunch_url", shown).Strs("judges", models).Str("policy", policy).Str("verdict_cache", g.Version).
 		Strs("include_domains", g.IncludeDomainPrefixes).Strs("exempt_domains", g.ExemptDomainPrefixes).
 		Msg("memory gate ON — the CONTENT of proposed memories in " + scope +
-			" (minus exempt domains) is sent to " + url + " to be judged before this node votes; no ids, authors or other metadata")
+			" (minus exempt domains) is sent to " + shown + " to be judged before this node votes; no ids, authors or other metadata")
 	return g
 }
 
@@ -80,3 +87,36 @@ func splitList(raw string) []string {
 	}
 	return out
 }
+
+// gateVersion is the namespace verdicts are cached under. It changes whenever
+// anything that could change a judgement changes: the check wording, the
+// policy, the configured models, the judge SERVICE (models may be empty, in
+// which case the service's own default model decides), or an operator-set
+// revision. It never contains credentials.
+func gateVersion(policy string, models []string, serviceID, revision string) string {
+	v := hunch.ChecksVersion + "|" + policy + ":" + strings.Join(models, "+") + "|svc=" + serviceID
+	if r := strings.TrimSpace(revision); r != "" {
+		v += "|rev=" + r
+	}
+	return v
+}
+
+// judgeServiceIdentity is a stable, credential-free identity for the judge
+// service: a short hash of scheme, host and path only — no userinfo, query or
+// fragment, and never the API key.
+func judgeServiceIdentity(raw string) string {
+	sum := sha256.Sum256([]byte(canonicalJudgeURL(raw)))
+	return hex.EncodeToString(sum[:])[:12]
+}
+
+func canonicalJudgeURL(raw string) string {
+	u, err := neturl.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return "unparseable"
+	}
+	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host) + strings.TrimRight(u.Path, "/")
+}
+
+// displayJudgeURL is the judge URL as it may be logged or shown: without
+// userinfo, query or fragment.
+func displayJudgeURL(raw string) string { return canonicalJudgeURL(raw) }

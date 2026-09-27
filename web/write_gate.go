@@ -28,7 +28,7 @@ import (
 // reported as unavailable and never passed to the classifier.
 
 type memoryGateReviewStore interface {
-	ReviewQueue(ctx context.Context, version string, limit int) ([]store.HeldForReview, error)
+	ReviewQueue(ctx context.Context, version string, offset, limit int) ([]store.HeldForReview, error)
 	ReviewMemory(ctx context.Context, memoryID string) (*memory.MemoryRecord, bool, error)
 	GateVerdicts(ctx context.Context, memoryID string) ([]store.GateVerdict, error)
 	SetReviewDecision(ctx context.Context, memoryID, version, decision, decidedBy, note string) error
@@ -121,55 +121,114 @@ func (h *DashboardHandler) handleReviewQueue(w http.ResponseWriter, r *http.Requ
 	writeError(w, http.StatusServiceUnavailable, "review queue changed while it was being prepared; retry")
 }
 
+// reviewQueueRawPage and reviewQueueScanBudget bound one request's walk over
+// raw held rows, following the dashboard's interactive scan budget.
+const (
+	reviewQueueRawPage     = 256
+	reviewQueueScanBudget  = appV23CerebrumInteractiveScanBudget
+	reviewQueueMaxVisible  = 200
+	reviewQueueDefaultSize = 50
+)
+
+// handleReviewQueueUnsealed walks raw held rows until the requested number of
+// VISIBLE items is collected, the rows run out, or the scan budget is spent.
+// Internal-domain and quarantined rows are skipped without consuming the
+// visible page; a continuation cursor (the raw offset) is returned when rows
+// remain, so a long hidden prefix can never make visible held memories
+// unreachable.
 func (h *DashboardHandler) handleReviewQueueUnsealed(w http.ResponseWriter, r *http.Request, g *voter.Gate, rs memoryGateReviewStore) {
 	ctx := r.Context()
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	held, err := rs.ReviewQueue(ctx, g.Version, limit)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+	if limit <= 0 || limit > reviewQueueMaxVisible {
+		limit = reviewQueueDefaultSize
 	}
-	byID := make(map[string]store.HeldForReview, len(held))
-	readable := make([]*memory.MemoryRecord, 0, len(held))
-	items := make([]reviewQueueItem, 0, len(held))
-	for _, it := range held {
-		rec, available, rerr := rs.ReviewMemory(ctx, it.MemoryID)
-		if errors.Is(rerr, store.ErrMemoryNotFound) {
-			continue
-		}
-		if rerr != nil {
-			writeError(w, http.StatusInternalServerError, rerr.Error())
+	rawOffset, _ := strconv.Atoi(r.URL.Query().Get("cursor"))
+	if rawOffset < 0 {
+		rawOffset = 0
+	}
+	scanStart := rawOffset
+	items := make([]reviewQueueItem, 0, limit)
+	exhausted := false
+	observedHidden := 0
+	for len(items) < limit && rawOffset-scanStart < reviewQueueScanBudget {
+		batch := min(reviewQueueRawPage, reviewQueueScanBudget-(rawOffset-scanStart))
+		held, err := rs.ReviewQueue(ctx, g.Version, rawOffset, batch)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		if isCerebrumInternalMemoryDomain(rec.DomainTag) {
-			continue
+		byID := make(map[string]store.HeldForReview, len(held))
+		readable := make([]*memory.MemoryRecord, 0, len(held))
+		unavailable := map[string]bool{}
+		for _, it := range held {
+			rec, available, rerr := rs.ReviewMemory(ctx, it.MemoryID)
+			if errors.Is(rerr, store.ErrMemoryNotFound) {
+				observedHidden++
+				continue
+			}
+			if rerr != nil {
+				writeError(w, http.StatusInternalServerError, rerr.Error())
+				return
+			}
+			if isCerebrumInternalMemoryDomain(rec.DomainTag) {
+				observedHidden++
+				continue
+			}
+			byID[it.MemoryID] = it
+			if !available {
+				// Never classified: undecryptable content would be misread as a
+				// projection defect. Reported without content; it cannot be
+				// decided until the content can be read.
+				unavailable[it.MemoryID] = true
+				continue
+			}
+			readable = append(readable, rec)
 		}
-		byID[it.MemoryID] = it
-		if !available {
-			// Never classified: undecryptable content would be misread as a
-			// projection defect. Reported without content; it cannot be
-			// decided until the content can be read.
-			items = append(items, reviewQueueItem{MemoryID: it.MemoryID, ContentUnavailable: true,
-				Reason: it.Reason, P: it.P, HeldAt: it.HeldAt})
-			continue
-		}
-		readable = append(readable, rec)
-	}
-	kept, err := h.filterAppV23BroadDashboardRecords(readable)
-	if err != nil {
-		if writeAppV23DashboardProjectionFailure(w, err) {
+		kept, err := h.filterAppV23BroadDashboardRecords(readable)
+		if err != nil {
+			if writeAppV23DashboardProjectionFailure(w, err) {
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	for _, rec := range kept {
-		it := byID[rec.MemoryID]
-		items = append(items, reviewQueueItem{MemoryID: rec.MemoryID, DomainTag: rec.DomainTag,
-			MemoryType: string(rec.MemoryType), Content: rec.Content,
-			Reason: it.Reason, P: it.P, HeldAt: it.HeldAt})
+		observedHidden += len(readable) - len(kept)
+		keptByID := make(map[string]*memory.MemoryRecord, len(kept))
+		for _, rec := range kept {
+			keptByID[rec.MemoryID] = rec
+		}
+		consumed := 0
+		for i, it := range held {
+			consumed = i + 1
+			id := it.MemoryID
+			meta := byID[id]
+			switch {
+			case unavailable[id]:
+				items = append(items, reviewQueueItem{MemoryID: id, ContentUnavailable: true,
+					Reason: meta.Reason, P: meta.P, HeldAt: meta.HeldAt})
+			case keptByID[id] != nil:
+				rec := keptByID[id]
+				items = append(items, reviewQueueItem{MemoryID: id, DomainTag: rec.DomainTag,
+					MemoryType: string(rec.MemoryType), Content: rec.Content,
+					Reason: meta.Reason, P: meta.P, HeldAt: meta.HeldAt})
+			}
+			if len(items) == limit {
+				break
+			}
+		}
+		rawOffset += consumed
+		if len(held) < batch {
+			exhausted = consumed == len(held)
+			break
+		}
 	}
 	response := map[string]any{"gate": h.memoryGateStatus(), "items": items, "count": len(items)}
+	if !exhausted {
+		response["next_cursor"] = strconv.Itoa(rawOffset)
+	}
+	if observedHidden > 0 {
+		response["hidden"] = observedHidden
+	}
 	if projection := h.appV23ProjectionResponseForContext(ctx); projection != nil {
 		response["projection"] = h.projectionResponseForRequest(r, projection)
 	}
@@ -217,6 +276,33 @@ func (h *DashboardHandler) handleReviewDecision(w http.ResponseWriter, r *http.R
 		return
 	}
 	id := chi.URLParam(r, "id")
+	// Revalidate the exact target immediately before the decision becomes
+	// final: a stale page or an API client must not be able to decide a memory
+	// whose content can no longer be read, that is internal, or that fails the
+	// projection-integrity check. Disabled buttons are not a control.
+	rec, available, rerr := rs.ReviewMemory(r.Context(), id)
+	switch {
+	case errors.Is(rerr, store.ErrMemoryNotFound):
+		writeError(w, http.StatusNotFound, "memory not found")
+		return
+	case rerr != nil:
+		writeError(w, http.StatusInternalServerError, rerr.Error())
+		return
+	case !available:
+		writeError(w, http.StatusConflict,
+			"this memory's content cannot be read on this node right now (locked or undecryptable); it cannot be reviewed until it can")
+		return
+	case isCerebrumInternalMemoryDomain(rec.DomainTag):
+		writeError(w, http.StatusConflict, store.ErrNotAwaitingReview.Error())
+		return
+	}
+	if verr := h.validateAppV23DashboardRecord(rec); verr != nil {
+		if writeAppV23DashboardProjectionFailure(w, verr) {
+			return
+		}
+		writeError(w, http.StatusConflict, verr.Error())
+		return
+	}
 	err := rs.SetReviewDecision(r.Context(), id, g.Version, body.Decision, "operator", body.Note)
 	switch {
 	case errors.Is(err, store.ErrNotAwaitingReview):

@@ -48,8 +48,8 @@ func reviewQueue(t *testing.T, router http.Handler, query string) map[string]any
 }
 
 func itemIDs(resp map[string]any) []string {
-	var ids []string
 	items, _ := resp["items"].([]any)
+	ids := make([]string, 0, len(items))
 	for _, it := range items {
 		ids = append(ids, it.(map[string]any)["memory_id"].(string))
 	}

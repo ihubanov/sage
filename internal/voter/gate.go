@@ -2,74 +2,103 @@ package voter
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/l33tdawg/sage/internal/hunch"
+	"github.com/rs/zerolog"
+
 	"github.com/l33tdawg/sage/internal/memory"
 )
 
-// Gate is the optional memory gate: before voting, the node asks a Hunch judge
-// (github.com/ihubanov/hunch — a calibrated probability read from one
-// constrained token's logprobs on a model the operator runs) whether a proposed
-// memory is lasting knowledge or a remark about the session it came from.
+// Gate is the optional memory gate: a semantic check, asked of one or more
+// operator-configured judges, of whether a proposed memory is lasting
+// knowledge or a remark about the session it came from.
 //
 // It exists because the built-in checks trust the author's self-declared
 // confidence: an agent that stores "the attachment was lost; the user must
 // re-send the numbers" as a 0.9 fact gets it committed, and later sessions
 // recall it as if it were true.
 //
-// Probabilities fall in three bands: pass at or above ActAt, fail below
-// RejectBelow, abstain in between. On abstain the node does not vote; the
-// memory waits in the operator's review queue and is voted once decided. A
-// judge failure falls back to the built-in checks and records nothing.
+// Design constraints:
 //
-// Everything here is a per-node opinion that shapes this node's vote. The judge
-// is not deterministic across nodes, which is why it runs in the voter (whose
-// votes may legitimately disagree) and never in the state machine.
+//   - Judging never runs in the voter loop. The loop only READS a stored
+//     semantic verdict; a memory without one is handed to a bounded background
+//     evaluator and skipped this tick, so a slow or hung judge cannot delay
+//     other votes, upgrade voting or backlog telemetry.
+//   - The built-in checks are always evaluated fresh. The gate can only narrow
+//     their outcome (reject, or hold for review) — never turn a built-in
+//     rejection into an accept.
+//   - The semantic verdict is cached per judge version (model set, policy and
+//     check wording). A version change re-judges pending memories. An
+//     operator's review decision resolves only the semantic question, and is
+//     final for that memory across versions: a human decision outranks a later
+//     judge.
+//   - A judge failure falls back to the built-in checks (the node votes as it
+//     would without the gate) and records nothing.
+//   - Everything is a per-node opinion. Judges are not deterministic across
+//     nodes, which is why the gate lives in the voter and never in the state
+//     machine.
 type Gate struct {
-	// Judges are consulted concurrently; see Policy for how several combine.
-	Judges []Judger
-	// Policy combines several judges. PolicyLead (default): the FIRST judge
-	// leads — a memory passes when the lead is at or above ActAt and no other
-	// judge is below RejectBelow; it fails only when every judge is below
-	// RejectBelow. PolicyAll: every judge must be at or above ActAt to pass.
+	// Judges are asked concurrently; Policy says how their answers combine.
+	Judges []LastingJudge
+	// Policy: PolicyLead (default) — the FIRST judge leads; a memory passes
+	// when the lead is at or above ActAt and no other judge is below
+	// RejectBelow, and fails only when every judge is below RejectBelow.
+	// PolicyAll — every judge must reach ActAt to pass.
 	Policy string
 	// ActAt is the pass threshold (default 0.9); RejectBelow the fail
-	// threshold (default 0.5).
+	// threshold (default 0.5). Between them the gate holds the memory for
+	// operator review.
 	ActAt       float64
 	RejectBelow float64
-	// ExemptDomainPrefixes lists domains whose memories are written by
-	// programs (catalogs, generated records) rather than distilled from a
-	// conversation; the built-in checks apply to them.
+	// IncludeDomainPrefixes, when set, limits the gate — and therefore what
+	// memory content is sent to the judges — to these domains. Empty means
+	// every domain not exempted.
+	IncludeDomainPrefixes []string
+	// ExemptDomainPrefixes are never judged (e.g. program-written catalogs);
+	// the built-in checks apply as before and no content is sent.
 	ExemptDomainPrefixes []string
-	// Version identifies the judge setup on every judgement row.
+	// Version identifies the judge setup; verdicts are cached under it.
 	Version string
 	// Timeout bounds the judge calls for one memory (default 60s).
 	Timeout time.Duration
+	// Workers is the number of concurrent evaluations (default 2) and
+	// QueueSize the bound on memories waiting for one (default 64).
+	Workers   int
+	QueueSize int
+	// RetryAfterFailure is how long a memory whose judgement failed is voted
+	// with the built-in checks alone before the judge is asked again
+	// (default 10m).
+	RetryAfterFailure time.Duration
+
+	once     sync.Once
+	queue    chan string
+	mu       sync.Mutex
+	inflight map[string]bool
+	failed   map[string]time.Time
 }
 
-// Judger is the judge the gate consults (a *hunch.Client in production).
-type Judger interface {
-	YesNo(ctx context.Context, judgeContext any, checks map[string]hunch.Check) (map[string]float64, error)
+// LastingJudge is a provider-neutral judge: the probability that content
+// states lasting knowledge (a fact about the world, or a standing rule or
+// method) rather than a remark about the conversation it came from.
+type LastingJudge interface {
+	LastingProbability(ctx context.Context, content string) (float64, error)
 }
 
 // GateStore is what the gate needs from the node's store beyond Store.
 type GateStore interface {
-	GetMemory(ctx context.Context, memoryID string) (*memory.MemoryRecord, error)
-	RecordJudgements(ctx context.Context, js []memory.Judgement) error
-	GateFinal(ctx context.Context, memoryID string) (verdict, reason string, ok bool, err error)
+	// JudgeableContent returns a memory's plaintext for the judges. It must
+	// FAIL — never return stored ciphertext — when the content cannot be
+	// decrypted (e.g. the vault is locked), so nothing unreadable ever leaves
+	// the node.
+	JudgeableContent(ctx context.Context, memoryID string) (string, error)
+	// SemanticVerdict returns the verdict recorded for memoryID under version.
+	SemanticVerdict(ctx context.Context, memoryID, version string) (memory.SemanticVerdict, bool, error)
+	RecordSemanticVerdict(ctx context.Context, memoryID, version string, v memory.SemanticVerdict) error
+	// ReviewDecision returns an operator's accept/reject for a held memory.
 	ReviewDecision(ctx context.Context, memoryID string) (decision string, ok bool, err error)
-}
-
-// GateDecision is the gate's verdict for one memory.
-type GateDecision struct {
-	Accept  bool
-	Abstain bool // do not vote; the memory waits in the review queue
-	Reason  string
 }
 
 // Judge-combination policies (see Gate.Policy).
@@ -78,93 +107,47 @@ const (
 	PolicyAll  = "all"
 )
 
-// ErrExempt means the memory's domain is exempt from the gate.
-var ErrExempt = errors.New("voter: domain exempt from the memory gate")
-
-func (g *Gate) defaults() Gate {
-	c := *g
-	if c.ActAt <= 0 || c.ActAt > 1 {
-		c.ActAt = 0.9
-	}
-	if c.RejectBelow <= 0 || c.RejectBelow >= c.ActAt {
-		c.RejectBelow = 0.5
-	}
-	if c.Timeout <= 0 {
-		c.Timeout = 60 * time.Second
-	}
-	if c.Version == "" {
-		c.Version = hunch.ChecksVersion
-	}
-	if c.Policy != PolicyAll {
-		c.Policy = PolicyLead
-	}
-	return c
+func (g *Gate) init() {
+	g.once.Do(func() {
+		if g.ActAt <= 0 || g.ActAt > 1 {
+			g.ActAt = 0.9
+		}
+		if g.RejectBelow <= 0 || g.RejectBelow >= g.ActAt {
+			g.RejectBelow = 0.5
+		}
+		if g.Timeout <= 0 {
+			g.Timeout = 60 * time.Second
+		}
+		if g.Policy != PolicyAll {
+			g.Policy = PolicyLead
+		}
+		if g.Workers <= 0 {
+			g.Workers = 2
+		}
+		if g.QueueSize <= 0 {
+			g.QueueSize = 64
+		}
+		if g.RetryAfterFailure <= 0 {
+			g.RetryAfterFailure = 10 * time.Minute
+		}
+		g.queue = make(chan string, g.QueueSize)
+		g.inflight = map[string]bool{}
+		g.failed = map[string]time.Time{}
+	})
 }
 
-// answer is every judge's p for one check.
-type answer struct{ lead, lo, hi float64 }
-
-func (g Gate) band(a answer) string {
-	pass := a.lead >= g.ActAt && a.lo >= g.RejectBelow
-	if g.Policy == PolicyAll {
-		pass = a.lo >= g.ActAt
-	}
-	switch {
-	case pass:
-		return memory.VerdictPass
-	case a.hi < g.RejectBelow:
-		return memory.VerdictReject
-	default:
-		return memory.VerdictAbstain
-	}
-}
-
-// recorded is the p the threshold was applied to.
-func (g Gate) recorded(a answer) float64 {
-	if g.Policy == PolicyAll {
-		return a.lo
-	}
-	return a.lead
-}
-
-// ask puts one check to every judge, concurrently.
-func (g Gate) ask(ctx context.Context, judgeContext any, id string, check hunch.Check) (answer, error) {
-	ps := make([]float64, len(g.Judges))
-	errs := make([]error, len(g.Judges))
-	var wg sync.WaitGroup
-	for i, j := range g.Judges {
-		wg.Add(1)
-		go func(i int, j Judger) {
-			defer wg.Done()
-			res, err := j.YesNo(ctx, judgeContext, map[string]hunch.Check{id: check})
-			if err != nil {
-				errs[i] = err
-				return
-			}
-			ps[i] = res[id]
-		}(i, j)
-	}
-	wg.Wait()
-	a := answer{lo: 1}
-	for i, p := range ps {
-		if errs[i] != nil {
-			return answer{}, errs[i]
-		}
-		if i == 0 {
-			a.lead = p
-		}
-		if p < a.lo {
-			a.lo = p
-		}
-		if p > a.hi {
-			a.hi = p
-		}
-	}
-	return a, nil
-}
-
-func (g Gate) exempt(domain string) bool {
+// InScope reports whether memories in domain are judged (and so whether their
+// content is sent to the judges).
+func (g *Gate) InScope(domain string) bool {
 	for _, p := range g.ExemptDomainPrefixes {
+		if p != "" && strings.HasPrefix(domain, p) {
+			return false
+		}
+	}
+	if len(g.IncludeDomainPrefixes) == 0 {
+		return true
+	}
+	for _, p := range g.IncludeDomainPrefixes {
 		if p != "" && strings.HasPrefix(domain, p) {
 			return true
 		}
@@ -172,90 +155,169 @@ func (g Gate) exempt(domain string) bool {
 	return false
 }
 
-// Decide runs the gate for one proposed memory. A memory already judged is not
-// sent to the judge again: its recorded outcome is reused, and an abstained
-// memory is voted only once the operator has decided it.
-func (g *Gate) Decide(ctx context.Context, gs GateStore, dup DupChecker, memoryID string) (GateDecision, error) {
-	cfg := g.defaults()
-	if verdict, reason, ok, err := gs.GateFinal(ctx, memoryID); err != nil {
-		return GateDecision{}, err
-	} else if ok {
-		if verdict != memory.VerdictAbstain {
-			return GateDecision{Accept: verdict == memory.VerdictAccept, Reason: reason}, nil
-		}
-		decision, decided, derr := gs.ReviewDecision(ctx, memoryID)
-		if derr != nil {
-			return GateDecision{}, derr
-		}
-		if !decided {
-			return GateDecision{Abstain: true, Reason: reason}, nil
-		}
-		return GateDecision{Accept: decision == memory.VerdictAccept,
-			Reason: "review: " + decision + " (gate abstained: " + reason + ")"}, nil
+// Start runs the background evaluator until ctx ends. The voter calls it once.
+func (g *Gate) Start(ctx context.Context, gs GateStore, logger zerolog.Logger) {
+	g.init()
+	for i := 0; i < g.Workers; i++ {
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case id := <-g.queue:
+					g.evaluate(ctx, gs, id, logger)
+				}
+			}
+		}()
 	}
-
-	rec, err := gs.GetMemory(ctx, memoryID)
-	if err != nil {
-		return GateDecision{}, err
-	}
-	if cfg.exempt(rec.DomainTag) {
-		return GateDecision{}, ErrExempt
-	}
-	now := time.Now().UTC()
-	var rows []memory.Judgement
-	finish := func(d GateDecision) (GateDecision, error) {
-		final := memory.VerdictAccept
-		switch {
-		case d.Abstain:
-			final = memory.VerdictAbstain
-		case !d.Accept:
-			final = memory.VerdictReject
-		}
-		rows = append(rows, memory.Judgement{MemoryID: memoryID, Check: "final", Verdict: final,
-			Reason: truncateReason(d.Reason), JudgeVersion: cfg.Version, CreatedAt: now})
-		if rerr := gs.RecordJudgements(ctx, rows); rerr != nil {
-			return GateDecision{}, rerr
-		}
-		return d, nil
-	}
-
-	base := Decide(ctx, dup, MemoryInput{
-		MemoryID:    memoryID,
-		Content:     rec.Content,
-		ContentHash: fmt.Sprintf("%x", rec.ContentHash),
-		Domain:      rec.DomainTag,
-		MemType:     string(rec.MemoryType),
-		Confidence:  rec.ConfidenceScore,
-	})
-	if !base.Accept {
-		return finish(GateDecision{Reason: base.Reason})
-	}
-
-	jctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
-	defer cancel()
-	ans, err := cfg.ask(jctx, map[string]string{"memory": rec.Content}, "lasting", hunch.Lasting)
-	if err != nil {
-		return GateDecision{}, err
-	}
-	p := cfg.recorded(ans)
-	v := cfg.band(ans)
-	rows = append(rows, memory.Judgement{MemoryID: memoryID, Check: "lasting", PYes: &p, Verdict: v,
-		JudgeVersion: cfg.Version, CreatedAt: now})
-	switch v {
-	case memory.VerdictReject:
-		return finish(GateDecision{Reason: fmt.Sprintf("a remark about its own session, not lasting memory (p=%.2f)", p)})
-	case memory.VerdictAbstain:
-		return finish(GateDecision{Abstain: true, Reason: fmt.Sprintf("gate abstained: lasting-memory uncertain (p=%.2f)", p)})
-	}
-	return finish(GateDecision{Accept: true, Reason: fmt.Sprintf("passes checks; lasting p=%.2f", p)})
 }
 
-// truncateReason bounds the final row's reason, which is reused as the vote
-// rationale when a cached outcome is voted again.
-func truncateReason(s string) string {
-	const limit = 400
-	if len(s) > limit {
-		return s[:limit]
+// enqueue asks for an evaluation without blocking. A full queue is not an
+// error: the memory is offered again on a later tick.
+func (g *Gate) enqueue(memoryID string) {
+	g.mu.Lock()
+	if g.inflight[memoryID] {
+		g.mu.Unlock()
+		return
 	}
-	return s
+	g.inflight[memoryID] = true
+	g.mu.Unlock()
+	select {
+	case g.queue <- memoryID:
+	default:
+		g.mu.Lock()
+		delete(g.inflight, memoryID)
+		g.mu.Unlock()
+	}
+}
+
+func (g *Gate) recentlyFailed(memoryID string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	at, ok := g.failed[memoryID]
+	if !ok {
+		return false
+	}
+	if time.Since(at) > g.RetryAfterFailure {
+		delete(g.failed, memoryID)
+		return false
+	}
+	return true
+}
+
+// evaluate judges one memory and stores the semantic verdict. On any failure
+// it records nothing; the memory is voted with the built-in checks until
+// RetryAfterFailure has passed.
+func (g *Gate) evaluate(ctx context.Context, gs GateStore, memoryID string, logger zerolog.Logger) {
+	defer func() {
+		g.mu.Lock()
+		delete(g.inflight, memoryID)
+		g.mu.Unlock()
+	}()
+	fail := func(err error) {
+		g.mu.Lock()
+		g.failed[memoryID] = time.Now()
+		g.mu.Unlock()
+		logger.Warn().Err(err).Str("memory_id", memoryID).
+			Msg("memory gate could not judge this memory — it is voted with the built-in checks")
+	}
+	content, err := gs.JudgeableContent(ctx, memoryID)
+	if err != nil {
+		fail(err)
+		return
+	}
+	jctx, cancel := context.WithTimeout(ctx, g.Timeout)
+	defer cancel()
+	ps := make([]float64, len(g.Judges))
+	errs := make([]error, len(g.Judges))
+	var wg sync.WaitGroup
+	for i, j := range g.Judges {
+		wg.Add(1)
+		go func(i int, j LastingJudge) {
+			defer wg.Done()
+			ps[i], errs[i] = j.LastingProbability(jctx, content)
+		}(i, j)
+	}
+	wg.Wait()
+	for _, e := range errs {
+		if e != nil {
+			fail(e)
+			return
+		}
+	}
+	v := g.combine(ps)
+	if err := gs.RecordSemanticVerdict(ctx, memoryID, g.Version, v); err != nil {
+		fail(err)
+	}
+}
+
+// combine applies the policy to the judges' probabilities.
+func (g *Gate) combine(ps []float64) memory.SemanticVerdict {
+	lead, lo, hi := ps[0], 1.0, 0.0
+	for _, p := range ps {
+		lo, hi = min(lo, p), max(hi, p)
+	}
+	pass := lead >= g.ActAt && lo >= g.RejectBelow
+	p := lead
+	if g.Policy == PolicyAll {
+		pass, p = lo >= g.ActAt, lo
+	}
+	switch {
+	case pass:
+		return memory.SemanticVerdict{Verdict: memory.VerdictPass, P: p, Reason: fmt.Sprintf("lasting p=%.2f", p)}
+	case hi < g.RejectBelow:
+		return memory.SemanticVerdict{Verdict: memory.VerdictReject, P: p,
+			Reason: fmt.Sprintf("a remark about its own session, not lasting memory (p=%.2f)", p)}
+	default:
+		return memory.SemanticVerdict{Verdict: memory.VerdictAbstain, P: p,
+			Reason: fmt.Sprintf("held for review: lasting-memory uncertain (p=%.2f)", p)}
+	}
+}
+
+// gateOutcome is what the voter does with one memory this tick.
+type gateOutcome int
+
+const (
+	gateUseBaseline gateOutcome = iota // vote the built-in decision
+	gateOverride                       // vote the returned decision
+	gateHold                           // do not vote this tick
+)
+
+// Apply combines the FRESH built-in decision with the stored semantic verdict.
+// It never blocks on a judge: a memory with no verdict is queued for the
+// background evaluator and held.
+func (g *Gate) Apply(ctx context.Context, gs GateStore, mem *memory.MemoryRecord, baseline Decision, logger zerolog.Logger) (gateOutcome, Decision) {
+	g.init()
+	if !baseline.Accept || !g.InScope(mem.DomainTag) {
+		return gateUseBaseline, baseline
+	}
+	if decision, ok, err := gs.ReviewDecision(ctx, mem.MemoryID); err != nil {
+		logger.Warn().Err(err).Str("memory_id", mem.MemoryID).Msg("memory gate review lookup failed — built-in checks apply")
+		return gateUseBaseline, baseline
+	} else if ok {
+		if decision == memory.VerdictAccept {
+			return gateOverride, Decision{Accept: true, Reason: baseline.Reason + "; semantic check resolved by operator review"}
+		}
+		return gateOverride, Decision{Accept: false, Reason: "rejected by operator review"}
+	}
+	v, ok, err := gs.SemanticVerdict(ctx, mem.MemoryID, g.Version)
+	if err != nil {
+		logger.Warn().Err(err).Str("memory_id", mem.MemoryID).Msg("memory gate verdict lookup failed — built-in checks apply")
+		return gateUseBaseline, baseline
+	}
+	if !ok {
+		if g.recentlyFailed(mem.MemoryID) {
+			return gateUseBaseline, baseline
+		}
+		g.enqueue(mem.MemoryID)
+		return gateHold, Decision{}
+	}
+	switch v.Verdict {
+	case memory.VerdictPass:
+		return gateOverride, Decision{Accept: true, Reason: baseline.Reason + "; " + v.Reason}
+	case memory.VerdictReject:
+		return gateOverride, Decision{Accept: false, Reason: v.Reason}
+	default:
+		return gateHold, Decision{}
+	}
 }

@@ -2,191 +2,287 @@ package voter
 
 import (
 	"context"
-	"crypto/sha256"
+	"crypto/ed25519"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
-	"github.com/l33tdawg/sage/internal/hunch"
 	"github.com/l33tdawg/sage/internal/memory"
+	"github.com/l33tdawg/sage/internal/tx"
 )
 
-// fakeJudge answers each check id with a fixed p (or an error) and counts calls.
+// fakeJudge answers with a fixed probability, an error, or blocks until its
+// context ends (a hung judge service).
 type fakeJudge struct {
-	mu    sync.Mutex
-	p     map[string]float64
+	p     float64
 	err   error
-	calls int
+	hang  bool
+	calls atomic.Int64
 }
 
-func (f *fakeJudge) YesNo(_ context.Context, _ any, checks map[string]hunch.Check) (map[string]float64, error) {
+func (f *fakeJudge) LastingProbability(ctx context.Context, _ string) (float64, error) {
+	f.calls.Add(1)
+	if f.hang {
+		<-ctx.Done()
+		return 0, ctx.Err()
+	}
+	return f.p, f.err
+}
+
+// fakeGateStore is fakeStore plus the gate's node-local tables.
+type fakeGateStore struct {
+	fakeStore
+	mu       sync.Mutex
+	content  map[string]string
+	verdicts map[string]memory.SemanticVerdict // memoryID|version
+	review   map[string]string
+}
+
+func newFakeGateStore(pending ...*memory.MemoryRecord) *fakeGateStore {
+	f := &fakeGateStore{fakeStore: fakeStore{pending: pending, dups: map[string]bool{}},
+		content: map[string]string{}, verdicts: map[string]memory.SemanticVerdict{}, review: map[string]string{}}
+	for _, m := range pending {
+		f.content[m.MemoryID] = m.Content
+	}
+	return f
+}
+
+func (f *fakeGateStore) JudgeableContent(_ context.Context, id string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls++
-	if f.err != nil {
-		return nil, f.err
-	}
-	out := map[string]float64{}
-	for id := range checks {
-		p, ok := f.p[id]
-		if !ok {
-			return nil, hunch.ErrNoVerdict
-		}
-		out[id] = p
-	}
-	return out, nil
-}
-
-type fakeGateStore struct {
-	mems       map[string]*memory.MemoryRecord
-	judgements []memory.Judgement
-	review     map[string]string
-}
-
-func newFakeGateStore(rec *memory.MemoryRecord) *fakeGateStore {
-	return &fakeGateStore{mems: map[string]*memory.MemoryRecord{rec.MemoryID: rec}, review: map[string]string{}}
-}
-
-func (f *fakeGateStore) GetMemory(_ context.Context, id string) (*memory.MemoryRecord, error) {
-	m, ok := f.mems[id]
+	c, ok := f.content[id]
 	if !ok {
-		return nil, errors.New("not found")
+		return "", errors.New("content unavailable")
 	}
-	return m, nil
+	return c, nil
 }
-func (f *fakeGateStore) RecordJudgements(_ context.Context, js []memory.Judgement) error {
-	f.judgements = append(f.judgements, js...)
+func (f *fakeGateStore) SemanticVerdict(_ context.Context, id, version string) (memory.SemanticVerdict, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, ok := f.verdicts[id+"|"+version]
+	return v, ok, nil
+}
+func (f *fakeGateStore) RecordSemanticVerdict(_ context.Context, id, version string, v memory.SemanticVerdict) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.verdicts[id+"|"+version] = v
 	return nil
 }
-func (f *fakeGateStore) GateFinal(_ context.Context, id string) (string, string, bool, error) {
-	for i := len(f.judgements) - 1; i >= 0; i-- {
-		j := f.judgements[i]
-		if j.MemoryID == id && j.Check == "final" {
-			return j.Verdict, j.Reason, true, nil
-		}
-	}
-	return "", "", false, nil
-}
 func (f *fakeGateStore) ReviewDecision(_ context.Context, id string) (string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	d, ok := f.review[id]
 	return d, ok, nil
 }
 
-func (f *fakeGateStore) verdict(check string) string {
-	for _, j := range f.judgements {
-		if j.Check == check {
-			return j.Verdict
-		}
-	}
-	return ""
+func gateRec(id, content, domain string) *memory.MemoryRecord {
+	return &memory.MemoryRecord{MemoryID: id, Content: content, ContentHash: []byte(id), DomainTag: domain,
+		MemoryType: memory.TypeFact, ConfidenceScore: 0.9}
 }
 
-type noDups struct{}
+var accept = Decision{Accept: true, Reason: "passes all checks"}
 
-func (noDups) FindByContentHash(context.Context, string, string) (bool, error) { return false, nil }
-
-func rec(id, content string, typ memory.MemoryType, conf float64) *memory.MemoryRecord {
-	h := sha256.Sum256([]byte(content))
-	return &memory.MemoryRecord{MemoryID: id, Content: content, ContentHash: h[:], MemoryType: typ,
-		DomainTag: "general-notes", ConfidenceScore: conf}
-}
-
-func TestGate_SessionStateRemarkIsRejected(t *testing.T) {
-	// The motivating failure: a remark about the agent's own session, stored as
-	// a high-confidence fact. The built-in checks pass it (0.9 >= 0.7).
-	m := rec("m1", "The attachment was lost; the user must re-send the ten numbers.", memory.TypeFact, 0.9)
+func TestGate_FreshBaselineRejectAlwaysWins(t *testing.T) {
+	// The reviewed bug: a cached accept must never override a NEW built-in
+	// rejection (e.g. the dedup check failing on a vote retry).
+	m := gateRec("m1", "The depot opens at 07:00 on weekdays.", "notes")
 	gs := newFakeGateStore(m)
-	j := &fakeJudge{p: map[string]float64{"lasting": 0.04}}
-	d, err := (&Gate{Judges: []Judger{j}}).Decide(context.Background(), gs, noDups{}, "m1")
-	require.NoError(t, err)
+	g := &Gate{Judges: []LastingJudge{&fakeJudge{p: 0.99}}, Version: "v1"}
+	gs.verdicts["m1|v1"] = memory.SemanticVerdict{Verdict: memory.VerdictPass, P: 0.99}
+	gs.review["m1"] = memory.VerdictAccept
+	dedupReject := Decision{Accept: false, Reason: "duplicate content (hash: 6d31)"}
+	out, d := g.Apply(context.Background(), gs, m, dedupReject, zerolog.Nop())
+	require.Equal(t, gateUseBaseline, out)
 	require.False(t, d.Accept)
-	require.False(t, d.Abstain)
-	require.Contains(t, d.Reason, "not lasting memory")
-	require.Equal(t, memory.VerdictReject, gs.verdict("final"))
+	require.Contains(t, d.Reason, "duplicate content")
 }
 
-func TestGate_LastingFactIsAccepted(t *testing.T) {
-	m := rec("m1", "The depot opens at 07:00 on weekdays.", memory.TypeFact, 0.9)
+func TestGate_UnjudgedMemoryIsHeldAndJudgedInTheBackground(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := gateRec("m1", "The depot opens at 07:00 on weekdays.", "notes")
 	gs := newFakeGateStore(m)
-	d, err := (&Gate{Judges: []Judger{&fakeJudge{p: map[string]float64{"lasting": 0.97}}}}).Decide(
-		context.Background(), gs, noDups{}, "m1")
-	require.NoError(t, err)
+	j := &fakeJudge{p: 0.97}
+	g := &Gate{Judges: []LastingJudge{j}, Version: "v1"}
+	g.Start(ctx, gs, zerolog.Nop())
+
+	out, _ := g.Apply(ctx, gs, m, accept, zerolog.Nop())
+	require.Equal(t, gateHold, out, "no verdict yet: hold, never block the loop on the judge")
+	require.Eventually(t, func() bool {
+		_, ok, _ := gs.SemanticVerdict(ctx, "m1", "v1")
+		return ok
+	}, 5*time.Second, 10*time.Millisecond)
+	out, d := g.Apply(ctx, gs, m, accept, zerolog.Nop())
+	require.Equal(t, gateOverride, out)
 	require.True(t, d.Accept)
+	require.Contains(t, d.Reason, "passes all checks", "the fresh built-in reason is kept")
 	require.Contains(t, d.Reason, "lasting p=0.97")
 }
 
-func TestGate_UncertainAbstainsUntilReviewed(t *testing.T) {
-	m := rec("m1", "The shipment count for the quarter was around two hundred.", memory.TypeFact, 0.9)
+func TestGate_SessionRemarkIsRejected(t *testing.T) {
+	m := gateRec("m1", "The attachment was lost; the user must re-send the ten numbers.", "notes")
 	gs := newFakeGateStore(m)
-	j := &fakeJudge{p: map[string]float64{"lasting": 0.7}}
-	g := &Gate{Judges: []Judger{j}}
+	g := &Gate{Judges: []LastingJudge{&fakeJudge{}}, Version: "v1"}
+	gs.verdicts["m1|v1"] = g.combineForTest(0.04)
+	out, d := g.Apply(context.Background(), gs, m, accept, zerolog.Nop())
+	require.Equal(t, gateOverride, out)
+	require.False(t, d.Accept)
+	require.Contains(t, d.Reason, "not lasting memory")
+}
 
-	d, err := g.Decide(context.Background(), gs, noDups{}, "m1")
-	require.NoError(t, err)
-	require.True(t, d.Abstain, "0.5-0.9 is neither pass nor reject: no vote, the memory waits for review")
-
-	calls := j.calls
-	d, err = g.Decide(context.Background(), gs, noDups{}, "m1")
-	require.NoError(t, err)
-	require.True(t, d.Abstain)
-	require.Equal(t, calls, j.calls, "a judged memory is not sent to the judge again")
+func TestGate_HeldForReviewUntilTheOperatorDecides(t *testing.T) {
+	m := gateRec("m1", "The quarterly count was around two hundred units.", "notes")
+	gs := newFakeGateStore(m)
+	g := &Gate{Judges: []LastingJudge{&fakeJudge{}}, Version: "v1"}
+	gs.verdicts["m1|v1"] = g.combineForTest(0.7)
+	out, _ := g.Apply(context.Background(), gs, m, accept, zerolog.Nop())
+	require.Equal(t, gateHold, out)
 
 	gs.review["m1"] = memory.VerdictAccept
-	d, err = g.Decide(context.Background(), gs, noDups{}, "m1")
-	require.NoError(t, err)
+	out, d := g.Apply(context.Background(), gs, m, accept, zerolog.Nop())
+	require.Equal(t, gateOverride, out)
 	require.True(t, d.Accept)
-	require.Contains(t, d.Reason, "review: accept")
+	require.Contains(t, d.Reason, "resolved by operator review")
 }
 
-func TestGate_LeadPolicyLetsTheLeadDecideUnlessVetoed(t *testing.T) {
-	m := rec("m1", "The depot opens at 07:00 on weekdays.", memory.TypeFact, 0.9)
-	lead := &fakeJudge{p: map[string]float64{"lasting": 0.97}}
-	hedging := &fakeJudge{p: map[string]float64{"lasting": 0.62}}
-	objecting := &fakeJudge{p: map[string]float64{"lasting": 0.2}}
-
-	d, err := (&Gate{Judges: []Judger{lead, hedging}}).Decide(context.Background(), newFakeGateStore(m), noDups{}, "m1")
-	require.NoError(t, err)
-	require.True(t, d.Accept, "a hedging second judge does not block a sure lead")
-
-	d, err = (&Gate{Judges: []Judger{lead, hedging}, Policy: PolicyAll}).Decide(context.Background(), newFakeGateStore(m), noDups{}, "m1")
-	require.NoError(t, err)
-	require.True(t, d.Abstain, "under PolicyAll the same hedge sends the memory to review")
-
-	d, err = (&Gate{Judges: []Judger{lead, objecting}}).Decide(context.Background(), newFakeGateStore(m), noDups{}, "m1")
-	require.NoError(t, err)
-	require.True(t, d.Abstain, "a clear objection vetoes the lead; one objection alone never rejects")
-}
-
-func TestGate_ExemptDomainsAreNotJudged(t *testing.T) {
-	m := rec("m1", "tool_x: lists files under the given directory.", memory.TypeFact, 0.95)
-	m.DomainTag = "catalog.tools"
+func TestGate_ReviewDecisionSurvivesAJudgeVersionChange(t *testing.T) {
+	m := gateRec("m1", "The quarterly count was around two hundred units.", "notes")
 	gs := newFakeGateStore(m)
-	j := &fakeJudge{p: map[string]float64{"lasting": 0.01}}
-	_, err := (&Gate{Judges: []Judger{j}, ExemptDomainPrefixes: []string{"catalog."}}).Decide(
-		context.Background(), gs, noDups{}, "m1")
-	require.ErrorIs(t, err, ErrExempt)
-	require.Equal(t, 0, j.calls)
-	require.Empty(t, gs.judgements)
-}
-
-func TestGate_JudgeFailureRecordsNothing(t *testing.T) {
-	m := rec("m1", "The depot opens at 07:00 on weekdays.", memory.TypeFact, 0.9)
-	gs := newFakeGateStore(m)
-	_, err := (&Gate{Judges: []Judger{&fakeJudge{err: errors.New("connection refused")}}}).Decide(
-		context.Background(), gs, noDups{}, "m1")
-	require.Error(t, err, "the caller falls back to the built-in checks")
-	require.Empty(t, gs.judgements, "a failed judgement leaves no partial verdict behind")
-}
-
-func TestGate_BuiltInRejectionsStillApply(t *testing.T) {
-	m := rec("m1", "too short", memory.TypeFact, 0.9)
-	gs := newFakeGateStore(m)
-	j := &fakeJudge{p: map[string]float64{"lasting": 0.99}}
-	d, err := (&Gate{Judges: []Judger{j}}).Decide(context.Background(), gs, noDups{}, "m1")
-	require.NoError(t, err)
+	gs.review["m1"] = memory.VerdictReject
+	g := &Gate{Judges: []LastingJudge{&fakeJudge{p: 0.99}}, Version: "v2"} // no v2 verdict yet
+	out, d := g.Apply(context.Background(), gs, m, accept, zerolog.Nop())
+	require.Equal(t, gateOverride, out, "a human decision is final for that memory")
 	require.False(t, d.Accept)
-	require.Contains(t, d.Reason, "too short")
-	require.Equal(t, 0, j.calls, "no judge call is spent on a memory the built-in checks already reject")
+}
+
+func TestGate_VersionChangeRejudges(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := gateRec("m1", "The depot opens at 07:00 on weekdays.", "notes")
+	gs := newFakeGateStore(m)
+	gs.verdicts["m1|v1"] = memory.SemanticVerdict{Verdict: memory.VerdictReject, P: 0.1}
+	j := &fakeJudge{p: 0.97}
+	g := &Gate{Judges: []LastingJudge{j}, Version: "v2"}
+	g.Start(ctx, gs, zerolog.Nop())
+	out, _ := g.Apply(ctx, gs, m, accept, zerolog.Nop())
+	require.Equal(t, gateHold, out, "a verdict from an older judge version is not reused")
+	require.Eventually(t, func() bool { return j.calls.Load() == 1 }, 5*time.Second, 10*time.Millisecond)
+}
+
+func TestGate_JudgeFailureFallsBackToBuiltInChecks(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := gateRec("m1", "The depot opens at 07:00 on weekdays.", "notes")
+	gs := newFakeGateStore(m)
+	g := &Gate{Judges: []LastingJudge{&fakeJudge{err: errors.New("connection refused")}}, Version: "v1"}
+	g.Start(ctx, gs, zerolog.Nop())
+	_, _ = g.Apply(ctx, gs, m, accept, zerolog.Nop())
+	require.Eventually(t, func() bool {
+		out, d := g.Apply(ctx, gs, m, accept, zerolog.Nop())
+		return out == gateUseBaseline && d.Accept
+	}, 5*time.Second, 10*time.Millisecond, "after a failure the node votes with the built-in checks")
+	_, ok, _ := gs.SemanticVerdict(ctx, "m1", "v1")
+	require.False(t, ok, "a failed judgement records nothing")
+}
+
+func TestGate_UnreadableContentIsNeverSent(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := gateRec("m1", "enc::ciphertext", "notes")
+	gs := newFakeGateStore(m)
+	delete(gs.content, "m1") // the store cannot produce plaintext
+	j := &fakeJudge{p: 0.99}
+	g := &Gate{Judges: []LastingJudge{j}, Version: "v1"}
+	g.Start(ctx, gs, zerolog.Nop())
+	_, _ = g.Apply(ctx, gs, m, accept, zerolog.Nop())
+	require.Eventually(t, func() bool {
+		out, _ := g.Apply(ctx, gs, m, accept, zerolog.Nop())
+		return out == gateUseBaseline
+	}, 5*time.Second, 10*time.Millisecond)
+	require.Zero(t, j.calls.Load(), "nothing is sent to a judge when the content cannot be read")
+}
+
+func TestGate_ScopeControlsWhatIsSent(t *testing.T) {
+	g := &Gate{IncludeDomainPrefixes: []string{"projects."}, ExemptDomainPrefixes: []string{"projects.catalog"}}
+	require.True(t, g.InScope("projects.alpha"))
+	require.False(t, g.InScope("projects.catalog.tools"))
+	require.False(t, g.InScope("personal.notes"))
+	require.True(t, (&Gate{}).InScope("anything"))
+}
+
+func TestGate_LeadPolicy(t *testing.T) {
+	g := &Gate{}
+	g.init()
+	require.Equal(t, memory.VerdictPass, g.combine([]float64{0.97, 0.62}).Verdict, "a hedging second judge does not block a sure lead")
+	require.Equal(t, memory.VerdictAbstain, g.combine([]float64{0.97, 0.2}).Verdict, "a clear objection vetoes the lead")
+	require.Equal(t, memory.VerdictReject, g.combine([]float64{0.3, 0.2}).Verdict, "rejection needs every judge")
+	all := &Gate{Policy: PolicyAll}
+	all.init()
+	require.Equal(t, memory.VerdictAbstain, all.combine([]float64{0.97, 0.62}).Verdict)
+}
+
+// TestRun_HungJudgeDoesNotBlockOtherVotesOrUpgradeVoting is the isolation
+// requirement: with every judge call hanging, the loop keeps voting memories
+// the gate does not apply to and keeps voting on the upgrade proposal, and it
+// never votes the memory that is waiting on the judge.
+func TestRun_HungJudgeDoesNotBlockOtherVotesOrUpgradeVoting(t *testing.T) {
+	var captured capturedTxs
+	srv := captureServer(t, &captured)
+	defer srv.Close()
+	_, priv, err := ed25519.GenerateKey(nil)
+	require.NoError(t, err)
+
+	judged := gateRec("judged", "The depot opens at 07:00 on weekdays.", "notes")
+	exempt := gateRec("exempt", "tool_x lists the files under a directory.", "catalog.tools")
+	gs := newFakeGateStore(judged, exempt)
+	hung := &fakeJudge{hang: true}
+	app := &fakeApp{pid: "prop-1", target: 12, supported: true, ok: true, hasVote: map[string]bool{}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		Run(ctx, app, gs, Config{Key: priv, CometRPC: srv.URL, PollInterval: 5 * time.Millisecond,
+			Gate: &Gate{Judges: []LastingJudge{hung}, Version: "v1", ExemptDomainPrefixes: []string{"catalog."},
+				Timeout: time.Hour}}, zerolog.Nop())
+		close(done)
+	}()
+
+	voted := func(id string) bool {
+		for _, p := range captured.all() {
+			if p.MemoryVote != nil && p.MemoryVote.MemoryID == id {
+				return true
+			}
+		}
+		return false
+	}
+	upgradeVoted := func() bool {
+		for _, p := range captured.all() {
+			if p.Type == tx.TxTypeGovVote && p.GovVote != nil && p.GovVote.ProposalID == "prop-1" {
+				return true
+			}
+		}
+		return false
+	}
+	require.Eventually(t, func() bool { return voted("exempt") && upgradeVoted() }, 5*time.Second, 10*time.Millisecond,
+		"unrelated voting and upgrade voting continue while the judge hangs")
+	require.Eventually(t, func() bool { return hung.calls.Load() >= 1 }, 5*time.Second, 10*time.Millisecond)
+	require.False(t, voted("judged"), "the memory waiting on the judge is not voted")
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return promptly after cancellation while a judge call was hanging")
+	}
+}
+
+// combineForTest runs the policy on a single judge's probability.
+func (g *Gate) combineForTest(p float64) memory.SemanticVerdict {
+	g.init()
+	return g.combine([]float64{p})
 }

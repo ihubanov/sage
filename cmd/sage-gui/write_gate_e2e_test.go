@@ -196,7 +196,7 @@ func TestMemoryGateEndToEndOnARealNode(t *testing.T) {
 	unsureID := "00000000-0000-4000-8000-000000000003"
 	submit(unsureID, "The quarterly shipment count was around two hundred units.")
 	require.Eventually(t, func() bool {
-		q, err := projection.ReviewQueue(ctx, gateVersion, 10)
+		q, err := projection.ReviewQueue(ctx, gateVersion, 0, 10)
 		return err == nil && len(q) == 1 && q[0].MemoryID == unsureID
 	}, 45*time.Second, 200*time.Millisecond, "the uncertain memory reaches the review queue")
 	require.Equal(t, memory.StatusProposed, statusOf(unsureID), "an abstained memory stays proposed (no vote)")

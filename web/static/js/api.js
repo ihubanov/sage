@@ -1261,8 +1261,10 @@ export function rerankerSetupInstallEngine() {
 }
 
 // Memory gate review queue (internal/voter.Gate).
-export async function fetchMemoryGateReviewQueue({ limit = 100 } = {}) {
-    const res = await fetch(`${API_BASE}/v1/dashboard/memory/review-queue?limit=${encodeURIComponent(limit)}`);
+export async function fetchMemoryGateReviewQueue({ limit = 50, cursor = '' } = {}) {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (cursor) query.set('cursor', cursor);
+    const res = await fetch(`${API_BASE}/v1/dashboard/memory/review-queue?${query}`);
     const payload = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(payload.error || 'the memory review queue is temporarily unavailable');
     return payload;

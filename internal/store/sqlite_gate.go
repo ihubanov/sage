@@ -196,10 +196,15 @@ type HeldForReview struct {
 }
 
 // ReviewQueue lists memories held under version that are still proposed and
-// not yet decided, oldest first.
-func (s *SQLiteStore) ReviewQueue(ctx context.Context, version string, limit int) ([]HeldForReview, error) {
-	if limit <= 0 || limit > 500 {
+// not yet decided, oldest first, as one RAW page (offset, limit). Callers that
+// filter rows for visibility must walk pages until their visible page is full
+// (see web/write_gate.go); a raw limit alone would let hidden rows starve it.
+func (s *SQLiteStore) ReviewQueue(ctx context.Context, version string, offset, limit int) ([]HeldForReview, error) {
+	if limit <= 0 || limit > 1024 {
 		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
 	}
 	rows, err := s.conn.QueryContext(ctx,
 		`SELECT v.memory_id, v.reason, v.p_yes, v.created_at, v.judge_version
@@ -207,7 +212,7 @@ func (s *SQLiteStore) ReviewQueue(ctx context.Context, version string, limit int
 		 JOIN memories AS m ON m.memory_id = v.memory_id
 		 WHERE v.judge_version = ? AND v.verdict = 'abstain' AND m.status = 'proposed'
 		   AND NOT EXISTS (SELECT 1 FROM memory_review_decisions AS d WHERE d.memory_id = v.memory_id)
-		 ORDER BY v.created_at ASC LIMIT ?`, version, limit)
+		 ORDER BY v.created_at ASC, v.memory_id ASC LIMIT ? OFFSET ?`, version, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("review queue: %w", err)
 	}

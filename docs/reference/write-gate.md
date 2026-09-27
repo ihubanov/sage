@@ -47,8 +47,12 @@ fresh**, and the gate can only narrow their outcome:
 | accept | held (in between) | nothing, until the operator decides in the review queue |
 | accept | judge failed | accept (built-in checks only; retried after 10 minutes) |
 
-Verdicts are cached **per judge version** (models, policy and check wording).
-Changing the judges re-judges pending memories. An operator's review decision
+Verdicts are cached **per judge version**: check wording, policy, configured
+models, the judge **service** (a credential-free hash of its scheme, host and
+path — with no models configured the service's default model decides) and an
+optional operator tag, `SAGE_HUNCH_JUDGE_REVISION`, to bump when a service's
+default model changes behind the same URL. Changing any of them re-judges
+pending memories. An operator's review decision
 settles only the semantic question — the built-in checks still run when the
 node votes — and is final for that memory across judge versions: a human
 decision outranks a later judge.
@@ -62,6 +66,14 @@ buttons. With the gate off it says so, and nothing is held. The same data is at
 dashboard's normal projection-integrity path (quarantined records are omitted);
 a memory whose content cannot be decrypted is listed as unavailable, without
 content, and cannot be decided until it can be read.
+
+The queue pages past rows it may not show (internal or quarantined): one
+request walks raw held rows until its visible page is full, the rows run out,
+or the dashboard's interactive scan budget is spent, and returns `next_cursor`
+when rows remain (*Load more* in the panel). A decision is revalidated on the
+server immediately before it is stored — the content must still be readable
+and the record must pass the same integrity check — so a stale page or an API
+client cannot decide a memory it could not have reviewed.
 
 ## What leaves the node
 
@@ -106,6 +118,7 @@ conversation, should not be asked this question. List their domain prefixes in
 | `SAGE_HUNCH_INCLUDE_DOMAINS` | comma-separated domain prefixes to judge; when set, only these domains' text is sent |
 | `SAGE_HUNCH_EXEMPT_DOMAINS` | comma-separated domain prefixes never judged (e.g. program-written catalogs) |
 | `SAGE_HUNCH_TIMEOUT` | judge budget per memory (default `60s`) |
+| `SAGE_HUNCH_JUDGE_REVISION` | free-form tag folded into the verdict-cache version; change it to re-judge after a service's default model changes |
 
 ## Operator endpoints
 

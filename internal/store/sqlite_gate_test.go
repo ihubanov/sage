@@ -130,3 +130,68 @@ func TestMemoryGate_ReviewCursorPreservesTimestampAndTies(t *testing.T) {
 	_, err = s.ReviewQueue(ctx, "v2", first[0].Cursor, 10)
 	require.Error(t, err)
 }
+
+func TestMemoryGate_EvidenceIsNodeLocalBoundedAndNeverCiphertext(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	_, ok, err := s.JudgeableEvidence(ctx, "m1")
+	require.NoError(t, err)
+	require.False(t, ok, "no evidence means the evidence check is not asked, not empty evidence")
+
+	_, err = s.CreateMemoryEvidence(ctx, "agent-a", string(make([]byte, MaxEvidenceBytes+1)))
+	require.Error(t, err)
+	_, err = s.CreateMemoryEvidence(ctx, "agent-a", "")
+	require.Error(t, err)
+
+	keyPath := filepath.Join(t.TempDir(), "vault.key")
+	require.NoError(t, vault.Init(keyPath, "evidence-test"))
+	v, err := vault.Open(keyPath, "evidence-test")
+	require.NoError(t, err)
+	s.SetVault(v)
+	const ev = "Minutes of the 3 March meeting: the rack move was approved."
+	id, err := s.CreateMemoryEvidence(ctx, "agent-a", ev)
+	require.NoError(t, err)
+	var raw string
+	require.NoError(t, s.conn.QueryRowContext(ctx, `SELECT evidence FROM memory_evidence WHERE evidence_id = ?`, id).Scan(&raw))
+	require.NotContains(t, raw, "rack move", "evidence is encrypted at rest like memory content")
+
+	_, ok, err = s.JudgeableEvidence(ctx, "m1")
+	require.NoError(t, err)
+	require.False(t, ok, "uploaded evidence belongs to no memory until a submission claims it")
+	require.NoError(t, s.ClaimMemoryEvidence(ctx, id, "agent-a", "m1"))
+	got, ok, err := s.JudgeableEvidence(ctx, "m1")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, ev, got)
+
+	s.SetVault(nil)
+	_, _, err = s.JudgeableEvidence(ctx, "m1")
+	require.ErrorIs(t, err, ErrContentUnavailable, "locked evidence fails; it is never reported as absent or sent as ciphertext")
+}
+
+func TestMemoryGate_EvidenceIsClaimedOnceByItsOwnAgent(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	id, err := s.CreateMemoryEvidence(ctx, "agent-a", "Datasheet: rated power 40 kW.")
+	require.NoError(t, err)
+	require.ErrorIs(t, s.ClaimMemoryEvidence(ctx, id, "agent-b", "m1"), ErrEvidenceUnavailable, "another agent cannot claim it")
+	require.ErrorIs(t, s.ClaimMemoryEvidence(ctx, "ev-unknown", "agent-a", "m1"), ErrEvidenceUnavailable)
+	require.NoError(t, s.ClaimMemoryEvidence(ctx, id, "agent-a", "m1"))
+	require.ErrorIs(t, s.ClaimMemoryEvidence(ctx, id, "agent-a", "m2"), ErrEvidenceUnavailable, "one id, one memory")
+
+	old, err := s.CreateMemoryEvidence(ctx, "agent-a", "stale upload")
+	require.NoError(t, err)
+	_, err = s.conn.ExecContext(ctx, `UPDATE memory_evidence SET created_at = ? WHERE evidence_id = ?`,
+		time.Now().UTC().Add(-2*UnclaimedEvidenceTTL).Format(time.RFC3339Nano), old)
+	require.NoError(t, err)
+	require.ErrorIs(t, s.ClaimMemoryEvidence(ctx, old, "agent-a", "m3"), ErrEvidenceUnavailable, "expired evidence cannot be claimed")
+
+	for i := 0; i < MaxUnclaimedEvidence; i++ {
+		_, err = s.CreateMemoryEvidence(ctx, "agent-c", "evidence")
+		require.NoError(t, err)
+	}
+	_, err = s.CreateMemoryEvidence(ctx, "agent-c", "one too many")
+	require.ErrorIs(t, err, ErrTooMuchUnclaimedEvidence)
+	_, err = s.CreateMemoryEvidence(ctx, "agent-a", "other agents are not affected")
+	require.NoError(t, err)
+}

@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -15,7 +17,9 @@ import (
 //
 // Nothing here is consensus state. Semantic verdicts are this node's judge
 // answers, cached per judge version; review decisions are this node's
-// operator's answers for memories the gate held.
+// operator's answers for memories the gate held;
+// evidence is the source material a client submitted with a memory to THIS
+// node, kept out of the transaction so it never reaches the chain.
 const writeGateSchema = `
 	CREATE TABLE IF NOT EXISTS memory_gate_verdicts (
 		memory_id     TEXT NOT NULL,
@@ -28,6 +32,16 @@ const writeGateSchema = `
 	);
 	CREATE INDEX IF NOT EXISTS idx_memory_gate_verdicts_held
 		ON memory_gate_verdicts(judge_version, verdict);
+
+	CREATE TABLE IF NOT EXISTS memory_evidence (
+		evidence_id TEXT PRIMARY KEY,
+		agent_id    TEXT NOT NULL,
+		memory_id   TEXT UNIQUE,
+		evidence    TEXT NOT NULL,
+		created_at  TEXT NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_memory_evidence_unclaimed
+		ON memory_evidence(agent_id, created_at) WHERE memory_id IS NULL;
 
 	CREATE TABLE IF NOT EXISTS memory_review_decisions (
 		memory_id  TEXT PRIMARY KEY,
@@ -264,4 +278,102 @@ func (s *SQLiteStore) ReviewMemory(ctx context.Context, memoryID string) (rec *m
 	}
 	rec.Content = plain
 	return rec, true, nil
+}
+
+// Evidence is uploaded on its own (it must never be in the signed submission
+// body, which is copied into the transaction) and then claimed by exactly one
+// memory submission from the same agent, by its random id.
+const (
+	// MaxEvidenceBytes bounds the evidence stored with one memory.
+	MaxEvidenceBytes = 32 << 10
+	// MaxUnclaimedEvidence bounds one agent's uploaded-but-unclaimed evidence.
+	MaxUnclaimedEvidence = 64
+	// UnclaimedEvidenceTTL is how long uploaded evidence waits to be claimed.
+	UnclaimedEvidenceTTL = time.Hour
+)
+
+// ErrEvidenceUnavailable means an evidence id is unknown, expired, belongs to
+// another agent, or was already claimed by a submission.
+var ErrEvidenceUnavailable = errors.New("evidence id is unknown, expired, already used, or not this agent's")
+
+// ErrTooMuchUnclaimedEvidence means the agent has too much unclaimed evidence.
+var ErrTooMuchUnclaimedEvidence = errors.New("too much unclaimed evidence for this agent")
+
+// CreateMemoryEvidence stores evidence uploaded by agentID, node-local and
+// encrypted like memory content when the vault is on, and returns the random
+// id a submission uses to claim it. Unclaimed evidence past its TTL is removed.
+func (s *SQLiteStore) CreateMemoryEvidence(ctx context.Context, agentID, evidence string) (string, error) {
+	if agentID == "" {
+		return "", errors.New("evidence needs an agent")
+	}
+	if evidence == "" {
+		return "", errors.New("evidence is empty")
+	}
+	if len(evidence) > MaxEvidenceBytes {
+		return "", fmt.Errorf("evidence is %d bytes; the maximum is %d", len(evidence), MaxEvidenceBytes)
+	}
+	cutoff := time.Now().UTC().Add(-UnclaimedEvidenceTTL).Format(time.RFC3339Nano)
+	if _, err := s.writeExecContext(ctx,
+		`DELETE FROM memory_evidence WHERE memory_id IS NULL AND created_at < ?`, cutoff); err != nil {
+		return "", fmt.Errorf("expire evidence: %w", err)
+	}
+	var unclaimed int
+	if err := s.conn.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memory_evidence WHERE memory_id IS NULL AND agent_id = ?`, agentID).Scan(&unclaimed); err != nil {
+		return "", fmt.Errorf("count evidence: %w", err)
+	}
+	if unclaimed >= MaxUnclaimedEvidence {
+		return "", ErrTooMuchUnclaimedEvidence
+	}
+	stored, err := s.encryptContent(evidence)
+	if err != nil {
+		return "", fmt.Errorf("encrypt evidence: %w", err)
+	}
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("evidence id: %w", err)
+	}
+	id := "ev-" + hex.EncodeToString(raw[:])
+	if _, err := s.writeExecContext(ctx,
+		`INSERT INTO memory_evidence (evidence_id, agent_id, evidence, created_at) VALUES (?, ?, ?, ?)`,
+		id, agentID, stored, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return "", fmt.Errorf("store evidence: %w", err)
+	}
+	return id, nil
+}
+
+// ClaimMemoryEvidence attaches unclaimed, unexpired evidence uploaded by
+// agentID to memoryID. Each evidence id can be claimed once.
+func (s *SQLiteStore) ClaimMemoryEvidence(ctx context.Context, evidenceID, agentID, memoryID string) error {
+	cutoff := time.Now().UTC().Add(-UnclaimedEvidenceTTL).Format(time.RFC3339Nano)
+	res, err := s.writeExecContext(ctx,
+		`UPDATE memory_evidence SET memory_id = ?
+		 WHERE evidence_id = ? AND agent_id = ? AND memory_id IS NULL AND created_at >= ?`,
+		memoryID, evidenceID, agentID, cutoff)
+	if err != nil {
+		return fmt.Errorf("claim evidence: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrEvidenceUnavailable
+	}
+	return nil
+}
+
+// JudgeableEvidence returns the evidence claimed by a memory in plaintext
+// (ok=false when none was), or ErrContentUnavailable when it exists but cannot
+// be decrypted — never stored ciphertext or the locked placeholder.
+func (s *SQLiteStore) JudgeableEvidence(ctx context.Context, memoryID string) (string, bool, error) {
+	var stored string
+	err := s.conn.QueryRowContext(ctx, `SELECT evidence FROM memory_evidence WHERE memory_id = ?`, memoryID).Scan(&stored)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("judgeable evidence: %w", err)
+	}
+	plain, err := s.strictPlaintext(stored)
+	if err != nil {
+		return "", false, err
+	}
+	return plain, true, nil
 }

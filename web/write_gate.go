@@ -35,6 +35,12 @@ type memoryGateReviewStore interface {
 	SetReviewDecision(ctx context.Context, memoryID, version, decision, decidedBy, note string) error
 }
 
+// memoryGateEvidenceStore is implemented by stores that keep the evidence
+// submitted with memories; the review queue shows it next to the memory.
+type memoryGateEvidenceStore interface {
+	JudgeableEvidence(ctx context.Context, memoryID string) (string, bool, error)
+}
+
 // SetMemoryGate tells the dashboard which gate the node runs (nil = off).
 func (h *DashboardHandler) SetMemoryGate(g *voter.Gate) { h.memoryGate.Store(g) }
 
@@ -48,6 +54,7 @@ func (h *DashboardHandler) memoryGateStatus() map[string]any {
 		"enabled":         true,
 		"judge_version":   g.Version,
 		"judges":          len(g.Judges),
+		"evidence_judges": len(g.SupportJudges),
 		"include_domains": nonNilStrings(g.IncludeDomainPrefixes),
 		"exempt_domains":  nonNilStrings(g.ExemptDomainPrefixes),
 	}
@@ -66,6 +73,7 @@ type reviewQueueItem struct {
 	MemoryType         string    `json:"memory_type,omitempty"`
 	Content            string    `json:"content,omitempty"`
 	ContentUnavailable bool      `json:"content_unavailable,omitempty"`
+	Evidence           string    `json:"evidence,omitempty"`
 	Reason             string    `json:"reason"`
 	P                  float64   `json:"p_yes"`
 	HeldAt             time.Time `json:"held_at"`
@@ -175,6 +183,7 @@ func (h *DashboardHandler) handleReviewQueueUnsealed(w http.ResponseWriter, r *h
 		byID := make(map[string]store.HeldForReview, len(held))
 		readable := make([]*memory.MemoryRecord, 0, len(held))
 		unavailable := map[string]bool{}
+		evidence := map[string]string{}
 		for _, it := range held {
 			rec, available, rerr := rs.ReviewMemory(ctx, it.MemoryID)
 			if errors.Is(rerr, store.ErrMemoryNotFound) {
@@ -196,6 +205,16 @@ func (h *DashboardHandler) handleReviewQueueUnsealed(w http.ResponseWriter, r *h
 				// decided until the content can be read.
 				unavailable[it.MemoryID] = true
 				continue
+			}
+			if es, ok := rs.(memoryGateEvidenceStore); ok {
+				ev, _, everr := es.JudgeableEvidence(ctx, it.MemoryID)
+				if everr != nil {
+					// Evidence that exists but cannot be read makes the item
+					// unreviewable, exactly like unreadable content.
+					unavailable[it.MemoryID] = true
+					continue
+				}
+				evidence[it.MemoryID] = ev
 			}
 			readable = append(readable, rec)
 		}
@@ -225,7 +244,7 @@ func (h *DashboardHandler) handleReviewQueueUnsealed(w http.ResponseWriter, r *h
 			case keptByID[id] != nil:
 				rec := keptByID[id]
 				items = append(items, reviewQueueItem{MemoryID: id, DomainTag: rec.DomainTag,
-					MemoryType: string(rec.MemoryType), Content: rec.Content,
+					MemoryType: string(rec.MemoryType), Content: rec.Content, Evidence: evidence[id],
 					Reason: meta.Reason, P: meta.P, HeldAt: meta.HeldAt})
 			}
 			if len(items) == limit {

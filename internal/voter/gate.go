@@ -14,7 +14,8 @@ import (
 
 // Gate is the optional memory gate: a semantic check, asked of one or more
 // operator-configured judges, of whether a proposed memory is lasting
-// knowledge or a remark about the session it came from.
+// knowledge or a remark about the session it came from — and, for a memory
+// submitted with evidence, whether that evidence supports it.
 //
 // It exists because the built-in checks trust the author's self-declared
 // confidence: an agent that stores "the attachment was lost; the user must
@@ -43,6 +44,13 @@ import (
 type Gate struct {
 	// Judges are asked concurrently; Policy says how their answers combine.
 	Judges []LastingJudge
+	// SupportJudges, when set, are also asked — concurrently with Judges —
+	// whether a memory is supported by the evidence submitted with it. Only
+	// memories that HAVE evidence (see EvidenceStore) are asked; a memory
+	// without evidence is judged exactly as before. Their answers always
+	// combine as PolicyAll: every judge must reach ActAt for the memory to
+	// pass, whatever Policy says (see docs/reference/write-gate.md).
+	SupportJudges []SupportJudge
 	// Policy: PolicyLead (default) — the FIRST judge leads; a memory passes
 	// when the lead is at or above ActAt and no other judge is below
 	// RejectBelow, and fails only when every judge is below RejectBelow.
@@ -85,6 +93,23 @@ type Gate struct {
 // method) rather than a remark about the conversation it came from.
 type LastingJudge interface {
 	LastingProbability(ctx context.Context, content string) (float64, error)
+}
+
+// SupportJudge is a provider-neutral evidence judge: the probability that
+// evidence supports what content asserts, as stated (time frame and certainty
+// included).
+type SupportJudge interface {
+	SupportedProbability(ctx context.Context, content, evidence string) (float64, error)
+}
+
+// EvidenceStore is optionally implemented by a GateStore that keeps the
+// evidence submitted with memories. Without it the evidence check never runs.
+type EvidenceStore interface {
+	// JudgeableEvidence returns the evidence submitted with a memory in
+	// plaintext, and ok=false when none was submitted. Like JudgeableContent
+	// it must FAIL — never return ok=false or ciphertext — when evidence exists
+	// but cannot be decrypted.
+	JudgeableEvidence(ctx context.Context, memoryID string) (evidence string, ok bool, err error)
 }
 
 // GateStore is what the gate needs from the node's store beyond Store.
@@ -226,10 +251,24 @@ func (g *Gate) evaluate(ctx context.Context, gs GateStore, memoryID string, logg
 		fail(err)
 		return
 	}
+	var evidence string
+	hasEvidence := false
+	if es, ok := gs.(EvidenceStore); ok && len(g.SupportJudges) > 0 {
+		if evidence, hasEvidence, err = es.JudgeableEvidence(ctx, memoryID); err != nil {
+			fail(err)
+			return
+		}
+	}
 	jctx, cancel := context.WithTimeout(ctx, g.Timeout)
 	defer cancel()
 	ps := make([]float64, len(g.Judges))
 	errs := make([]error, len(g.Judges))
+	var sps []float64
+	var serrs []error
+	if hasEvidence {
+		sps = make([]float64, len(g.SupportJudges))
+		serrs = make([]error, len(g.SupportJudges))
+	}
 	var wg sync.WaitGroup
 	for i, j := range g.Judges {
 		wg.Add(1)
@@ -238,14 +277,26 @@ func (g *Gate) evaluate(ctx context.Context, gs GateStore, memoryID string, logg
 			ps[i], errs[i] = j.LastingProbability(jctx, content)
 		}(i, j)
 	}
+	if hasEvidence {
+		for i, j := range g.SupportJudges {
+			wg.Add(1)
+			go func(i int, j SupportJudge) {
+				defer wg.Done()
+				sps[i], serrs[i] = j.SupportedProbability(jctx, content, evidence)
+			}(i, j)
+		}
+	}
 	wg.Wait()
-	for _, e := range errs {
+	for _, e := range append(errs, serrs...) {
 		if e != nil {
 			fail(e)
 			return
 		}
 	}
 	v := g.combine(ps)
+	if hasEvidence {
+		v = mergeVerdicts(v, g.combineSupport(sps))
+	}
 	if err := gs.RecordSemanticVerdict(ctx, memoryID, g.Version, v); err != nil {
 		fail(err)
 	}
@@ -271,6 +322,46 @@ func (g *Gate) combine(ps []float64) memory.SemanticVerdict {
 	default:
 		return memory.SemanticVerdict{Verdict: memory.VerdictAbstain, P: p,
 			Reason: fmt.Sprintf("held for review: lasting-memory uncertain (p=%.2f)", p)}
+	}
+}
+
+// combineSupport combines the evidence judges' probabilities. It always
+// requires every judge: on held-out tests the lead-with-veto policy let
+// claims about an earlier time or claims only reported by someone pass as
+// supported, and requiring agreement removed them.
+func (g *Gate) combineSupport(ps []float64) memory.SemanticVerdict {
+	lo, hi := 1.0, 0.0
+	for _, p := range ps {
+		lo, hi = min(lo, p), max(hi, p)
+	}
+	switch {
+	case lo >= g.ActAt:
+		return memory.SemanticVerdict{Verdict: memory.VerdictPass, P: lo, Reason: fmt.Sprintf("supported by its evidence p=%.2f", lo)}
+	case hi < g.RejectBelow:
+		return memory.SemanticVerdict{Verdict: memory.VerdictReject, P: hi,
+			Reason: fmt.Sprintf("not supported by the evidence submitted with it (p=%.2f)", hi)}
+	default:
+		return memory.SemanticVerdict{Verdict: memory.VerdictAbstain, P: lo,
+			Reason: fmt.Sprintf("held for review: support by its evidence uncertain (p=%.2f)", lo)}
+	}
+}
+
+// mergeVerdicts combines the lasting and evidence verdicts for one memory: it
+// passes only when both pass, is rejected when either is, and is otherwise
+// held for review.
+func mergeVerdicts(lasting, support memory.SemanticVerdict) memory.SemanticVerdict {
+	switch {
+	case lasting.Verdict == memory.VerdictReject:
+		return lasting
+	case support.Verdict == memory.VerdictReject:
+		return support
+	case lasting.Verdict == memory.VerdictPass && support.Verdict == memory.VerdictPass:
+		return memory.SemanticVerdict{Verdict: memory.VerdictPass, P: min(lasting.P, support.P),
+			Reason: lasting.Reason + "; " + support.Reason}
+	case lasting.Verdict == memory.VerdictAbstain:
+		return lasting
+	default:
+		return support
 	}
 }
 

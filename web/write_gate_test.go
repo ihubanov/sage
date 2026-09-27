@@ -209,3 +209,41 @@ func TestReviewQueue_RejectsInvalidAndStaleCursors(t *testing.T) {
 		require.Equal(t, tc.want, rr.Code, rr.Body.String())
 	}
 }
+
+func TestReviewQueue_ShowsEvidenceAndHidesItWhenUnreadable(t *testing.T) {
+	ctx := context.Background()
+	h, s := newTestHandler(t)
+	h.SetMemoryGate(&voter.Gate{Version: reviewTestVersion})
+	router := testRouter(h)
+	attach := func(memoryID, evidence string) {
+		t.Helper()
+		id, err := s.CreateMemoryEvidence(ctx, "agent", evidence)
+		require.NoError(t, err)
+		require.NoError(t, s.ClaimMemoryEvidence(ctx, id, "agent", memoryID))
+	}
+	base := time.Now().UTC().Add(-time.Minute)
+	heldMemory(t, s, "m-ev", "general-notes", "The north gate alarm is disabled.", base)
+	const ev = "Work order 118: north gate alarm disabled today."
+	attach("m-ev", ev)
+
+	items := reviewQueue(t, router, "")["items"].([]any)
+	require.Len(t, items, 1)
+	require.Equal(t, ev, items[0].(map[string]any)["evidence"])
+
+	keyPath := filepath.Join(t.TempDir(), "vault.key")
+	require.NoError(t, vault.Init(keyPath, "review-evidence"))
+	v, err := vault.Open(keyPath, "review-evidence")
+	require.NoError(t, err)
+	heldMemory(t, s, "m-locked", "general-notes", "The pump is rated 40 kW.", base.Add(time.Second)) // plaintext content
+	s.SetVault(v)
+	attach("m-locked", "Datasheet: rated power 40 kW.") // encrypted at rest
+	s.SetVault(nil)                                     // and the vault locks
+
+	items = reviewQueue(t, router, "")["items"].([]any)
+	require.Len(t, items, 2)
+	locked := items[1].(map[string]any)
+	require.Equal(t, "m-locked", locked["memory_id"])
+	require.Equal(t, true, locked["content_unavailable"], "unreadable evidence makes the item unreviewable")
+	require.NotContains(t, locked, "evidence")
+	require.NotContains(t, locked, "content")
+}

@@ -3180,6 +3180,12 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Above app-v23, the caller is not an active ordinary agent (Root is not an agent).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetails"
         "429":
           description: Too much unclaimed evidence for this agent.
           content:

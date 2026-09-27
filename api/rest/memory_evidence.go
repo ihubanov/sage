@@ -20,6 +20,7 @@ import (
 type memoryEvidenceStore interface {
 	CreateMemoryEvidence(ctx context.Context, agentID, evidence string) (string, error)
 	ClaimMemoryEvidence(ctx context.Context, evidenceID, agentID, memoryID string) error
+	ReleaseMemoryEvidence(ctx context.Context, evidenceID, memoryID string) error
 }
 
 // UploadEvidenceRequest is the JSON body for POST /v1/memory/evidence.
@@ -37,6 +38,12 @@ type UploadEvidenceResponse struct {
 // handleUploadEvidence handles POST /v1/memory/evidence. The evidence is kept
 // node-local; nothing is broadcast.
 func (s *Server) handleUploadEvidence(w http.ResponseWriter, r *http.Request) {
+	agentID := middleware.ContextAgentID(r.Context())
+	// Key possession is not enrollment: above app-v23 only an active ordinary
+	// agent may store evidence, so fresh keys cannot bypass the per-agent cap.
+	if !s.requireAppV23ActiveOrdinaryAgent(w, agentID, "memory evidence upload") {
+		return
+	}
 	es, ok := s.store.(memoryEvidenceStore)
 	if !ok {
 		writeProblem(w, http.StatusNotImplemented, "Evidence not supported",
@@ -52,7 +59,7 @@ func (s *Server) handleUploadEvidence(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusBadRequest, "Invalid evidence", "evidence is required and at most 32 KiB.")
 		return
 	}
-	id, err := es.CreateMemoryEvidence(r.Context(), middleware.ContextAgentID(r.Context()), req.Evidence)
+	id, err := es.CreateMemoryEvidence(r.Context(), agentID, req.Evidence)
 	if errors.Is(err, store.ErrTooMuchUnclaimedEvidence) {
 		writeProblem(w, http.StatusTooManyRequests, "Too much unclaimed evidence",
 			"Submit memories for the evidence already uploaded, or wait for it to expire.")
@@ -67,10 +74,10 @@ func (s *Server) handleUploadEvidence(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// claimSubmittedEvidence attaches a submission's evidence to its memory before
-// the transaction is built. It writes the problem response and returns false
-// when an evidence id was given but cannot be claimed: evidence is refused,
-// never silently dropped.
+// claimSubmittedEvidence attaches a submission's evidence to its memory
+// immediately before the transaction is signed. It writes the problem response
+// and returns false when an evidence id was given but cannot be claimed:
+// evidence is refused, never silently dropped.
 func (s *Server) claimSubmittedEvidence(w http.ResponseWriter, r *http.Request, evidenceID, agentID, memoryID string) bool {
 	if evidenceID == "" {
 		return true
@@ -91,4 +98,24 @@ func (s *Server) claimSubmittedEvidence(w http.ResponseWriter, r *http.Request, 
 		return false
 	}
 	return true
+}
+
+// releaseUnsentEvidence returns a claim to its uploader when the submission
+// provably never sent a transaction — it failed before the submit stage (a
+// fenced or paused signer, signing, encoding) — so the caller can retry with
+// the same evidence_id. Any failure AT submit keeps the claim, even one that
+// looks definitive: an indeterminate transaction may still commit and its
+// memory must keep its evidence. A claim whose memory never appears is
+// removed by retention (store.OrphanedEvidenceGrace).
+func (s *Server) releaseUnsentEvidence(evidenceID, memoryID string, stage consensusTxStage, err error) {
+	if evidenceID == "" || err == nil || stage == consensusTxSubmit {
+		return
+	}
+	es, ok := s.store.(memoryEvidenceStore)
+	if !ok {
+		return
+	}
+	if rerr := es.ReleaseMemoryEvidence(context.Background(), evidenceID, memoryID); rerr != nil {
+		s.logger.Warn().Err(rerr).Str("memory_id", memoryID).Msg("could not release evidence of an unsent submission")
+	}
 }

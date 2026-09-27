@@ -247,3 +247,36 @@ func TestReviewQueue_ShowsEvidenceAndHidesItWhenUnreadable(t *testing.T) {
 	require.NotContains(t, locked, "evidence")
 	require.NotContains(t, locked, "content")
 }
+
+func TestReviewDecision_RefusedWhenEvidenceBecameUnreadable(t *testing.T) {
+	ctx := context.Background()
+	h, s := newTestHandler(t)
+	h.SetMemoryGate(&voter.Gate{Version: reviewTestVersion})
+	router := testRouter(h)
+	heldMemory(t, s, "m-ev", "general-notes", "The pump is rated 40 kW.", time.Now().UTC()) // plaintext content
+
+	keyPath := filepath.Join(t.TempDir(), "vault.key")
+	require.NoError(t, vault.Init(keyPath, "decision-evidence"))
+	v, err := vault.Open(keyPath, "decision-evidence")
+	require.NoError(t, err)
+	s.SetVault(v)
+	evID, err := s.CreateMemoryEvidence(ctx, "agent", "Datasheet: rated power 40 kW.") // encrypted at rest
+	require.NoError(t, err)
+	require.NoError(t, s.ClaimMemoryEvidence(ctx, evID, "agent", "m-ev"))
+
+	s.SetVault(nil) // the vault locks: content still readable, evidence is not
+	rec := postReview(t, router, "m-ev", "accept")
+	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), "evidence")
+	_, decided, err := s.ReviewDecision(ctx, "m-ev")
+	require.NoError(t, err)
+	require.False(t, decided, "no decision is stored while the evidence cannot be read")
+
+	s.SetVault(v) // readable again: the same request now succeeds
+	rec = postReview(t, router, "m-ev", "accept")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	d, decided, err := s.ReviewDecision(ctx, "m-ev")
+	require.NoError(t, err)
+	require.True(t, decided)
+	require.Equal(t, memory.VerdictAccept, d)
+}

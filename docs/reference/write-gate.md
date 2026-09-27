@@ -28,10 +28,11 @@ context, something that could not be done just now, or a request to re-send are
 not. The wording is versioned (`sage-lasting/N`) and recorded with every
 verdict.
 
-## The evidence check
+## The evidence check (experimental)
 
-An agent can submit a memory **with the source it is based on** — a quote, a
-log line, an excerpt. A node running the gate then also asks:
+An agent can submit a memory **together with text it says the memory is based
+on** — a quote, a log line, an excerpt. A node running the gate then also asks
+whether the memory is supported by that caller-supplied text:
 
 > Is the assertion in `memory` supported by `evidence`, as stated — including
 > its time frame and certainty?
@@ -61,11 +62,41 @@ body is carried inside the transaction as the agent's proof:
    before the transaction is built, so the gate never judges the memory
    without it. The chain only ever sees the random id.
 
-MCP agents pass `evidence` to `sage_remember`, which does both steps. Only the
-node that received the evidence can ask the evidence check; on a multi-node
-network the other validators judge the memory without it. Set
+MCP agents pass `evidence` to `sage_remember`, which does both steps. Set
 `SAGE_HUNCH_EVIDENCE=off` to disable the evidence check while keeping the
 lasting check.
+
+What it does **not** do:
+
+- **It does not authenticate the source.** It checks the memory against the
+  text the caller supplied; a caller can supply any text. It catches a memory
+  that overstates, re-dates or de-attributes its own evidence, not a fabricated
+  source.
+- **Omitting evidence skips it.** A memory without evidence gets the lasting
+  check only.
+- **A judge failure falls back** to the built-in checks, as for the lasting
+  check; nothing is recorded.
+- **Other validators do not receive the evidence.** Only the node the agent
+  uploaded it to can ask the evidence check; the rest judge the memory without
+  it.
+
+Only an **active agent** may upload evidence (above app-v23 the same
+enrollment rule as other agent surfaces; Root is not an agent). An agent may
+hold at most 64 unclaimed uploads.
+
+### Evidence retention
+
+Evidence exists only to judge and review a memory that is still **proposed**:
+
+| State | Evidence |
+|---|---|
+| uploaded, not claimed | deleted one hour after upload |
+| claimed, memory proposed (being judged or held for review) | kept |
+| claimed, memory committed, rejected or deprecated | deleted — the vote it informed is final |
+| claimed, submission provably never signed or sent (e.g. a fenced signer) | released back to unclaimed, so a retry can claim the same `evidence_id` |
+| claimed, memory never appeared (the submission failed after sending, or its outcome was indeterminate) | kept for 24 hours — the transaction may still commit — then deleted |
+
+Pruning runs on every upload and every ten minutes while the gate runs.
 
 ## What the node does with the answer
 

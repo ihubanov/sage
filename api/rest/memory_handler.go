@@ -1420,12 +1420,6 @@ func (s *Server) handleSubmitMemory(w http.ResponseWriter, r *http.Request) {
 		req.Tags = consensusTags
 	}
 
-	// Evidence is attached before the transaction exists, so this node's gate
-	// can never judge the memory without it.
-	if !s.claimSubmittedEvidence(w, r, req.EvidenceID, agentID, memoryID) {
-		return
-	}
-
 	submitTx := &tx.ParsedTx{
 		Type: tx.TxTypeMemorySubmit,
 		MemorySubmit: &tx.MemorySubmit{
@@ -1524,11 +1518,18 @@ func (s *Server) handleSubmitMemory(w http.ResponseWriter, r *http.Request) {
 	// Keep nonce-lease ownership on that same detached lifecycle; using
 	// r.Context() here would turn an already-authorized durable write into a 503
 	// before it reaches the historical background commit path.
+	// Evidence is attached before the transaction is signed, so this node's
+	// gate can never judge the memory without it, and released again only if
+	// nothing was signed or sent (releaseUnsentEvidence).
+	if !s.claimSubmittedEvidence(w, r, req.EvidenceID, agentID, memoryID) {
+		return
+	}
 	stage, err := s.submitConsensusTx(context.Background(), submitTx, func(encoded []byte) error {
 		var submitErr error
 		txHash, committedHeight, submitErr = s.broadcastTxCommitWithHeight(encoded)
 		return submitErr
 	})
+	s.releaseUnsentEvidence(req.EvidenceID, memoryID, stage, err)
 	if err != nil {
 		if stage != consensusTxSubmit {
 			s.writeConsensusTxError(w, stage, "submit", err)

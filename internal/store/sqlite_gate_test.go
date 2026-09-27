@@ -195,3 +195,59 @@ func TestMemoryGate_EvidenceIsClaimedOnceByItsOwnAgent(t *testing.T) {
 	_, err = s.CreateMemoryEvidence(ctx, "agent-a", "other agents are not affected")
 	require.NoError(t, err)
 }
+
+func TestMemoryGate_EvidenceRetention(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	claim := func(memoryID string) string {
+		t.Helper()
+		id, err := s.CreateMemoryEvidence(ctx, "agent-a", "evidence for "+memoryID)
+		require.NoError(t, err)
+		require.NoError(t, s.ClaimMemoryEvidence(ctx, id, "agent-a", memoryID))
+		return id
+	}
+	has := func(memoryID string) bool {
+		t.Helper()
+		_, ok, err := s.JudgeableEvidence(ctx, memoryID)
+		require.NoError(t, err)
+		return ok
+	}
+	gateMemory(t, s, "m-proposed", "Held for review.", memory.StatusProposed)
+	gateMemory(t, s, "m-committed", "Voted and committed.", memory.StatusProposed)
+	gateMemory(t, s, "m-deprecated", "Voted down.", memory.StatusProposed)
+	for _, id := range []string{"m-proposed", "m-committed", "m-deprecated", "m-fresh-orphan", "m-old-orphan"} {
+		claim(id)
+	}
+	require.NoError(t, s.UpdateStatus(ctx, "m-committed", memory.StatusCommitted, time.Now().UTC()))
+	require.NoError(t, s.UpdateStatus(ctx, "m-deprecated", memory.StatusDeprecated, time.Now().UTC()))
+	_, err := s.conn.ExecContext(ctx, `UPDATE memory_evidence SET claimed_at = ? WHERE memory_id = ?`,
+		time.Now().UTC().Add(-2*OrphanedEvidenceGrace).Format(time.RFC3339Nano), "m-old-orphan")
+	require.NoError(t, err)
+
+	require.NoError(t, s.PruneMemoryEvidence(ctx, time.Now()))
+	require.True(t, has("m-proposed"), "a proposed memory keeps its evidence for judging and review")
+	require.False(t, has("m-committed"), "a decided memory's evidence is deleted")
+	require.False(t, has("m-deprecated"), "a decided memory's evidence is deleted")
+	require.True(t, has("m-fresh-orphan"), "a claim whose transaction may still commit is kept within the grace")
+	require.False(t, has("m-old-orphan"), "a claim whose memory never appeared is deleted after the grace")
+}
+
+func TestMemoryGate_ReleasedEvidenceCanBeClaimedAgain(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	id, err := s.CreateMemoryEvidence(ctx, "agent-a", "Datasheet: rated power 40 kW.")
+	require.NoError(t, err)
+	require.NoError(t, s.ClaimMemoryEvidence(ctx, id, "agent-a", "m-unsent"))
+	require.NoError(t, s.ReleaseMemoryEvidence(ctx, id, "other-memory"), "a release names the exact claim")
+	require.ErrorIs(t, s.ClaimMemoryEvidence(ctx, id, "agent-a", "m-retry"), ErrEvidenceUnavailable)
+
+	require.NoError(t, s.ReleaseMemoryEvidence(ctx, id, "m-unsent"))
+	_, ok, err := s.JudgeableEvidence(ctx, "m-unsent")
+	require.NoError(t, err)
+	require.False(t, ok)
+	require.NoError(t, s.ClaimMemoryEvidence(ctx, id, "agent-a", "m-retry"), "the retry claims the same evidence")
+	got, ok, err := s.JudgeableEvidence(ctx, "m-retry")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "Datasheet: rated power 40 kW.", got)
+}

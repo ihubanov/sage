@@ -112,6 +112,15 @@ type EvidenceStore interface {
 	JudgeableEvidence(ctx context.Context, memoryID string) (evidence string, ok bool, err error)
 }
 
+// evidencePruner is optionally implemented by an EvidenceStore; the gate runs
+// it periodically so evidence of decided memories does not accumulate.
+type evidencePruner interface {
+	PruneMemoryEvidence(ctx context.Context, now time.Time) error
+}
+
+// evidencePruneInterval is how often the gate prunes evidence.
+const evidencePruneInterval = 10 * time.Minute
+
 // GateStore is what the gate needs from the node's store beyond Store.
 type GateStore interface {
 	// JudgeableContent returns a memory's plaintext for the judges. It must
@@ -183,6 +192,22 @@ func (g *Gate) InScope(domain string) bool {
 // Start runs the background evaluator until ctx ends. The voter calls it once.
 func (g *Gate) Start(ctx context.Context, gs GateStore, logger zerolog.Logger) {
 	g.init()
+	if p, ok := gs.(evidencePruner); ok {
+		go func() {
+			t := time.NewTicker(evidencePruneInterval)
+			defer t.Stop()
+			for {
+				if err := p.PruneMemoryEvidence(ctx, time.Now()); err != nil && ctx.Err() == nil {
+					logger.Warn().Err(err).Msg("memory gate could not prune submission evidence")
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+				}
+			}
+		}()
+	}
 	for i := 0; i < g.Workers; i++ {
 		go func() {
 			for {

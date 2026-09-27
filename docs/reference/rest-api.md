@@ -75,7 +75,7 @@ Uploads source material for a memory the same agent is about to submit, for the 
 
 **Request body:** `{"evidence": "<text, at most 32 KiB>"}`
 
-**Response `201`:** `{"evidence_id": "ev-…", "expires_in_seconds": 3600}` — pass `evidence_id` on `POST /v1/memory/submit` before it expires. An agent may hold at most 64 unclaimed uploads (`429` beyond that). A store that does not keep evidence (PostgreSQL) answers `501`.
+**Response `201`:** `{"evidence_id": "ev-…", "expires_in_seconds": 3600}` — pass `evidence_id` on `POST /v1/memory/submit` before it expires. Above app-v23 only an active ordinary agent may upload (`403` otherwise; Root is not an agent). An agent may hold at most 64 unclaimed uploads (`429` beyond that). A store that does not keep evidence (PostgreSQL) answers `501`. The claim is made immediately before signing and released if the submission is refused before anything is signed or sent, so a retry can reuse the id; retention is described in [`write-gate.md`](write-gate.md#evidence-retention).
 
 **Classification values** (`internal/tx/types.go:84-90`):
 

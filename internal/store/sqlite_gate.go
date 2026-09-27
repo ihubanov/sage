@@ -38,7 +38,8 @@ const writeGateSchema = `
 		agent_id    TEXT NOT NULL,
 		memory_id   TEXT UNIQUE,
 		evidence    TEXT NOT NULL,
-		created_at  TEXT NOT NULL
+		created_at  TEXT NOT NULL,
+		claimed_at  TEXT
 	);
 	CREATE INDEX IF NOT EXISTS idx_memory_evidence_unclaimed
 		ON memory_evidence(agent_id, created_at) WHERE memory_id IS NULL;
@@ -283,6 +284,21 @@ func (s *SQLiteStore) ReviewMemory(ctx context.Context, memoryID string) (rec *m
 // Evidence is uploaded on its own (it must never be in the signed submission
 // body, which is copied into the transaction) and then claimed by exactly one
 // memory submission from the same agent, by its random id.
+//
+// Retention — evidence exists only to judge and review a PROPOSED memory:
+//
+//   - unclaimed: deleted UnclaimedEvidenceTTL after upload;
+//   - claimed, memory proposed (judged or held for review): kept;
+//   - claimed, memory committed, rejected or deprecated: deleted — the vote
+//     it informed is final and the gate never judges that memory again;
+//   - claimed, memory never appeared (the submission failed after it was
+//     sent, or its outcome was indeterminate): deleted OrphanedEvidenceGrace
+//     after the claim, long after any such transaction could still commit;
+//   - claimed, submission provably never signed or sent: released back to
+//     unclaimed, so the caller can retry with the same evidence_id.
+//
+// Pruning runs on every upload (the only way evidence grows) and from the
+// memory gate's evaluator (PruneMemoryEvidence).
 const (
 	// MaxEvidenceBytes bounds the evidence stored with one memory.
 	MaxEvidenceBytes = 32 << 10
@@ -290,6 +306,9 @@ const (
 	MaxUnclaimedEvidence = 64
 	// UnclaimedEvidenceTTL is how long uploaded evidence waits to be claimed.
 	UnclaimedEvidenceTTL = time.Hour
+	// OrphanedEvidenceGrace is how long a claim whose memory never appeared
+	// is kept.
+	OrphanedEvidenceGrace = 24 * time.Hour
 )
 
 // ErrEvidenceUnavailable means an evidence id is unknown, expired, belongs to
@@ -312,10 +331,8 @@ func (s *SQLiteStore) CreateMemoryEvidence(ctx context.Context, agentID, evidenc
 	if len(evidence) > MaxEvidenceBytes {
 		return "", fmt.Errorf("evidence is %d bytes; the maximum is %d", len(evidence), MaxEvidenceBytes)
 	}
-	cutoff := time.Now().UTC().Add(-UnclaimedEvidenceTTL).Format(time.RFC3339Nano)
-	if _, err := s.writeExecContext(ctx,
-		`DELETE FROM memory_evidence WHERE memory_id IS NULL AND created_at < ?`, cutoff); err != nil {
-		return "", fmt.Errorf("expire evidence: %w", err)
+	if err := s.PruneMemoryEvidence(ctx, time.Now()); err != nil {
+		return "", err
 	}
 	var unclaimed int
 	if err := s.conn.QueryRowContext(ctx,
@@ -347,14 +364,46 @@ func (s *SQLiteStore) CreateMemoryEvidence(ctx context.Context, agentID, evidenc
 func (s *SQLiteStore) ClaimMemoryEvidence(ctx context.Context, evidenceID, agentID, memoryID string) error {
 	cutoff := time.Now().UTC().Add(-UnclaimedEvidenceTTL).Format(time.RFC3339Nano)
 	res, err := s.writeExecContext(ctx,
-		`UPDATE memory_evidence SET memory_id = ?
+		`UPDATE memory_evidence SET memory_id = ?, claimed_at = ?
 		 WHERE evidence_id = ? AND agent_id = ? AND memory_id IS NULL AND created_at >= ?`,
-		memoryID, evidenceID, agentID, cutoff)
+		memoryID, time.Now().UTC().Format(time.RFC3339Nano), evidenceID, agentID, cutoff)
 	if err != nil {
 		return fmt.Errorf("claim evidence: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrEvidenceUnavailable
+	}
+	return nil
+}
+
+// ReleaseMemoryEvidence returns a claim to unclaimed, with a fresh expiry.
+// Call it ONLY when the submission that claimed it provably never signed or
+// sent a transaction; an indeterminate submission may still commit and must
+// keep its evidence.
+func (s *SQLiteStore) ReleaseMemoryEvidence(ctx context.Context, evidenceID, memoryID string) error {
+	if _, err := s.writeExecContext(ctx,
+		`UPDATE memory_evidence SET memory_id = NULL, claimed_at = NULL, created_at = ?
+		 WHERE evidence_id = ? AND memory_id = ?`,
+		time.Now().UTC().Format(time.RFC3339Nano), evidenceID, memoryID); err != nil {
+		return fmt.Errorf("release evidence: %w", err)
+	}
+	return nil
+}
+
+// PruneMemoryEvidence applies the retention rules above as of now.
+func (s *SQLiteStore) PruneMemoryEvidence(ctx context.Context, now time.Time) error {
+	now = now.UTC()
+	if _, err := s.writeExecContext(ctx,
+		`DELETE FROM memory_evidence
+		 WHERE (memory_id IS NULL AND created_at < ?)
+		    OR (memory_id IS NOT NULL AND EXISTS (
+		          SELECT 1 FROM memories AS m
+		          WHERE m.memory_id = memory_evidence.memory_id AND m.status != ?))
+		    OR (memory_id IS NOT NULL AND claimed_at < ? AND NOT EXISTS (
+		          SELECT 1 FROM memories AS m WHERE m.memory_id = memory_evidence.memory_id))`,
+		now.Add(-UnclaimedEvidenceTTL).Format(time.RFC3339Nano), string(memory.StatusProposed),
+		now.Add(-OrphanedEvidenceGrace).Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("prune evidence: %w", err)
 	}
 	return nil
 }

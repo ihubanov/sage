@@ -332,6 +332,18 @@ func (h *DashboardHandler) handleReviewDecision(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusConflict, store.ErrNotAwaitingReview.Error())
 		return
 	}
+	// The same rule as the queue: evidence submitted with the memory must be
+	// readable, or the operator could not have reviewed what was judged.
+	if es, ok := rs.(memoryGateEvidenceStore); ok {
+		if _, _, everr := es.JudgeableEvidence(r.Context(), id); errors.Is(everr, store.ErrContentUnavailable) {
+			writeError(w, http.StatusConflict,
+				"the evidence submitted with this memory cannot be read on this node right now (locked or undecryptable); it cannot be reviewed until it can")
+			return
+		} else if everr != nil {
+			writeError(w, http.StatusInternalServerError, everr.Error())
+			return
+		}
+	}
 	if verr := h.validateAppV23DashboardRecord(rec); verr != nil {
 		if writeAppV23DashboardProjectionFailure(w, verr) {
 			return

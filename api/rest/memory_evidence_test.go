@@ -149,7 +149,10 @@ func TestSubmitMemory_EvidenceIsRefusedNeverDropped(t *testing.T) {
 	require.NoError(t, err)
 
 	plain, _ := evidenceTestServer(t, cometMock.URL, false)
-	rr := agentCall(t, plain, priv, "/v1/memory/evidence", `{"evidence":"Datasheet: rated power 40 kW."}`)
+	// Every signed body in this test is distinct: identical bodies signed by
+	// the same key within one second are the same signature, which the replay
+	// guard correctly refuses.
+	rr := agentCall(t, plain, priv, "/v1/memory/evidence", `{"evidence":"Datasheet rev B: rated power 40 kW."}`)
 	require.Equal(t, http.StatusNotImplemented, rr.Code, "a store that cannot keep evidence refuses it")
 	rr = agentCall(t, plain, priv, "/v1/memory/submit", `{"content":"The pump is rated 40 kW.","memory_type":"fact",
 		"domain_tag":"site","confidence_score":0.9,"evidence_id":"ev-1"}`)

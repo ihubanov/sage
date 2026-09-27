@@ -184,27 +184,37 @@ func (s *SQLiteStore) SetReviewDecision(ctx context.Context, memoryID, version, 
 	return nil
 }
 
+// ReviewQueueCursor identifies the last scanned row, even after it is decided.
+// CreatedAt preserves the stored timestamp exactly to match SQLite's ordering.
+type ReviewQueueCursor struct {
+	JudgeVersion string `json:"judge_version"`
+	CreatedAt    string `json:"created_at"`
+	MemoryID     string `json:"memory_id"`
+}
+
 // HeldForReview is one memory the gate held, as stored — IDs and the gate's
 // reason only. Callers load the memory itself through the dashboard's normal
 // record path, which applies projection integrity and content handling.
 type HeldForReview struct {
-	MemoryID  string    `json:"memory_id"`
-	Reason    string    `json:"reason"`
-	P         float64   `json:"p_yes"`
-	HeldAt    time.Time `json:"held_at"`
-	JudgeVers string    `json:"judge_version"`
+	MemoryID  string            `json:"memory_id"`
+	Reason    string            `json:"reason"`
+	P         float64           `json:"p_yes"`
+	HeldAt    time.Time         `json:"held_at"`
+	JudgeVers string            `json:"judge_version"`
+	Cursor    ReviewQueueCursor `json:"-"`
 }
 
 // ReviewQueue lists memories held under version that are still proposed and
-// not yet decided, oldest first, as one RAW page (offset, limit). Callers that
+// not yet decided, oldest first, as one RAW page after the cursor. Callers that
 // filter rows for visibility must walk pages until their visible page is full
 // (see web/write_gate.go); a raw limit alone would let hidden rows starve it.
-func (s *SQLiteStore) ReviewQueue(ctx context.Context, version string, offset, limit int) ([]HeldForReview, error) {
+func (s *SQLiteStore) ReviewQueue(ctx context.Context, version string, after ReviewQueueCursor, limit int) ([]HeldForReview, error) {
 	if limit <= 0 || limit > 1024 {
 		limit = 100
 	}
-	if offset < 0 {
-		offset = 0
+	if after != (ReviewQueueCursor{}) &&
+		(after.JudgeVersion != version || after.CreatedAt == "" || after.MemoryID == "") {
+		return nil, errors.New("invalid review queue cursor for judge version")
 	}
 	rows, err := s.conn.QueryContext(ctx,
 		`SELECT v.memory_id, v.reason, v.p_yes, v.created_at, v.judge_version
@@ -212,7 +222,8 @@ func (s *SQLiteStore) ReviewQueue(ctx context.Context, version string, offset, l
 		 JOIN memories AS m ON m.memory_id = v.memory_id
 		 WHERE v.judge_version = ? AND v.verdict = 'abstain' AND m.status = 'proposed'
 		   AND NOT EXISTS (SELECT 1 FROM memory_review_decisions AS d WHERE d.memory_id = v.memory_id)
-		 ORDER BY v.created_at ASC, v.memory_id ASC LIMIT ? OFFSET ?`, version, limit, offset)
+		   AND (v.created_at, v.memory_id) > (?, ?)
+		 ORDER BY v.created_at ASC, v.memory_id ASC LIMIT ?`, version, after.CreatedAt, after.MemoryID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("review queue: %w", err)
 	}
@@ -225,6 +236,7 @@ func (s *SQLiteStore) ReviewQueue(ctx context.Context, version string, offset, l
 			return nil, fmt.Errorf("review queue: %w", err)
 		}
 		it.HeldAt = parseTime(held)
+		it.Cursor = ReviewQueueCursor{JudgeVersion: it.JudgeVers, CreatedAt: held, MemoryID: it.MemoryID}
 		out = append(out, it)
 	}
 	return out, rows.Err()

@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -28,7 +29,7 @@ import (
 // reported as unavailable and never passed to the classifier.
 
 type memoryGateReviewStore interface {
-	ReviewQueue(ctx context.Context, version string, offset, limit int) ([]store.HeldForReview, error)
+	ReviewQueue(ctx context.Context, version string, after store.ReviewQueueCursor, limit int) ([]store.HeldForReview, error)
 	ReviewMemory(ctx context.Context, memoryID string) (*memory.MemoryRecord, bool, error)
 	GateVerdicts(ctx context.Context, memoryID string) ([]store.GateVerdict, error)
 	SetReviewDecision(ctx context.Context, memoryID, version, decision, decidedBy, note string) error
@@ -133,7 +134,7 @@ const (
 // handleReviewQueueUnsealed walks raw held rows until the requested number of
 // VISIBLE items is collected, the rows run out, or the scan budget is spent.
 // Internal-domain and quarantined rows are skipped without consuming the
-// visible page; a continuation cursor (the raw offset) is returned when rows
+// visible page; a continuation cursor (the last scanned row) is returned when rows
 // remain, so a long hidden prefix can never make visible held memories
 // unreachable.
 func (h *DashboardHandler) handleReviewQueueUnsealed(w http.ResponseWriter, r *http.Request, g *voter.Gate, rs memoryGateReviewStore) {
@@ -142,19 +143,31 @@ func (h *DashboardHandler) handleReviewQueueUnsealed(w http.ResponseWriter, r *h
 	if limit <= 0 || limit > reviewQueueMaxVisible {
 		limit = reviewQueueDefaultSize
 	}
-	rawOffset, _ := strconv.Atoi(r.URL.Query().Get("cursor"))
-	if rawOffset < 0 {
-		rawOffset = 0
+	var after store.ReviewQueueCursor
+	if raw := r.URL.Query().Get("cursor"); raw != "" {
+		if len(raw) > 4096 {
+			writeError(w, http.StatusBadRequest, "invalid review queue cursor")
+			return
+		}
+		decoded, err := base64.RawURLEncoding.DecodeString(raw)
+		if err != nil || json.Unmarshal(decoded, &after) != nil || after.CreatedAt == "" || after.MemoryID == "" {
+			writeError(w, http.StatusBadRequest, "invalid review queue cursor")
+			return
+		}
+		if after.JudgeVersion != g.Version {
+			writeError(w, http.StatusConflict, "the memory gate changed; refresh the review queue")
+			return
+		}
 	}
-	scanStart := rawOffset
+	scanned := 0
 	// Capacity from a constant, never from the request (limit is clamped above,
 	// but allocation size must not depend on user input).
 	items := make([]reviewQueueItem, 0, reviewQueueDefaultSize)
 	exhausted := false
 	observedHidden := 0
-	for len(items) < limit && rawOffset-scanStart < reviewQueueScanBudget {
-		batch := min(reviewQueueRawPage, reviewQueueScanBudget-(rawOffset-scanStart))
-		held, err := rs.ReviewQueue(ctx, g.Version, rawOffset, batch)
+	for len(items) < limit && scanned < reviewQueueScanBudget {
+		batch := min(reviewQueueRawPage, reviewQueueScanBudget-scanned)
+		held, err := rs.ReviewQueue(ctx, g.Version, after, batch)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -202,6 +215,7 @@ func (h *DashboardHandler) handleReviewQueueUnsealed(w http.ResponseWriter, r *h
 		consumed := 0
 		for i, it := range held {
 			consumed = i + 1
+			after = it.Cursor
 			id := it.MemoryID
 			meta := byID[id]
 			switch {
@@ -218,7 +232,7 @@ func (h *DashboardHandler) handleReviewQueueUnsealed(w http.ResponseWriter, r *h
 				break
 			}
 		}
-		rawOffset += consumed
+		scanned += consumed
 		if len(held) < batch {
 			exhausted = consumed == len(held)
 			break
@@ -226,7 +240,8 @@ func (h *DashboardHandler) handleReviewQueueUnsealed(w http.ResponseWriter, r *h
 	}
 	response := map[string]any{"gate": h.memoryGateStatus(), "items": items, "count": len(items)}
 	if !exhausted {
-		response["next_cursor"] = strconv.Itoa(rawOffset)
+		cursorJSON, _ := json.Marshal(after)
+		response["next_cursor"] = base64.RawURLEncoding.EncodeToString(cursorJSON)
 	}
 	if observedHidden > 0 {
 		response["hidden"] = observedHidden

@@ -70,7 +70,10 @@ content, and cannot be decided until it can be read.
 The queue pages past rows it may not show (internal or quarantined): one
 request walks raw held rows until its visible page is full, the rows run out,
 or the dashboard's interactive scan budget is spent, and returns `next_cursor`
-when rows remain (*Load more* in the panel). A decision is revalidated on the
+when rows remain (*Load more* in the panel). The opaque cursor identifies the
+last scanned row under the current judge version, so deciding earlier rows does
+not skip memories on the next page. Refresh the queue if the judge version changes.
+A decision is revalidated on the
 server immediately before it is stored — the content must still be readable
 and the record must pass the same integrity check — so a stale page or an API
 client cannot decide a memory it could not have reviewed.

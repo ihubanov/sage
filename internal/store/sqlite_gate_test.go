@@ -48,13 +48,13 @@ func TestMemoryGate_ReviewFlow(t *testing.T) {
 	require.NoError(t, s.RecordSemanticVerdict(ctx, "m-held", "v1",
 		memory.SemanticVerdict{Verdict: memory.VerdictAbstain, P: 0.7, Reason: "held for review: lasting-memory uncertain (p=0.70)"}))
 
-	queue, err := s.ReviewQueue(ctx, "v1", 0, 10)
+	queue, err := s.ReviewQueue(ctx, "v1", ReviewQueueCursor{}, 10)
 	require.NoError(t, err)
 	require.Len(t, queue, 1)
 	require.Equal(t, "m-held", queue[0].MemoryID)
 	require.Contains(t, queue[0].Reason, "p=0.70")
 
-	other, err := s.ReviewQueue(ctx, "v2", 0, 10)
+	other, err := s.ReviewQueue(ctx, "v2", ReviewQueueCursor{}, 10)
 	require.NoError(t, err)
 	require.Empty(t, other, "the queue shows only memories held under the current judge version")
 
@@ -69,7 +69,7 @@ func TestMemoryGate_ReviewFlow(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "accept", d)
 
-	queue, err = s.ReviewQueue(ctx, "v1", 0, 10)
+	queue, err = s.ReviewQueue(ctx, "v1", ReviewQueueCursor{}, 10)
 	require.NoError(t, err)
 	require.Empty(t, queue, "a decided memory leaves the queue")
 
@@ -103,4 +103,30 @@ func TestMemoryGate_NoCiphertextEverLeaves(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, available)
 	require.Empty(t, rec.Content, "review content is cleared, not replaced by ciphertext or a placeholder")
+}
+
+func TestMemoryGate_ReviewCursorPreservesTimestampAndTies(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	for _, id := range []string{"c", "a", "b"} {
+		gateMemory(t, s, id, "Lasting knowledge about "+id, memory.StatusProposed)
+		require.NoError(t, s.RecordSemanticVerdict(ctx, id, "v1", memory.SemanticVerdict{Verdict: memory.VerdictAbstain, P: 0.7}))
+	}
+	// Preserve the exact stored representation as well as the ID tie-breaker.
+	const at = "2026-09-27T07:00:00.000000000Z"
+	_, err := s.writeExecContext(ctx, `UPDATE memory_gate_verdicts SET created_at = ?`, at)
+	require.NoError(t, err)
+	first, err := s.ReviewQueue(ctx, "v1", ReviewQueueCursor{}, 1)
+	require.NoError(t, err)
+	require.Len(t, first, 1)
+	require.Equal(t, "a", first[0].MemoryID)
+	require.Equal(t, at, first[0].Cursor.CreatedAt)
+	require.NoError(t, s.SetReviewDecision(ctx, "a", "v1", "accept", "operator", ""))
+	next, err := s.ReviewQueue(ctx, "v1", first[0].Cursor, 10)
+	require.NoError(t, err)
+	require.Len(t, next, 2)
+	require.Equal(t, "b", next[0].MemoryID)
+	require.Equal(t, "c", next[1].MemoryID)
+	_, err = s.ReviewQueue(ctx, "v2", first[0].Cursor, 10)
+	require.Error(t, err)
 }

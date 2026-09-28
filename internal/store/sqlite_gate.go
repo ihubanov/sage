@@ -39,7 +39,8 @@ const writeGateSchema = `
 		memory_id   TEXT UNIQUE,
 		evidence    TEXT NOT NULL,
 		created_at  TEXT NOT NULL,
-		claimed_at  TEXT
+		claimed_at  TEXT,
+		expired_at  TEXT
 	);
 	CREATE INDEX IF NOT EXISTS idx_memory_evidence_unclaimed
 		ON memory_evidence(agent_id, created_at) WHERE memory_id IS NULL;
@@ -291,9 +292,15 @@ func (s *SQLiteStore) ReviewMemory(ctx context.Context, memoryID string) (rec *m
 //   - claimed, memory proposed (judged or held for review): kept;
 //   - claimed, memory committed, rejected or deprecated: deleted — the vote
 //     it informed is final and the gate never judges that memory again;
-//   - claimed, memory never appeared (the submission failed after it was
-//     sent, or its outcome was indeterminate): deleted OrphanedEvidenceGrace
-//     after the claim, long after any such transaction could still commit;
+//   - claimed, memory has not appeared (the submission failed after it was
+//     sent, or its outcome is indeterminate): the TEXT is deleted
+//     OrphanedEvidenceGrace after the claim, but the claim stays as an
+//     expired marker. Absence of the memory is not proof the transaction can
+//     never commit (the fence reconciler has no expiry; proof freshness is
+//     block time), so a memory that arrives later reports
+//     memory.ErrEvidenceExpired and is held for review instead of silently
+//     being judged as if no evidence had been supplied. The marker goes with
+//     the memory's decision like any other claim;
 //   - claimed, submission provably never signed or sent: released back to
 //     unclaimed, so the caller can retry with the same evidence_id.
 //
@@ -398,27 +405,37 @@ func (s *SQLiteStore) PruneMemoryEvidence(ctx context.Context, now time.Time) er
 		 WHERE (memory_id IS NULL AND created_at < ?)
 		    OR (memory_id IS NOT NULL AND EXISTS (
 		          SELECT 1 FROM memories AS m
-		          WHERE m.memory_id = memory_evidence.memory_id AND m.status != ?))
-		    OR (memory_id IS NOT NULL AND claimed_at < ? AND NOT EXISTS (
-		          SELECT 1 FROM memories AS m WHERE m.memory_id = memory_evidence.memory_id))`,
-		now.Add(-UnclaimedEvidenceTTL).Format(time.RFC3339Nano), string(memory.StatusProposed),
-		now.Add(-OrphanedEvidenceGrace).Format(time.RFC3339Nano)); err != nil {
+		          WHERE m.memory_id = memory_evidence.memory_id AND m.status != ?))`,
+		now.Add(-UnclaimedEvidenceTTL).Format(time.RFC3339Nano), string(memory.StatusProposed)); err != nil {
 		return fmt.Errorf("prune evidence: %w", err)
+	}
+	if _, err := s.writeExecContext(ctx,
+		`UPDATE memory_evidence SET evidence = '', expired_at = ?
+		 WHERE memory_id IS NOT NULL AND expired_at IS NULL AND claimed_at < ? AND NOT EXISTS (
+		       SELECT 1 FROM memories AS m WHERE m.memory_id = memory_evidence.memory_id)`,
+		now.Format(time.RFC3339Nano), now.Add(-OrphanedEvidenceGrace).Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("expire evidence: %w", err)
 	}
 	return nil
 }
 
 // JudgeableEvidence returns the evidence claimed by a memory in plaintext
-// (ok=false when none was), or ErrContentUnavailable when it exists but cannot
-// be decrypted — never stored ciphertext or the locked placeholder.
+// (ok=false when none was), memory.ErrEvidenceExpired when it was claimed but
+// has since expired, or ErrContentUnavailable when it exists but cannot be
+// decrypted — never stored ciphertext or the locked placeholder.
 func (s *SQLiteStore) JudgeableEvidence(ctx context.Context, memoryID string) (string, bool, error) {
 	var stored string
-	err := s.conn.QueryRowContext(ctx, `SELECT evidence FROM memory_evidence WHERE memory_id = ?`, memoryID).Scan(&stored)
+	var expired sql.NullString
+	err := s.conn.QueryRowContext(ctx, `SELECT evidence, expired_at FROM memory_evidence WHERE memory_id = ?`,
+		memoryID).Scan(&stored, &expired)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
 	if err != nil {
 		return "", false, fmt.Errorf("judgeable evidence: %w", err)
+	}
+	if expired.Valid {
+		return "", true, memory.ErrEvidenceExpired
 	}
 	plain, err := s.strictPlaintext(stored)
 	if err != nil {

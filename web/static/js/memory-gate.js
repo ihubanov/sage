@@ -45,5 +45,12 @@ export function reviewItemState(item) {
             text: 'Content cannot be read on this node right now (locked or undecryptable), so it cannot be reviewed here.',
         };
     }
-    return { decidable: true, text: item.content || '', evidence: item.evidence || '' };
+    return {
+        decidable: true,
+        text: item.content || '',
+        evidence: item.evidence || '',
+        evidenceNote: item.evidence_expired
+            ? 'This memory was submitted with evidence, but the evidence expired on this node before the memory arrived, so whether it supports the memory could not be checked. Decide from the memory alone.'
+            : '',
+    };
 }

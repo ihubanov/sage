@@ -50,6 +50,15 @@ test('a held memory shows the evidence it was submitted with', () => {
     assert.match(appSource, /memory-gate-evidence/);
 });
 
+test('expired evidence is said plainly, never shown as absent', () => {
+    const s = reviewItemState({ memory_id: 'm1', content: 'The alarm is disabled.', evidence_expired: true });
+    assert.equal(s.decidable, true);
+    assert.equal(s.evidence, '');
+    assert.match(s.evidenceNote, /evidence expired/);
+    assert.equal(reviewItemState({ memory_id: 'm2', content: 'x' }).evidenceNote, '');
+    assert.match(appSource, /memory-gate-evidence-expired/);
+});
+
 test('the panel is reachable from Settings', () => {
     assert.match(appSource, /id: 'memory-gate', label: 'Memory gate'/);
     assert.match(appSource, /settingsTab === 'memory-gate'/);

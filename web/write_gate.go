@@ -74,6 +74,7 @@ type reviewQueueItem struct {
 	Content            string    `json:"content,omitempty"`
 	ContentUnavailable bool      `json:"content_unavailable,omitempty"`
 	Evidence           string    `json:"evidence,omitempty"`
+	EvidenceExpired    bool      `json:"evidence_expired,omitempty"`
 	Reason             string    `json:"reason"`
 	P                  float64   `json:"p_yes"`
 	HeldAt             time.Time `json:"held_at"`
@@ -184,6 +185,7 @@ func (h *DashboardHandler) handleReviewQueueUnsealed(w http.ResponseWriter, r *h
 		readable := make([]*memory.MemoryRecord, 0, len(held))
 		unavailable := map[string]bool{}
 		evidence := map[string]string{}
+		evidenceExpired := map[string]bool{}
 		for _, it := range held {
 			rec, available, rerr := rs.ReviewMemory(ctx, it.MemoryID)
 			if errors.Is(rerr, store.ErrMemoryNotFound) {
@@ -208,13 +210,17 @@ func (h *DashboardHandler) handleReviewQueueUnsealed(w http.ResponseWriter, r *h
 			}
 			if es, ok := rs.(memoryGateEvidenceStore); ok {
 				ev, _, everr := es.JudgeableEvidence(ctx, it.MemoryID)
-				if everr != nil {
+				switch {
+				case errors.Is(everr, memory.ErrEvidenceExpired):
+					evidenceExpired[it.MemoryID] = true
+				case everr != nil:
 					// Evidence that exists but cannot be read makes the item
 					// unreviewable, exactly like unreadable content.
 					unavailable[it.MemoryID] = true
 					continue
+				default:
+					evidence[it.MemoryID] = ev
 				}
-				evidence[it.MemoryID] = ev
 			}
 			readable = append(readable, rec)
 		}
@@ -245,7 +251,7 @@ func (h *DashboardHandler) handleReviewQueueUnsealed(w http.ResponseWriter, r *h
 				rec := keptByID[id]
 				items = append(items, reviewQueueItem{MemoryID: id, DomainTag: rec.DomainTag,
 					MemoryType: string(rec.MemoryType), Content: rec.Content, Evidence: evidence[id],
-					Reason: meta.Reason, P: meta.P, HeldAt: meta.HeldAt})
+					Reason: meta.Reason, P: meta.P, HeldAt: meta.HeldAt, EvidenceExpired: evidenceExpired[id]})
 			}
 			if len(items) == limit {
 				break
@@ -335,11 +341,16 @@ func (h *DashboardHandler) handleReviewDecision(w http.ResponseWriter, r *http.R
 	// The same rule as the queue: evidence submitted with the memory must be
 	// readable, or the operator could not have reviewed what was judged.
 	if es, ok := rs.(memoryGateEvidenceStore); ok {
-		if _, _, everr := es.JudgeableEvidence(r.Context(), id); errors.Is(everr, store.ErrContentUnavailable) {
+		// Expired evidence is not unreadable: nothing remains to read, the queue
+		// says so, and the operator decides from the memory alone.
+		_, _, everr := es.JudgeableEvidence(r.Context(), id)
+		switch {
+		case everr == nil, errors.Is(everr, memory.ErrEvidenceExpired):
+		case errors.Is(everr, store.ErrContentUnavailable):
 			writeError(w, http.StatusConflict,
 				"the evidence submitted with this memory cannot be read on this node right now (locked or undecryptable); it cannot be reviewed until it can")
 			return
-		} else if everr != nil {
+		default:
 			writeError(w, http.StatusInternalServerError, everr.Error())
 			return
 		}

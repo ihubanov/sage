@@ -280,3 +280,24 @@ func TestReviewDecision_RefusedWhenEvidenceBecameUnreadable(t *testing.T) {
 	require.True(t, decided)
 	require.Equal(t, memory.VerdictAccept, d)
 }
+
+func TestReviewQueue_ExpiredEvidenceIsSaidPlainlyAndDecidable(t *testing.T) {
+	ctx := context.Background()
+	h, s := newTestHandler(t)
+	h.SetMemoryGate(&voter.Gate{Version: reviewTestVersion})
+	router := testRouter(h)
+	evID, err := s.CreateMemoryEvidence(ctx, "agent", "At the 2023 inspection the alarm was disabled.")
+	require.NoError(t, err)
+	require.NoError(t, s.ClaimMemoryEvidence(ctx, evID, "agent", "m-late"))
+	require.NoError(t, s.PruneMemoryEvidence(ctx, time.Now().Add(25*time.Hour))) // the memory has not arrived
+	heldMemory(t, s, "m-late", "general-notes", "The alarm is disabled.", time.Now().UTC())
+
+	item := reviewQueue(t, router, "")["items"].([]any)[0].(map[string]any)
+	require.Equal(t, "m-late", item["memory_id"])
+	require.Equal(t, true, item["evidence_expired"])
+	require.NotContains(t, item, "content_unavailable", "expired evidence is not unreadable content")
+	require.NotContains(t, item, "evidence")
+
+	rec := postReview(t, router, "m-late", "reject")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+}

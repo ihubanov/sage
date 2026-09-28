@@ -50,14 +50,15 @@ type fakeGateStore struct {
 	fakeStore
 	mu       sync.Mutex
 	content  map[string]string
-	evidence map[string]string                 // "" value = evidence exists but cannot be read
+	evidence map[string]string // "" value = evidence exists but cannot be read
+	expired  map[string]bool
 	verdicts map[string]memory.SemanticVerdict // memoryID|version
 	review   map[string]string
 }
 
 func newFakeGateStore(pending ...*memory.MemoryRecord) *fakeGateStore {
 	f := &fakeGateStore{fakeStore: fakeStore{pending: pending, dups: map[string]bool{}},
-		content: map[string]string{}, evidence: map[string]string{}, verdicts: map[string]memory.SemanticVerdict{}, review: map[string]string{}}
+		content: map[string]string{}, evidence: map[string]string{}, expired: map[string]bool{}, verdicts: map[string]memory.SemanticVerdict{}, review: map[string]string{}}
 	for _, m := range pending {
 		f.content[m.MemoryID] = m.Content
 	}
@@ -76,6 +77,9 @@ func (f *fakeGateStore) JudgeableContent(_ context.Context, id string) (string, 
 func (f *fakeGateStore) JudgeableEvidence(_ context.Context, id string) (string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.expired[id] {
+		return "", true, memory.ErrEvidenceExpired
+	}
 	e, ok := f.evidence[id]
 	if ok && e == "" {
 		return "", false, errors.New("evidence unavailable")
@@ -301,6 +305,26 @@ func TestGate_NoEvidenceMeansTheEvidenceCheckIsNotAsked(t *testing.T) {
 	require.Equal(t, gateOverride, out)
 	require.True(t, d.Accept, "a memory without evidence is judged exactly as before")
 	require.Zero(t, sj.calls.Load())
+}
+
+func TestGate_ExpiredEvidenceIsHeldForReviewNotJudgedWithout(t *testing.T) {
+	m := gateRec("m1", "The alarm is disabled.", "notes")
+	gs := newFakeGateStore(m)
+	gs.expired["m1"] = true
+	j, sj := &fakeJudge{p: 0.99}, &fakeSupportJudge{p: 0.99}
+	g := &Gate{Judges: []LastingJudge{j}, SupportJudges: []SupportJudge{sj}, Version: "v1"}
+	out, _ := judgeOnce(t, g, gs, m)
+	require.Equal(t, gateHold, out, "neither the no-evidence path nor the built-in fallback")
+	v, ok, _ := gs.SemanticVerdict(context.Background(), "m1", "v1")
+	require.True(t, ok)
+	require.Equal(t, memory.VerdictAbstain, v.Verdict)
+	require.Contains(t, v.Reason, "expired")
+	require.Zero(t, sj.calls.Load())
+
+	gs.review["m1"] = memory.VerdictAccept // the operator decides from the memory alone
+	out, d := g.Apply(context.Background(), gs, m, accept, zerolog.Nop())
+	require.Equal(t, gateOverride, out)
+	require.True(t, d.Accept)
 }
 
 func TestGate_UnreadableEvidenceIsNeverSent(t *testing.T) {

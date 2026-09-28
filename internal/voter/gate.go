@@ -2,6 +2,7 @@ package voter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -108,7 +109,8 @@ type EvidenceStore interface {
 	// JudgeableEvidence returns the evidence submitted with a memory in
 	// plaintext, and ok=false when none was submitted. Like JudgeableContent
 	// it must FAIL — never return ok=false or ciphertext — when evidence exists
-	// but cannot be decrypted.
+	// but cannot be decrypted, and it returns memory.ErrEvidenceExpired —
+	// never ok=false — when evidence was submitted but has since been deleted.
 	JudgeableEvidence(ctx context.Context, memoryID string) (evidence string, ok bool, err error)
 }
 
@@ -279,7 +281,19 @@ func (g *Gate) evaluate(ctx context.Context, gs GateStore, memoryID string, logg
 	var evidence string
 	hasEvidence := false
 	if es, ok := gs.(EvidenceStore); ok && len(g.SupportJudges) > 0 {
-		if evidence, hasEvidence, err = es.JudgeableEvidence(ctx, memoryID); err != nil {
+		evidence, hasEvidence, err = es.JudgeableEvidence(ctx, memoryID)
+		if errors.Is(err, memory.ErrEvidenceExpired) {
+			// Not a judge failure (which would fall back to the built-in
+			// checks) and not "no evidence" (which would skip the evidence
+			// check): support can no longer be judged, so a human decides.
+			v := memory.SemanticVerdict{Verdict: memory.VerdictAbstain,
+				Reason: "held for review: " + memory.ErrEvidenceExpired.Error() + ", so its support cannot be judged"}
+			if rerr := gs.RecordSemanticVerdict(ctx, memoryID, g.Version, v); rerr != nil {
+				fail(rerr)
+			}
+			return
+		}
+		if err != nil {
 			fail(err)
 			return
 		}

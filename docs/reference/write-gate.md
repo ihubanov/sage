@@ -94,9 +94,14 @@ Evidence exists only to judge and review a memory that is still **proposed**:
 | claimed, memory proposed (being judged or held for review) | kept |
 | claimed, memory committed, rejected or deprecated | deleted — the vote it informed is final |
 | claimed, submission provably never signed or sent (e.g. a fenced signer) | released back to unclaimed, so a retry can claim the same `evidence_id` |
-| claimed, memory never appeared (the submission failed after sending, or its outcome was indeterminate) | kept for 24 hours — the transaction may still commit — then deleted |
+| claimed, memory has not appeared (the submission failed after sending, or its outcome is indeterminate) | kept for 24 hours; then the **text** is deleted and the claim stays as an *expired* marker |
+| expired marker, memory arrives later | **held for review** — never judged as if no evidence had been supplied; the review screen says the evidence expired, and the marker goes with the memory's decision |
 
-Pruning runs on every upload and every ten minutes while the gate runs.
+A memory's absence after 24 hours does not prove its transaction can never
+commit (an unresolved submission is reconciled until its fate is known, and
+proof freshness is judged by block time), which is why the claim is marked
+rather than forgotten. Pruning runs on every upload and every ten minutes while
+the gate runs.
 
 ## What the node does with the answer
 

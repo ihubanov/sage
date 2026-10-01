@@ -78,10 +78,17 @@ func TestLocalReader_FailsClosed(t *testing.T) {
 		_, err := yesNo(t, c, map[string]string{"memory": "m"})
 		require.ErrorIs(t, err, ErrLabelMissing, "must be unavailable, never a renormalised guess")
 	})
-	t.Run("labels carry no mass", func(t *testing.T) {
+	t.Run("only one label present", func(t *testing.T) {
+		// The model answered Y, but the alternatives list this position carries neither bare label:
+		// the ratio cannot be formed, and the chosen token alone would claim certainty.
 		c := localServer(t, logprobBody("Y", -0.01, map[string]float64{"Yes": -0.01, "Yea": -1}), 200, nil)
 		_, err := yesNo(t, c, map[string]string{"memory": "m"})
-		require.ErrorIs(t, err, ErrLabelMissing)
+		require.ErrorIs(t, err, ErrLabelMass)
+	})
+	t.Run("the other label missing", func(t *testing.T) {
+		c := localServer(t, logprobBody("Y", -0.01, map[string]float64{"Y": -0.01, "Yes": -2}), 200, nil)
+		_, err := yesNo(t, c, map[string]string{"memory": "m"})
+		require.ErrorIs(t, err, ErrLabelMass, "a one-sided list must not be reported as certainty")
 	})
 	t.Run("no token probabilities at all", func(t *testing.T) {
 		c := localServer(t, []byte(`{"choices":[{"message":{"content":"Y"}}]}`), 200, nil)

@@ -190,26 +190,21 @@ func parseLabelProbability(payload []byte) (float64, error) {
 		return 0, fmt.Errorf("%w: first token %q (caller must treat this as unavailable)", ErrLabelMissing, first.Token)
 	}
 	var y, n float64
+	var haveY, haveN bool
 	for _, alt := range first.TopLogprobs {
 		switch strings.TrimSpace(alt.Token) {
 		case "Y":
-			y += math.Exp(alt.Logprob)
+			y, haveY = y+math.Exp(alt.Logprob), true
 		case "N":
-			n += math.Exp(alt.Logprob)
+			n, haveN = n+math.Exp(alt.Logprob), true
 		}
 	}
-	if y+n == 0 {
-		if isLabel(first.Token) {
-			// The chosen token is a label but the alternatives omitted both; fall back to it.
-			if strings.TrimSpace(first.Token) == "Y" {
-				y = math.Exp(first.Logprob)
-			} else {
-				n = math.Exp(first.Logprob)
-			}
-		}
-	}
-	if y+n == 0 {
-		return 0, ErrLabelMass
+	// BOTH labels must be present where the model answered. If one is missing — a truncated
+	// alternatives list, or a model that put its probability somewhere else — the ratio cannot
+	// be formed, and falling back to the chosen token alone would report certainty the model
+	// never expressed. Unavailable, so the gate holds instead of inventing a score.
+	if !haveY || !haveN || y+n == 0 {
+		return 0, fmt.Errorf("%w: first token %q with Y present=%t N present=%t", ErrLabelMass, first.Token, haveY, haveN)
 	}
 	return y / (y + n), nil
 }

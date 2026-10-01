@@ -1410,7 +1410,13 @@ func runServe(startupProof string) (rerr error) {
 	// lifecycle so every listener/store/consensus component drains before exec.
 	restartRequested = make(chan preparedRestartRequest, 1)
 	dashboard := web.NewDashboardHandler(sqliteStore, version)
+	// Two ways to judge memories, in this order: a judge SERVICE when SAGE_HUNCH_URL is set, else
+	// the model this node serves through its own managed Ollama (SAGE_LOCAL_JUDGE_MODEL). A node
+	// with neither runs with the built-in checks alone.
 	memoryGate := writeGateFromEnv(logger)
+	if memoryGate == nil && ollamaMgr != nil {
+		memoryGate = localJudgeFromEnv(logger, ollamaMgr.URL())
+	}
 	dashboard.SetMemoryGate(memoryGate)
 	dashboard.NodeOperatorAgentID = operatorAgentID
 	dashboard.RunBackground = func(fn func(context.Context)) {

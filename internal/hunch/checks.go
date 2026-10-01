@@ -24,12 +24,20 @@ var Lasting = Check{
 		"or attachment, truncated context, something that could not be done just now, a request to re-send",
 }
 
-// LastingJudge adapts a Hunch service to the memory gate's provider-neutral
+// JudgeBackend is one question put to one model. Both backends satisfy it: the
+// Hunch service client (remote, vLLM-shaped) and the local client (a model
+// served on this machine, e.g. SAGE's own Ollama). The gate depends only on the
+// adapters below, so a node can be pointed at either without other changes.
+type JudgeBackend interface {
+	YesNo(ctx context.Context, judgeContext any, checks map[string]Check) (map[string]float64, error)
+}
+
+// LastingJudge adapts a judge backend to the memory gate's provider-neutral
 // judge interface (internal/voter.LastingJudge): it asks the Lasting check and
 // returns p_yes. Only the memory's content is sent — no id, domain, author or
 // other metadata.
 type LastingJudge struct {
-	Client *Client
+	Client JudgeBackend
 }
 
 // LastingProbability returns the probability that content is lasting memory.
@@ -61,11 +69,11 @@ var Supported = Check{
 		"(\"reportedly\", \"according to\", \"X said\") while `memory` states it as fact",
 }
 
-// SupportJudge adapts a Hunch service to the memory gate's evidence judge
+// SupportJudge adapts a judge backend to the memory gate's evidence judge
 // interface (internal/voter.SupportJudge): it asks the Supported check with the
 // memory and its evidence and returns p_yes. Only those two texts are sent.
 type SupportJudge struct {
-	Client *Client
+	Client JudgeBackend
 }
 
 // SupportedProbability returns the probability that evidence supports content.

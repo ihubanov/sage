@@ -29,7 +29,7 @@ func logprobBody(first string, firstLP float64, alts map[string]float64) []byte 
 	return out
 }
 
-func server(t *testing.T, body []byte, status int, check func(*http.Request, map[string]any)) *LocalClient {
+func localServer(t *testing.T, body []byte, status int, check func(*http.Request, map[string]any)) *LocalClient {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req map[string]any
@@ -55,7 +55,7 @@ func yesNo(t *testing.T, c *LocalClient, ctxMap map[string]string) (float64, err
 
 func TestLocalReader_ReadsTheLabelProbability(t *testing.T) {
 	// P(Y)=e^-0.1, P(N)=e^-2.4 -> a decisive yes
-	c := server(t, logprobBody("Y", -0.1, map[string]float64{"Y": -0.1, "N": -2.4, "Yes": -8}), 200,
+	c := localServer(t, logprobBody("Y", -0.1, map[string]float64{"Y": -0.1, "N": -2.4, "Yes": -8}), 200,
 		func(r *http.Request, req map[string]any) {
 			require.Equal(t, "/v1/chat/completions", r.URL.Path)
 			require.Equal(t, "judge-local", req["model"])
@@ -74,22 +74,22 @@ func TestLocalReader_ReadsTheLabelProbability(t *testing.T) {
 
 func TestLocalReader_FailsClosed(t *testing.T) {
 	t.Run("first token is not a label", func(t *testing.T) {
-		c := server(t, logprobBody("Yes", -0.01, map[string]float64{"Yes": -0.01, "Y": -6, "N": -7}), 200, nil)
+		c := localServer(t, logprobBody("Yes", -0.01, map[string]float64{"Yes": -0.01, "Y": -6, "N": -7}), 200, nil)
 		_, err := yesNo(t, c, map[string]string{"memory": "m"})
 		require.ErrorIs(t, err, ErrLabelMissing, "must be unavailable, never a renormalised guess")
 	})
 	t.Run("labels carry no mass", func(t *testing.T) {
-		c := server(t, logprobBody("Y", -0.01, map[string]float64{"Yes": -0.01, "Yea": -1}), 200, nil)
+		c := localServer(t, logprobBody("Y", -0.01, map[string]float64{"Yes": -0.01, "Yea": -1}), 200, nil)
 		_, err := yesNo(t, c, map[string]string{"memory": "m"})
 		require.ErrorIs(t, err, ErrLabelMissing)
 	})
 	t.Run("no token probabilities at all", func(t *testing.T) {
-		c := server(t, []byte(`{"choices":[{"message":{"content":"Y"}}]}`), 200, nil)
+		c := localServer(t, []byte(`{"choices":[{"message":{"content":"Y"}}]}`), 200, nil)
 		_, err := yesNo(t, c, map[string]string{"memory": "m"})
 		require.Error(t, err)
 	})
 	t.Run("backend error", func(t *testing.T) {
-		c := server(t, []byte(`{"error":"model not found"}`), 404, nil)
+		c := localServer(t, []byte(`{"error":"model not found"}`), 404, nil)
 		_, err := yesNo(t, c, map[string]string{"memory": "m"})
 		require.Error(t, err)
 	})
@@ -104,7 +104,7 @@ func TestLocalReader_FailsClosed(t *testing.T) {
 
 func TestLocalReader_DebiasAsksBothOrdersAndAverages(t *testing.T) {
 	var orders []string
-	c := server(t, logprobBody("Y", -0.1, map[string]float64{"Y": -0.1, "N": -2.4}), 200,
+	c := localServer(t, logprobBody("Y", -0.1, map[string]float64{"Y": -0.1, "N": -2.4}), 200,
 		func(_ *http.Request, req map[string]any) {
 			msgs := req["messages"].([]any)
 			content := msgs[1].(map[string]any)["content"].(string)
@@ -123,7 +123,7 @@ func TestLocalReader_DebiasAsksBothOrdersAndAverages(t *testing.T) {
 }
 
 func TestLocalReader_RejectsNonYesNoChecks(t *testing.T) {
-	c := server(t, logprobBody("Y", -0.1, nil), 200, nil)
+	c := localServer(t, logprobBody("Y", -0.1, nil), 200, nil)
 	_, err := c.YesNo(context.Background(), map[string]string{"memory": "m"},
 		map[string]Check{"c": {Kind: "pick", Question: "q"}})
 	require.ErrorContains(t, err, "yesno")

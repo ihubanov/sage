@@ -280,8 +280,12 @@ var (
 // AND the auto-voter that would lift it, forever (observed 2026-09-22: 19+
 // handlers parked 122-768 min in acquireNonceLease/awaitFenceLifted). Deriving a
 // deadline restores the documented invariant without re-introducing
-// client-driven cancellation. A var, not a const, so a test can shrink it.
-var nonceLeaseMaxWait = 90 * time.Second
+// client-driven cancellation. The mutable value below lets tests shrink it.
+// DefaultNonceLeaseMaxWait is the production limit, also used by REST to keep
+// the response writer alive while a detached submit acquires its signing slot.
+const DefaultNonceLeaseMaxWait = 90 * time.Second
+
+var nonceLeaseMaxWait = DefaultNonceLeaseMaxWait
 
 func WithNonceLease(ctx context.Context, sk ed25519.PrivateKey, submit func(nonce uint64) error) error {
 	if submit == nil {

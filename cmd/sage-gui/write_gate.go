@@ -27,10 +27,6 @@ import (
 //	                         set, ONLY these domains' memory content is sent
 //	SAGE_HUNCH_EXEMPT_DOMAINS comma-separated domain prefixes never judged (e.g.
 //	                         program-written catalogs); their content is not sent
-//	SAGE_HUNCH_EVIDENCE      "off" disables the evidence check; by default a
-//	                         memory submitted with evidence is also asked
-//	                         whether the evidence supports it (every judge
-//	                         must agree), and the evidence text is sent too
 //	SAGE_HUNCH_TIMEOUT       per-memory judge budget, e.g. "60s"
 //	SAGE_HUNCH_JUDGE_REVISION free-form tag folded into the verdict-cache
 //	                         version; change it when a judge service's default
@@ -59,13 +55,8 @@ func writeGateFromEnv(logger zerolog.Logger) *voter.Gate {
 		models = []string{""}
 	}
 	g := &voter.Gate{Timeout: timeout}
-	evidenceCheck := !strings.EqualFold(strings.TrimSpace(os.Getenv("SAGE_HUNCH_EVIDENCE")), "off")
 	for _, m := range models {
-		client := hunch.New(url, key, m, timeout)
-		g.Judges = append(g.Judges, hunch.LastingJudge{Client: client})
-		if evidenceCheck {
-			g.SupportJudges = append(g.SupportJudges, hunch.SupportJudge{Client: client})
-		}
+		g.Judges = append(g.Judges, hunch.LastingJudge{Client: hunch.New(url, key, m, timeout)})
 	}
 	g.Policy = strings.TrimSpace(os.Getenv("SAGE_HUNCH_POLICY"))
 	g.ExemptDomainPrefixes = splitList(os.Getenv("SAGE_HUNCH_EXEMPT_DOMAINS"))
@@ -75,9 +66,6 @@ func writeGateFromEnv(logger zerolog.Logger) *voter.Gate {
 		policy = voter.PolicyLead
 	}
 	g.Version = gateVersion(policy, models, judgeServiceIdentity(url), os.Getenv("SAGE_HUNCH_JUDGE_REVISION"))
-	if !evidenceCheck {
-		g.Version += "|evidence=off"
-	}
 	scope := "every domain"
 	if len(g.IncludeDomainPrefixes) > 0 {
 		scope = "domains " + strings.Join(g.IncludeDomainPrefixes, ", ")
@@ -85,10 +73,8 @@ func writeGateFromEnv(logger zerolog.Logger) *voter.Gate {
 	shown := displayJudgeURL(url)
 	logger.Info().Str("hunch_url", shown).Strs("judges", models).Str("policy", policy).Str("verdict_cache", g.Version).
 		Strs("include_domains", g.IncludeDomainPrefixes).Strs("exempt_domains", g.ExemptDomainPrefixes).
-		Bool("evidence_check", evidenceCheck).
 		Msg("memory gate ON — the CONTENT of proposed memories in " + scope +
-			" (minus exempt domains), and the evidence submitted with them when the evidence check is on," +
-			" is sent to " + shown + " to be judged before this node votes; no ids, authors or other metadata")
+			" (minus exempt domains) is sent to " + shown + " to be judged before this node votes; no ids, authors or other metadata")
 	return g
 }
 

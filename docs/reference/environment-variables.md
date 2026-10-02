@@ -1,4 +1,4 @@
-<!-- Reconciled through SAGE v11.23.12. Every variable below was located at the cited file:line via `os.Getenv` or the local env helper. When the code changes, re-verify and bump this header. -->
+<!-- Reconciled through SAGE v11.23.13. Every variable below was located at the cited file:line via `os.Getenv` or the local env helper. When the code changes, re-verify and bump this header. -->
 
 # SAGE Reference — Environment Variables
 
@@ -92,15 +92,14 @@ plaintext requirements, and cache behavior.
 
 | Variable | What it does | Default | Read by | Source |
 |----------|--------------|---------|---------|--------|
-| `SAGE_HUNCH_URL` | Hunch judge service base URL; enables the gate when set. | unset (gate off) | sage-gui | `writeGateFromEnv` — `cmd/sage-gui/write_gate.go:39` |
-| `SAGE_HUNCH_API_KEY` | Bearer key for a service that requires authentication. | unset | sage-gui | `writeGateFromEnv` — `cmd/sage-gui/write_gate.go:43` |
-| `SAGE_HUNCH_MODELS` | Comma-separated judge models; the first leads under the `lead` policy. | one judge using the service's default model | sage-gui | `writeGateFromEnv` — `cmd/sage-gui/write_gate.go:53` |
-| `SAGE_HUNCH_POLICY` | `lead` or `all`; unrecognized values use `lead`. | `lead` | sage-gui | `writeGateFromEnv` — `cmd/sage-gui/write_gate.go:70` |
-| `SAGE_HUNCH_INCLUDE_DOMAINS` | Comma-separated domain prefixes to judge; when set, excludes all other domains. | all domains, subject to exemptions | sage-gui | `writeGateFromEnv` — `cmd/sage-gui/write_gate.go:72` |
-| `SAGE_HUNCH_EXEMPT_DOMAINS` | Comma-separated domain prefixes never sent to the judge. | none | sage-gui | `writeGateFromEnv` — `cmd/sage-gui/write_gate.go:71` |
-| `SAGE_HUNCH_EVIDENCE` | `off` disables the evidence check; otherwise a memory submitted with evidence is also asked whether the evidence supports it, and the evidence text is sent to the judge too. | on | sage-gui | `writeGateFromEnv` — `cmd/sage-gui/write_gate.go:62` |
-| `SAGE_HUNCH_TIMEOUT` | Per-memory judge budget as a positive Go duration; invalid values use the default. | `60s` | sage-gui | `writeGateFromEnv` — `cmd/sage-gui/write_gate.go:45` |
-| `SAGE_HUNCH_JUDGE_REVISION` | Operator tag in the cache version; change it when the service's default model changes behind the same URL. | unset | sage-gui | `writeGateFromEnv` — `cmd/sage-gui/write_gate.go:77` |
+| `SAGE_HUNCH_URL` | Hunch judge service base URL; enables the gate when set. | unset (gate off) | sage-gui | `writeGateFromEnv` — `cmd/sage-gui/write_gate.go:35` |
+| `SAGE_HUNCH_API_KEY` | Bearer key for a service that requires authentication. | unset | sage-gui | `writeGateFromEnv` — `cmd/sage-gui/write_gate.go:39` |
+| `SAGE_HUNCH_MODELS` | Comma-separated judge models; the first leads under the `lead` policy. | one judge using the service's default model | sage-gui | `writeGateFromEnv` — `cmd/sage-gui/write_gate.go:49` |
+| `SAGE_HUNCH_POLICY` | `lead` or `all`; unrecognized values use `lead`. | `lead` | sage-gui | `writeGateFromEnv` — `cmd/sage-gui/write_gate.go:61` |
+| `SAGE_HUNCH_INCLUDE_DOMAINS` | Comma-separated domain prefixes to judge; when set, excludes all other domains. | all domains, subject to exemptions | sage-gui | `writeGateFromEnv` — `cmd/sage-gui/write_gate.go:63` |
+| `SAGE_HUNCH_EXEMPT_DOMAINS` | Comma-separated domain prefixes never sent to the judge. | none | sage-gui | `writeGateFromEnv` — `cmd/sage-gui/write_gate.go:62` |
+| `SAGE_HUNCH_TIMEOUT` | Per-memory judge budget as a positive Go duration; invalid values use the default. | `60s` | sage-gui | `writeGateFromEnv` — `cmd/sage-gui/write_gate.go:41` |
+| `SAGE_HUNCH_JUDGE_REVISION` | Operator tag in the cache version; change it when the service's default model changes behind the same URL. | unset | sage-gui | `writeGateFromEnv` — `cmd/sage-gui/write_gate.go:68` |
 
 ### External Comet settings for app-v20
 

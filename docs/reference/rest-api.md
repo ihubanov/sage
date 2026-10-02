@@ -1,4 +1,4 @@
-<!-- Reconciled through SAGE v11.23.12. Cite file:line when behavior is non-obvious. -->
+<!-- Reconciled through SAGE v11.23.13. Cite file:line when behavior is non-obvious. -->
 
 # SAGE REST API Reference
 
@@ -67,15 +67,6 @@ Submit a memory for BFT consensus. Blocks until `broadcast_tx_commit` returns (F
 | `tags` | []string | no | Up to 32 labels of 128 UTF-8 bytes each. Above app-v20 they are sorted/deduplicated into the signed tx; scoped-domain tags are also AppHash-covered and projection-recoverable. Ordinary-domain tags remain node-local. OR-filter on query/search. |
 | `provider` | string | no | Stored off-chain only; not on-chain |
 | `idempotency_key` | string | no | App-v23 tasks only; 1–128 visible ASCII bytes without spaces. If omitted, REST derives the same permanent semantic key as MCP from the exact signed agent ID, resolved domain, and task content. Repeating that semantic task returns the original receipt at its current status. Supply a fresh explicit key only to intentionally create another occurrence with identical content/domain. |
-| `evidence_id` | string | no | Claims evidence uploaded by the same agent with `POST /v1/memory/evidence` (below), within its expiry, once. Only this random id is in the signed body; the evidence text never enters a transaction. Not accepted for `task`. An unknown, expired, used or other agent's id is `400 Invalid evidence_id`; a node whose store does not keep evidence answers `400 Evidence not supported`. See [`write-gate.md`](write-gate.md). |
-
-### `POST /v1/memory/evidence`
-
-Uploads source material for a memory the same agent is about to submit, for the optional [memory gate](write-gate.md). The evidence is stored **node-local** on this node (encrypted like memory content when the vault is on) and is never broadcast; nothing reaches consensus. It is kept separate from the submission because a signed submission body is carried inside the transaction as the agent's proof.
-
-**Request body:** `{"evidence": "<text, at most 32 KiB>"}`
-
-**Response `201`:** `{"evidence_id": "ev-…", "expires_in_seconds": 3600}` — pass `evidence_id` on `POST /v1/memory/submit` before it expires. Above app-v23 only an active ordinary agent may upload (`403` otherwise; Root is not an agent). An agent may hold at most 64 unclaimed uploads (`429` beyond that). A store that does not keep evidence (PostgreSQL) answers `501`. The claim is made immediately before signing and released if the submission is refused before anything is signed or sent, so a retry can reuse the id; retention is described in [`write-gate.md`](write-gate.md#evidence-retention).
 
 **Classification values** (`internal/tx/types.go:84-90`):
 

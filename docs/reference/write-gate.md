@@ -5,10 +5,9 @@ agent that stores a remark about its own session — "the attachment was lost;
 the user must re-send the numbers" — as a 0.9-confidence fact gets it
 committed, and later sessions recall it as if it were true of the world.
 
-The memory gate lets a node ask an operator-configured judge a calibrated
+The memory gate lets a node ask an operator-configured judge one calibrated
 question before it votes on a proposed memory: *is this lasting knowledge, or a
-statement about the conversation it came from?* — and, when the memory was
-submitted with evidence, *does that evidence support it?* The judge returns a
+statement about the conversation it came from?* The judge returns a
 probability, so the decision is a number with a threshold, not a guess. The
 bundled adapter uses [Hunch](https://github.com/ihubanov/hunch), which reads
 one constrained token's logprobs from a model you run.
@@ -27,81 +26,6 @@ standing rules or methods are lasting; a lost or unreadable message, truncated
 context, something that could not be done just now, or a request to re-send are
 not. The wording is versioned (`sage-lasting/N`) and recorded with every
 verdict.
-
-## The evidence check (experimental)
-
-An agent can submit a memory **together with text it says the memory is based
-on** — a quote, a log line, an excerpt. A node running the gate then also asks
-whether the memory is supported by that caller-supplied text:
-
-> Is the assertion in `memory` supported by `evidence`, as stated — including
-> its time frame and certainty?
-
-It names the look-alikes that most often pass a plain "is it supported"
-question: evidence that is about something else, only makes the claim
-plausible, or supports a weaker claim; evidence about an **earlier time** ("at
-the 2023 inspection the alarm was disabled") for a memory stated as true now
-("the alarm is disabled"); and evidence that only **reports** what someone says
-("the vendor says…", "reportedly") for a memory stated as fact. A memory that
-keeps the evidence's time frame or attribution is supported.
-
-A memory **without** evidence is judged exactly as before — never given a
-guessed support score. With evidence, the memory passes only when **both**
-checks pass, is voted down when either fails, and is otherwise held for review;
-the review screen shows the evidence next to the memory. **Every judge must
-agree** that the evidence supports the memory, whatever `SAGE_HUNCH_POLICY`
-says (see "Measured" below for why).
-
-Evidence travels **separately** from the memory, because a signed submission
-body is carried inside the transaction as the agent's proof:
-
-1. `POST /v1/memory/evidence` `{"evidence": "..."}` (up to 32 KiB) stores it on
-   **this node only**, encrypted like memory content when the vault is on, and
-   returns a random `evidence_id` (valid for an hour).
-2. `POST /v1/memory/submit` with `evidence_id` claims it, once, for the memory —
-   before the transaction is built, so the gate never judges the memory
-   without it. The chain only ever sees the random id.
-
-MCP agents pass `evidence` to `sage_remember`, which does both steps. Set
-`SAGE_HUNCH_EVIDENCE=off` to disable the evidence check while keeping the
-lasting check.
-
-What it does **not** do:
-
-- **It does not authenticate the source.** It checks the memory against the
-  text the caller supplied; a caller can supply any text. It catches a memory
-  that overstates, re-dates or de-attributes its own evidence, not a fabricated
-  source.
-- **Omitting evidence skips it.** A memory without evidence gets the lasting
-  check only.
-- **A judge failure falls back** to the built-in checks, as for the lasting
-  check; nothing is recorded.
-- **Other validators do not receive the evidence.** Only the node the agent
-  uploaded it to can ask the evidence check; the rest judge the memory without
-  it.
-
-Only an **active agent** may upload evidence (above app-v23 the same
-enrollment rule as other agent surfaces; Root is not an agent). An agent may
-hold at most 64 unclaimed uploads.
-
-### Evidence retention
-
-Evidence exists only to judge and review a memory that is still **proposed**:
-
-| State | Evidence |
-|---|---|
-| uploaded, not claimed | deleted one hour after upload |
-| claimed, memory proposed (being judged or held for review) | kept |
-| claimed, memory committed, rejected or deprecated | deleted — the vote it informed is final |
-| claimed, submission provably never signed or sent (e.g. a fenced signer) | released back to unclaimed, so a retry can claim the same `evidence_id` |
-| claimed, memory has not appeared (the submission failed after sending, or its outcome is indeterminate) | kept for 24 hours; then the **text** is deleted and the claim stays as an *expired* marker |
-| expired marker, memory arrives later | **held for review** — never judged as if no evidence had been supplied; the review screen says the evidence expired, and the marker goes with the memory's decision |
-
-A memory's absence after 24 hours does not prove its transaction can never
-commit (an unresolved submission is reconciled until its fate is known, and
-proof freshness is judged by block time), which is why the claim is marked
-rather than forgotten. Pruning runs on every upload and every ten minutes while
-the gate runs.
 
 ## What the node does with the answer
 
@@ -156,9 +80,8 @@ client cannot decide a memory it could not have reviewed.
 
 ## What leaves the node
 
-Only the **text** of proposed memories in scope — and, for a memory submitted
-with evidence, the evidence text — is sent to the configured judge service —
-no ids, domains, authors or other metadata. Scope is controlled by
+Only the **text** of proposed memories in scope is sent to the configured judge
+service — no ids, domains, authors or other metadata. Scope is controlled by
 `SAGE_HUNCH_INCLUDE_DOMAINS` (only these domains) and
 `SAGE_HUNCH_EXEMPT_DOMAINS` (never these); the node logs the scope and the
 judge URL at startup, and the review screen repeats it. Content that cannot be
@@ -166,12 +89,11 @@ produced in plaintext (a locked vault, a decryption failure) is never sent.
 
 ## Judges are pluggable
 
-The voter depends only on provider-neutral interfaces —
-`LastingProbability(ctx, content) (float64, error)` and, for the evidence
-check, `SupportedProbability(ctx, content, evidence) (float64, error)`. Hunch
+The voter depends only on a provider-neutral interface —
+`LastingProbability(ctx, content) (float64, error)`. Hunch
 ([github.com/ihubanov/hunch](https://github.com/ihubanov/hunch)) is supplied as
-one adapter for each (`internal/hunch.LastingJudge`, `internal/hunch.SupportJudge`);
-any other judge can implement the same methods.
+one adapter (`internal/hunch.LastingJudge`); any other judge can implement the
+same method.
 
 ## Several judges
 
@@ -198,7 +120,6 @@ conversation, should not be asked this question. List their domain prefixes in
 | `SAGE_HUNCH_POLICY` | `lead` (default) or `all` |
 | `SAGE_HUNCH_INCLUDE_DOMAINS` | comma-separated domain prefixes to judge; when set, only these domains' text is sent |
 | `SAGE_HUNCH_EXEMPT_DOMAINS` | comma-separated domain prefixes never judged (e.g. program-written catalogs) |
-| `SAGE_HUNCH_EVIDENCE` | `off` disables the evidence check (default on; it only applies to memories submitted with evidence) |
 | `SAGE_HUNCH_TIMEOUT` | judge budget per memory (default `60s`) |
 | `SAGE_HUNCH_JUDGE_REVISION` | free-form tag folded into the verdict-cache version; change it to re-judge after a service's default model changes |
 
@@ -219,29 +140,10 @@ reader; small samples.
 - 38 genuine written facts: **none rejected**, about 1 in 10 sent to review.
 - A judge call took ~0.6 s (median); judges are asked concurrently.
 
-**Evidence check**, two judges from different model families. Measured on
-synthetic cases written by an independent author for this purpose; the wording
-and pass criteria were fixed before the held-out set was written, and nothing
-was tuned on it.
-
-- On an earlier hard set (283 items), the first wording let **19 of 137**
-  unsupported memories through under the lead policy — mostly claims about an
-  earlier time stated as current, and reported claims stated as fact.
-- With the current wording, on **160 fresh held-out** items (40 each: earlier
-  time, reported claim, genuine look-alikes that keep the time frame or
-  attribution, ordinary genuine support), requiring every judge: **0 of 80**
-  unsupported memories passed (95% Wilson upper bound 4.6%); **0 of 80** genuine
-  ones were rejected; **3 of 40** ordinary and **10 of 40** look-alike genuine
-  memories were held for review — the look-alikes mostly with one judge at
-  0.85–0.89. Under the lead policy the same run let 2 of 80 unsupported through,
-  which is why the evidence check always requires every judge.
-- A repeat run changed 8 of 160 verdicts. The items are synthetic and from one
-  author: measure the review rate on your own evidence-bearing memories.
-
 ## Scope and limits
 
-- **Per node.** Verdicts, review decisions and evidence live in this node's
-  SQLite store and shape this node's vote only. The PostgreSQL store does not implement the
+- **Per node.** Verdicts and review decisions live in this node's SQLite store
+  and shape this node's vote only. The PostgreSQL store does not implement the
   gate.
 - **The judge is not deterministic across nodes**, which is why it runs in the
   voter (whose votes may legitimately disagree) and never in the state machine.

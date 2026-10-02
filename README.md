@@ -48,7 +48,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.12`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.13`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -208,15 +208,15 @@ uses re-enrollment; historical memory authorship is preserved.
 
 ---
 
-## What's New in v11.23.12
+## What's New in v11.23.13
 
-The experimental [memory gate](docs/reference/write-gate.md) can now check whether a memory preserves the time frame and certainty of text supplied as evidence. Agents pass `evidence` to `sage_remember`, or upload it through REST and submit its `evidence_id`. Evidence stays out of the chain; when the evidence check runs, its text is sent to the configured judge service. Every evidence judge must agree before the check passes.
+**REST submissions keep their acknowledgment through the full write budget.** A memory could commit after the server's response deadline had expired, leaving the caller with a connection error instead of the result. The deadline now accounts for embedding retries, the bounded nonce-lease wait and the consensus commit wait, with time for the response. The default is 285.75 seconds and the combined budget is capped at ten minutes; larger custom settings can still outlast that cap.
 
-Uploads require active enrollment. A submission refused before sending releases its claim for retry; an indeterminate submission keeps it. If a claimed memory has not appeared after 24 hours, its evidence text expires to an explicit marker, so a late-arriving memory is held for review. Evidence remains available while an existing memory is proposed. The review screen identifies expired evidence and refuses decisions while existing evidence cannot be read.
+**Vault recovery verifies the key before replacing `vault.key`.** An invalid recovery key is refused before it can overwrite the existing vault key file.
 
-The gate remains off unless `SAGE_HUNCH_URL` is configured. On an enabled gate, `SAGE_HUNCH_EVIDENCE=off` disables the evidence check. It checks support against caller-supplied text, does not authenticate the source, and applies only on the receiving node. Judge failures retain the existing built-in fallback. Consensus rules and app-version requirements are unchanged. Reproducible model evaluation remains a follow-up before broader enablement.
+This patch retains the memory gate shipped in v11.23.11. The unreleased evidence checks, managed local judge and model work are deferred. There is no consensus execution change, app-version change or chain migration. The cancelled v11.23.12 tag remains unchanged.
 
-Container: `ghcr.io/l33tdawg/sage:11.23.12`. SDK 11.23.12.
+Container: `ghcr.io/l33tdawg/sage:11.23.13`. SDK 11.23.13.
 
 ## What's New in v11.23.11
 

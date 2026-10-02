@@ -25,6 +25,6 @@ jobs:
       - name: Build
         run: go build ./...
       - name: Vet
-        run: go vet ./internal/hunch
+        run: go vet ./internal/hunch ./internal/ollamad
       - name: Tests (race)
-        run: go test -race -count=1 -v ./internal/hunch
+        run: go test -race -count=1 -v ./internal/hunch ./internal/ollamad

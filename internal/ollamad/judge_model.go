@@ -52,7 +52,7 @@ func (m *Manager) EnsureJudgeModel(ctx context.Context, status func(string)) err
 		return err
 	}
 	modelfile := filepath.Join(m.modelDir(), "Modelfile.judge")
-	if err := os.WriteFile(modelfile, []byte(fmt.Sprintf(judgeModelfile, gguf)), 0o644); err != nil {
+	if err := os.WriteFile(modelfile, []byte(fmt.Sprintf(judgeModelfile, gguf)), 0o600); err != nil {
 		return fmt.Errorf("write judge Modelfile: %w", err)
 	}
 	status("registering judge model")

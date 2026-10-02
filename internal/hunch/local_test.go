@@ -17,7 +17,7 @@ func logprobBody(first string, firstLP float64, alts map[string]float64) []byte 
 		Token   string  `json:"token"`
 		Logprob float64 `json:"logprob"`
 	}
-	var top []alt
+	top := make([]alt, 0, len(alts))
 	for tok, lp := range alts {
 		top = append(top, alt{tok, lp})
 	}

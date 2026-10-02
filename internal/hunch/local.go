@@ -57,7 +57,17 @@ func (c *LocalClient) http() *http.Client {
 	if t <= 0 {
 		t = 30 * time.Second
 	}
-	return &http.Client{Timeout: t}
+	// Connect DIRECTLY to the configured local endpoint, with no inherited egress paths:
+	//   - Proxy: nil ignores HTTP(S)_PROXY, so an inherited proxy env can never route the memory/evidence
+	//     out through it (Go's default transport would otherwise honour those vars).
+	//   - CheckRedirect refuses to follow a 3xx: a redirect pointing off the local host would be an
+	//     exfiltration path, so the caller sees a non-2xx and fails closed (holds for review) instead.
+	tr := &http.Transport{Proxy: nil, ForceAttemptHTTP2: true}
+	return &http.Client{
+		Timeout:       t,
+		Transport:     tr,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 }
 
 // YesNo implements the judge backend over a locally served model. It satisfies the same interface

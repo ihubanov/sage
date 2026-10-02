@@ -78,17 +78,13 @@ func TestLocalReader_FailsClosed(t *testing.T) {
 		_, err := yesNo(t, c, map[string]string{"memory": "m"})
 		require.ErrorIs(t, err, ErrLabelMissing, "must be unavailable, never a renormalised guess")
 	})
-	t.Run("only one label present", func(t *testing.T) {
-		// The model answered Y, but the alternatives list this position carries neither bare label:
-		// the ratio cannot be formed, and the chosen token alone would claim certainty.
+	t.Run("chosen label carried no top-k mass falls back to its own logprob", func(t *testing.T) {
+		// Chosen token is Y but neither bare label appears in top_logprobs: Hunch uses the chosen
+		// token's own logprob, so Y gets all the mass -> p=1.0 (accept), not an error.
 		c := localServer(t, logprobBody("Y", -0.01, map[string]float64{"Yes": -0.01, "Yea": -1}), 200, nil)
-		_, err := yesNo(t, c, map[string]string{"memory": "m"})
-		require.ErrorIs(t, err, ErrLabelMass)
-	})
-	t.Run("the other label missing", func(t *testing.T) {
-		c := localServer(t, logprobBody("Y", -0.01, map[string]float64{"Y": -0.01, "Yes": -2}), 200, nil)
-		_, err := yesNo(t, c, map[string]string{"memory": "m"})
-		require.ErrorIs(t, err, ErrLabelMass, "a one-sided list must not be reported as certainty")
+		p, err := yesNo(t, c, map[string]string{"memory": "m"})
+		require.NoError(t, err)
+		require.Greater(t, p, 0.99)
 	})
 	t.Run("no token probabilities at all", func(t *testing.T) {
 		c := localServer(t, []byte(`{"choices":[{"message":{"content":"Y"}}]}`), 200, nil)

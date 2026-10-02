@@ -186,25 +186,33 @@ func parseLabelProbability(payload []byte) (float64, error) {
 		return 0, fmt.Errorf("local judge returned no token probabilities")
 	}
 	first := out.Choices[0].Logprobs.Content[0]
-	if !isLabel(first.Token) {
+	chosen := strings.TrimSpace(first.Token)
+	if !isLabel(chosen) {
 		return 0, fmt.Errorf("%w: first token %q (caller must treat this as unavailable)", ErrLabelMissing, first.Token)
 	}
 	var y, n float64
-	var haveY, haveN bool
 	for _, alt := range first.TopLogprobs {
 		switch strings.TrimSpace(alt.Token) {
 		case "Y":
-			y, haveY = y+math.Exp(alt.Logprob), true
+			y += math.Exp(alt.Logprob)
 		case "N":
-			n, haveN = n+math.Exp(alt.Logprob), true
+			n += math.Exp(alt.Logprob)
 		}
 	}
-	// BOTH labels must be present where the model answered. If one is missing — a truncated
-	// alternatives list, or a model that put its probability somewhere else — the ratio cannot
-	// be formed, and falling back to the chosen token alone would report certainty the model
-	// never expressed. Unavailable, so the gate holds instead of inventing a score.
-	if !haveY || !haveN || y+n == 0 {
-		return 0, fmt.Errorf("%w: first token %q with Y present=%t N present=%t", ErrLabelMass, first.Token, haveY, haveN)
+	// Read the answer exactly as Hunch's engine does (hunch/engine.py _parse): the chosen (greedy)
+	// token is already confirmed to be a label, so renormalise over whatever label mass is present.
+	// On a confident item the OTHER label can fall out of top-k entirely — that is real certainty
+	// (Hunch returns 1.0/0.0 there), not a missing verdict, so we must NOT fail closed on it; doing
+	// so would hold exactly the most-confident-correct memories. If the chosen label itself carried
+	// no top-k mass, fall back to its own logprob so it always contributes (Hunch does the same).
+	if chosen == "Y" && y == 0 {
+		y = math.Exp(first.Logprob)
+	}
+	if chosen == "N" && n == 0 {
+		n = math.Exp(first.Logprob)
+	}
+	if y+n == 0 {
+		return 0, fmt.Errorf("%w: first token %q carried no label mass", ErrLabelMass, first.Token)
 	}
 	return y / (y + n), nil
 }

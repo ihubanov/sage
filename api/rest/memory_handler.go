@@ -3609,7 +3609,11 @@ const defaultBroadcastTxCommitTimeout = 60 * time.Second
 
 func broadcastTxCommitTimeout() time.Duration {
 	if v := os.Getenv("SAGE_TX_COMMIT_TIMEOUT_MS"); v != "" {
-		if ms, err := strconv.Atoi(v); err == nil && ms > 0 {
+		if ms, err := strconv.ParseInt(v, 10, 64); err == nil && ms > 0 {
+			const maxDuration = time.Duration(1<<63 - 1)
+			if ms > int64(maxDuration/time.Millisecond) {
+				return defaultBroadcastTxCommitTimeout
+			}
 			return time.Duration(ms) * time.Millisecond
 		}
 	}

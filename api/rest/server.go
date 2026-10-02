@@ -1145,32 +1145,32 @@ func (s *Server) StartTLS(addr string, tlsConfig *tls.Config) error {
 }
 
 const (
-	defaultEmbeddingHTTPTimeout = 30 * time.Second
-	restWriteTimeoutHeadroom    = 15 * time.Second
-	maxRESTWriteTimeout         = 10 * time.Minute
+	restReadTimeout          = 15 * time.Second
+	restWriteTimeoutHeadroom = 30 * time.Second
+	maxRESTWriteTimeout      = 10 * time.Minute
 )
 
-// embeddingAwareWriteTimeout keeps the outer REST writer alive longer than a
-// configured CPU embedding request. Without this, http.Server's historical
-// 15-second ceiling can discard a valid 30/60/120-second embed response. The
-// upper bound prevents an accidental duration such as 24h from turning every
-// response writer into an effectively unbounded resource reservation.
-func embeddingAwareWriteTimeout() time.Duration {
-	raw := strings.TrimSpace(os.Getenv("SAGE_EMBEDDING_TIMEOUT"))
-	if raw == "" {
-		raw = strings.TrimSpace(os.Getenv("SAGE_EMBED_TIMEOUT"))
-	}
-	embedTimeout := defaultEmbeddingHTTPTimeout
-	if raw != "" {
-		if parsed, err := time.ParseDuration(raw); err == nil && parsed > 0 {
-			embedTimeout = parsed
+// restWriteTimeout covers the sequential submit lifecycle: embedding (including
+// retries), nonce-lease acquisition, consensus confirmation, then bounded
+// projection/tag bookkeeping and response delivery. A write deadline does not
+// cancel the detached authorized transaction: expiring it early discards a valid
+// acknowledgment and leaves the caller unable to distinguish success from
+// failure. Keep the existing resource cap, checking each addition for overflow.
+func restWriteTimeout() time.Duration {
+	var total time.Duration
+	for _, budget := range []time.Duration{
+		restReadTimeout,
+		embedding.HTTPCallBudget(),
+		tx.DefaultNonceLeaseMaxWait,
+		broadcastTxCommitTimeout(),
+		restWriteTimeoutHeadroom,
+	} {
+		if budget >= maxRESTWriteTimeout-total {
+			return maxRESTWriteTimeout
 		}
+		total += budget
 	}
-	writeTimeout := embedTimeout + restWriteTimeoutHeadroom
-	if writeTimeout > maxRESTWriteTimeout || writeTimeout < embedTimeout {
-		return maxRESTWriteTimeout
-	}
-	return writeTimeout
+	return total
 }
 
 func (s *Server) newHTTPServer(addr string, tlsConfig *tls.Config) *http.Server {
@@ -1178,8 +1178,8 @@ func (s *Server) newHTTPServer(addr string, tlsConfig *tls.Config) *http.Server 
 		Addr:         addr,
 		Handler:      s.router,
 		TLSConfig:    tlsConfig,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: embeddingAwareWriteTimeout(),
+		ReadTimeout:  restReadTimeout,
+		WriteTimeout: restWriteTimeout(),
 		IdleTimeout:  60 * time.Second,
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -130,4 +131,33 @@ func TestLocalReader_RejectsNonYesNoChecks(t *testing.T) {
 	_, err := c.YesNo(context.Background(), map[string]string{"memory": "m"},
 		map[string]Check{"c": {Kind: "pick", Question: "q"}})
 	require.ErrorContains(t, err, "yesno")
+}
+
+// Offline safety: with outbound blocked / the local judge unreachable, the reader must ERROR (which the
+// gate treats as unavailable -> hold for review), never return a score that could be read as accept.
+// This is the property that makes the no-cloud judge safe when its only dependency is down.
+func TestLocalReader_UnreachableJudgeFailsSafe(t *testing.T) {
+	// A port nothing listens on — stands in for outbound-blocked / Ollama down.
+	c := &LocalClient{BaseURL: "http://127.0.0.1:1/v1", Model: "judge-local", Timeout: 2 * time.Second}
+	_, err := c.YesNo(context.Background(), map[string]string{"memory": "m", "evidence": "e"},
+		map[string]Check{"c": {Kind: "yesno", Question: "q"}})
+	require.Error(t, err, "an unreachable local judge must surface an error, so the gate holds — never a silent score")
+}
+
+// The client only ever dials its configured BaseURL: no inherited provider env, no redirect target.
+// Constructed URL is BaseURL + /chat/completions and nothing else.
+func TestLocalReader_OnlyDialsConfiguredURL(t *testing.T) {
+	var hits []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, r.Host+r.URL.Path)
+		w.WriteHeader(200)
+		_, _ = w.Write(logprobBody("Y", -0.1, map[string]float64{"Y": -0.1, "N": -2.4}))
+	}))
+	defer srv.Close()
+	c := &LocalClient{BaseURL: srv.URL + "/v1", Model: "judge-local"}
+	_, err := c.YesNo(context.Background(), map[string]string{"memory": "m", "evidence": "e"},
+		map[string]Check{"c": {Kind: "yesno", Question: "q"}})
+	require.NoError(t, err)
+	require.Len(t, hits, 1)
+	require.Contains(t, hits[0], "/v1/chat/completions")
 }

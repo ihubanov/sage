@@ -37,8 +37,8 @@ import (
 //     operator's review decision resolves only the semantic question, and is
 //     final for that memory across versions: a human decision outranks a later
 //     judge.
-//   - A judge failure falls back to the built-in checks (the node votes as it
-//     would without the gate) and records nothing.
+//   - A judge failure holds the memory for review. It never bypasses a
+//     configured judge or turns unavailable evidence into absent evidence.
 //   - Everything is a per-node opinion. Judges are not deterministic across
 //     nodes, which is why the gate lives in the voter and never in the state
 //     machine.
@@ -77,9 +77,8 @@ type Gate struct {
 	// QueueSize the bound on memories waiting for one (default 64).
 	Workers   int
 	QueueSize int
-	// RetryAfterFailure is how long a memory whose judgement failed is voted
-	// with the built-in checks alone before the judge is asked again
-	// (default 10m).
+	// RetryAfterFailure bounds repeated failed evaluations when a hold could
+	// not be persisted (default 10m). The memory remains held during backoff.
 	RetryAfterFailure time.Duration
 
 	once     sync.Once
@@ -257,9 +256,7 @@ func (g *Gate) recentlyFailed(memoryID string) bool {
 	return true
 }
 
-// evaluate judges one memory and stores the semantic verdict. On any failure
-// it records nothing; the memory is voted with the built-in checks until
-// RetryAfterFailure has passed.
+// evaluate judges one memory and stores a verdict or an unavailable hold.
 func (g *Gate) evaluate(ctx context.Context, gs GateStore, memoryID string, logger zerolog.Logger) {
 	defer func() {
 		g.mu.Lock()
@@ -271,7 +268,13 @@ func (g *Gate) evaluate(ctx context.Context, gs GateStore, memoryID string, logg
 		g.failed[memoryID] = time.Now()
 		g.mu.Unlock()
 		logger.Warn().Err(err).Str("memory_id", memoryID).
-			Msg("memory gate could not judge this memory — it is voted with the built-in checks")
+			Msg("memory gate could not judge this memory — held for review")
+		if ctx.Err() == nil {
+			v := memory.SemanticVerdict{Verdict: memory.VerdictAbstain, Reason: "held for review: judge unavailable"}
+			if rerr := gs.RecordSemanticVerdict(ctx, memoryID, g.Version, v); rerr != nil {
+				logger.Warn().Err(rerr).Str("memory_id", memoryID).Msg("memory gate could not persist unavailable hold")
+			}
+		}
 	}
 	content, err := gs.JudgeableContent(ctx, memoryID)
 	if err != nil {
@@ -283,9 +286,8 @@ func (g *Gate) evaluate(ctx context.Context, gs GateStore, memoryID string, logg
 	if es, ok := gs.(EvidenceStore); ok && len(g.SupportJudges) > 0 {
 		evidence, hasEvidence, err = es.JudgeableEvidence(ctx, memoryID)
 		if errors.Is(err, memory.ErrEvidenceExpired) {
-			// Not a judge failure (which would fall back to the built-in
-			// checks) and not "no evidence" (which would skip the evidence
-			// check): support can no longer be judged, so a human decides.
+			// Keep an explicit expired-evidence hold rather than taking the
+			// no-evidence path: a human must decide this memory.
 			v := memory.SemanticVerdict{Verdict: memory.VerdictAbstain,
 				Reason: "held for review: " + memory.ErrEvidenceExpired.Error() + ", so its support cannot be judged"}
 			if rerr := gs.RecordSemanticVerdict(ctx, memoryID, g.Version, v); rerr != nil {
@@ -422,8 +424,8 @@ func (g *Gate) Apply(ctx context.Context, gs GateStore, mem *memory.MemoryRecord
 		return gateUseBaseline, baseline
 	}
 	if decision, ok, err := gs.ReviewDecision(ctx, mem.MemoryID); err != nil {
-		logger.Warn().Err(err).Str("memory_id", mem.MemoryID).Msg("memory gate review lookup failed — built-in checks apply")
-		return gateUseBaseline, baseline
+		logger.Warn().Err(err).Str("memory_id", mem.MemoryID).Msg("memory gate review lookup failed — held for review")
+		return gateHold, Decision{}
 	} else if ok {
 		if decision == memory.VerdictAccept {
 			return gateOverride, Decision{Accept: true, Reason: baseline.Reason + "; semantic check resolved by operator review"}
@@ -432,12 +434,12 @@ func (g *Gate) Apply(ctx context.Context, gs GateStore, mem *memory.MemoryRecord
 	}
 	v, ok, err := gs.SemanticVerdict(ctx, mem.MemoryID, g.Version)
 	if err != nil {
-		logger.Warn().Err(err).Str("memory_id", mem.MemoryID).Msg("memory gate verdict lookup failed — built-in checks apply")
-		return gateUseBaseline, baseline
+		logger.Warn().Err(err).Str("memory_id", mem.MemoryID).Msg("memory gate verdict lookup failed — held for review")
+		return gateHold, Decision{}
 	}
 	if !ok {
 		if g.recentlyFailed(mem.MemoryID) {
-			return gateUseBaseline, baseline
+			return gateHold, Decision{}
 		}
 		g.enqueue(mem.MemoryID)
 		return gateHold, Decision{}

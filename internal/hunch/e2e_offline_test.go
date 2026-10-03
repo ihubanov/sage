@@ -29,6 +29,10 @@ func TestOffline_JudgingNeverLeavesTheLocalEndpoint(t *testing.T) {
 
 	var localHits int64
 	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/show" {
+			_, _ = w.Write([]byte(`{"details":{"format":"gguf"}}`))
+			return
+		}
 		atomic.AddInt64(&localHits, 1)
 		require.Equal(t, "/v1/chat/completions", r.URL.Path)
 		_, _ = w.Write(logprobBody("Y", -0.1, map[string]float64{"Y": -0.1, "N": -2.4}))

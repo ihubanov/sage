@@ -17,7 +17,7 @@ import (
 // writeGateFromEnv builds the optional memory gate (internal/voter.Gate) from
 // the environment. It is OFF unless SAGE_HUNCH_URL is set.
 //
-//	SAGE_HUNCH_URL           base URL of a Hunch service (POST /v1/judge)
+//	SAGE_HUNCH_URL           loopback URL of a local Hunch service (POST /v1/judge)
 //	SAGE_HUNCH_API_KEY       bearer key for it, if the service requires one
 //	SAGE_HUNCH_MODELS        comma-separated judge models, the FIRST leading
 //	                         (empty = the service's default model, one judge)
@@ -108,7 +108,7 @@ func splitList(raw string) []string {
 // which case the service's own default model decides), or an operator-set
 // revision. It never contains credentials.
 func gateVersion(policy string, models []string, serviceID, revision string) string {
-	v := hunch.ChecksVersion + "|" + policy + ":" + strings.Join(models, "+") + "|svc=" + serviceID
+	v := hunch.ChecksVersion + "|loopback-hold-v1|" + policy + ":" + strings.Join(models, "+") + "|svc=" + serviceID
 	if r := strings.TrimSpace(revision); r != "" {
 		v += "|rev=" + r
 	}

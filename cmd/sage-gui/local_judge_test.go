@@ -37,3 +37,12 @@ func TestLocalJudge_IsASeparateNamespaceFromTheServiceJudge(t *testing.T) {
 	remote := gateVersion("lead", []string{"m"}, judgeServiceIdentity("https://judge.example/v1"), "")
 	require.NotEqual(t, local, remote, "switching a node between judge kinds must not reuse verdicts")
 }
+
+func TestLocalJudge_DebiasInvalidatesVerdictCache(t *testing.T) {
+	t.Setenv("SAGE_LOCAL_JUDGE_MODEL", "judge-build")
+	t.Setenv("SAGE_LOCAL_JUDGE_DEBIAS", "0")
+	one := localJudgeFromEnv(zerolog.Nop(), "http://127.0.0.1:11434")
+	t.Setenv("SAGE_LOCAL_JUDGE_DEBIAS", "1")
+	both := localJudgeFromEnv(zerolog.Nop(), "http://127.0.0.1:11434")
+	require.NotEqual(t, one.Version, both.Version)
+}

@@ -22,7 +22,7 @@ import (
 const (
 	JudgeModelTag   = "sage-memory-judge:v15"
 	judgeGGUFURL    = "https://huggingface.co/Infosec-Consult/sage-memory-judge/resolve/v15/sage-judge-v15-q8_0.gguf"
-	judgeGGUFSHA256 = "714ff9324133ba3b7166fe82fa362226fae5574c4f9cfbc53c054248b16f2cfd"
+	JudgeGGUFSHA256 = "714ff9324133ba3b7166fe82fa362226fae5574c4f9cfbc53c054248b16f2cfd"
 	judgeGGUFName   = "sage-judge-v15-q8_0.gguf"
 	// Thinking is OFF by serving requirement; the judge reads the first token as the label.
 	judgeModelfile = "FROM %s\nTEMPLATE {{ .Prompt }}\nRENDERER qwen3.5\nPARSER qwen3.5\n"
@@ -48,7 +48,7 @@ func (m *Manager) EnsureJudgeModel(ctx context.Context, status func(string)) err
 	}
 	gguf := filepath.Join(m.modelDir(), judgeGGUFName)
 	status("downloading judge model")
-	if err := downloadVerifiedFile(ctx, judgeGGUFURL, judgeGGUFSHA256, gguf); err != nil {
+	if err := downloadVerifiedFile(ctx, judgeGGUFURL, JudgeGGUFSHA256, gguf); err != nil {
 		return err
 	}
 	modelfile := filepath.Join(m.modelDir(), "Modelfile.judge")
@@ -67,9 +67,9 @@ func (m *Manager) EnsureJudgeModel(ctx context.Context, status func(string)) err
 // childEnv is the environment the managed ollama binary runs under: the host and model dir pinned, and any
 // inherited OLLAMA_HOST/OLLAMA_MODELS/SAGE_ vars scrubbed so nothing redirects it off the local runtime.
 func (m *Manager) childEnv() []string {
-	env := make([]string, 0, len(os.Environ())+2)
+	env := make([]string, 0, len(os.Environ())+3)
 	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "SAGE_") || strings.HasPrefix(kv, "OLLAMA_HOST=") || strings.HasPrefix(kv, "OLLAMA_MODELS=") {
+		if strings.HasPrefix(kv, "SAGE_") || strings.HasPrefix(kv, "OLLAMA_HOST=") || strings.HasPrefix(kv, "OLLAMA_MODELS=") || strings.HasPrefix(kv, "OLLAMA_NO_CLOUD=") {
 			continue
 		}
 		env = append(env, kv)
@@ -77,6 +77,7 @@ func (m *Manager) childEnv() []string {
 	return append(env,
 		"OLLAMA_HOST=127.0.0.1:"+strconv.Itoa(m.port),
 		"OLLAMA_MODELS="+m.modelDir(),
+		"OLLAMA_NO_CLOUD=1",
 	)
 }
 

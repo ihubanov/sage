@@ -199,7 +199,7 @@ func TestGate_VersionChangeRejudges(t *testing.T) {
 	require.Eventually(t, func() bool { return j.calls.Load() == 1 }, 5*time.Second, 10*time.Millisecond)
 }
 
-func TestGate_JudgeFailureFallsBackToBuiltInChecks(t *testing.T) {
+func TestGate_JudgeFailureHoldsForReview(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	m := gateRec("m1", "The depot opens at 07:00 on weekdays.", "notes")
@@ -209,10 +209,10 @@ func TestGate_JudgeFailureFallsBackToBuiltInChecks(t *testing.T) {
 	_, _ = g.Apply(ctx, gs, m, accept, zerolog.Nop())
 	require.Eventually(t, func() bool {
 		out, d := g.Apply(ctx, gs, m, accept, zerolog.Nop())
-		return out == gateUseBaseline && d.Accept
-	}, 5*time.Second, 10*time.Millisecond, "after a failure the node votes with the built-in checks")
+		return out == gateHold && !d.Accept && g.recentlyFailed("m1")
+	}, 5*time.Second, 10*time.Millisecond, "a failed configured judge cannot bypass the gate")
 	_, ok, _ := gs.SemanticVerdict(ctx, "m1", "v1")
-	require.False(t, ok, "a failed judgement records nothing")
+	require.True(t, ok, "the unavailable hold is visible in the review queue")
 }
 
 func TestGate_UnreadableContentIsNeverSent(t *testing.T) {
@@ -227,7 +227,7 @@ func TestGate_UnreadableContentIsNeverSent(t *testing.T) {
 	_, _ = g.Apply(ctx, gs, m, accept, zerolog.Nop())
 	require.Eventually(t, func() bool {
 		out, _ := g.Apply(ctx, gs, m, accept, zerolog.Nop())
-		return out == gateUseBaseline
+		return out == gateHold && g.recentlyFailed("m1")
 	}, 5*time.Second, 10*time.Millisecond)
 	require.Zero(t, j.calls.Load(), "nothing is sent to a judge when the content cannot be read")
 }
@@ -339,11 +339,11 @@ func TestGate_UnreadableEvidenceIsNeverSent(t *testing.T) {
 	_, _ = g.Apply(ctx, gs, m, accept, zerolog.Nop())
 	require.Eventually(t, func() bool {
 		out, _ := g.Apply(ctx, gs, m, accept, zerolog.Nop())
-		return out == gateUseBaseline
-	}, 5*time.Second, 10*time.Millisecond, "unreadable evidence is a judge failure: built-in checks apply")
+		return out == gateHold && g.recentlyFailed("m1")
+	}, 5*time.Second, 10*time.Millisecond, "unreadable evidence must remain held")
 	require.Zero(t, j.calls.Load()+sj.calls.Load(), "nothing is sent when the evidence cannot be read")
 	_, ok, _ := gs.SemanticVerdict(ctx, "m1", "v1")
-	require.False(t, ok)
+	require.True(t, ok)
 }
 
 // TestRun_HungJudgeDoesNotBlockOtherVotesOrUpgradeVoting is the isolation

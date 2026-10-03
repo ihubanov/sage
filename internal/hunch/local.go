@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -31,8 +32,11 @@ type LocalClient struct {
 	BaseURL string
 	// Model is the served model name. Required: a local judge must know what it is asking.
 	Model string
-	// HTTP is optional; a bounded timeout is applied when nil.
-	HTTP *http.Client
+	// ExpectedGGUFSHA256 binds a managed judge to its verified model blob.
+	ExpectedGGUFSHA256 string
+	// The direct loopback transport is shared across concurrent gate workers.
+	httpOnce   sync.Once
+	httpClient *http.Client
 	// TopLogprobs is how many alternatives to read per position (default 20, Ollama's cap).
 	TopLogprobs int
 	// Debias asks every check in both answer orders and averages, which cancels the model's
@@ -50,24 +54,14 @@ var ErrLabelMissing = fmt.Errorf("hunch: the model did not answer with a label")
 var ErrLabelMass = fmt.Errorf("hunch: the label tokens carried no probability at the answer position")
 
 func (c *LocalClient) http() *http.Client {
-	if c.HTTP != nil {
-		return c.HTTP
-	}
-	t := c.Timeout
-	if t <= 0 {
-		t = 30 * time.Second
-	}
-	// Connect DIRECTLY to the configured local endpoint, with no inherited egress paths:
-	//   - Proxy: nil ignores HTTP(S)_PROXY, so an inherited proxy env can never route the memory/evidence
-	//     out through it (Go's default transport would otherwise honour those vars).
-	//   - CheckRedirect refuses to follow a 3xx: a redirect pointing off the local host would be an
-	//     exfiltration path, so the caller sees a non-2xx and fails closed (holds for review) instead.
-	tr := &http.Transport{Proxy: nil, ForceAttemptHTTP2: true}
-	return &http.Client{
-		Timeout:       t,
-		Transport:     tr,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
+	c.httpOnce.Do(func() {
+		t := c.Timeout
+		if t <= 0 {
+			t = 30 * time.Second
+		}
+		c.httpClient = localClient(t)
+	})
+	return c.httpClient
 }
 
 // YesNo implements the judge backend over a locally served model. It satisfies the same interface
@@ -76,11 +70,17 @@ func (c *LocalClient) YesNo(ctx context.Context, judgeContext any, checks map[st
 	if c == nil || c.BaseURL == "" {
 		return nil, fmt.Errorf("hunch: local client not configured")
 	}
+	if err := ValidateLocalURL(c.BaseURL); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(c.Model) == "" {
 		return nil, fmt.Errorf("hunch: local client needs a model name")
 	}
 	if len(checks) == 0 {
 		return nil, fmt.Errorf("hunch: no checks")
+	}
+	if err := c.requireLocalModel(ctx); err != nil {
+		return nil, err
 	}
 	block, err := toJudgeContext(judgeContext)
 	if err != nil {
@@ -137,11 +137,11 @@ type chatResponse struct {
 		} `json:"message"`
 		Logprobs *struct {
 			Content []struct {
-				Token       string  `json:"token"`
-				Logprob     float64 `json:"logprob"`
+				Token       string   `json:"token"`
+				Logprob     *float64 `json:"logprob"`
 				TopLogprobs []struct {
-					Token   string  `json:"token"`
-					Logprob float64 `json:"logprob"`
+					Token   string   `json:"token"`
+					Logprob *float64 `json:"logprob"`
 				} `json:"top_logprobs"`
 			} `json:"content"`
 		} `json:"logprobs"`
@@ -200,13 +200,19 @@ func parseLabelProbability(payload []byte) (float64, error) {
 	if !isLabel(chosen) {
 		return 0, fmt.Errorf("%w: first token %q (caller must treat this as unavailable)", ErrLabelMissing, first.Token)
 	}
+	if !validLogprob(first.Logprob) {
+		return 0, fmt.Errorf("%w: selected label probability missing or invalid", ErrLabelMass)
+	}
 	var y, n float64
 	for _, alt := range first.TopLogprobs {
+		if !validLogprob(alt.Logprob) {
+			return 0, fmt.Errorf("%w: alternative probability missing or invalid", ErrLabelMass)
+		}
 		switch strings.TrimSpace(alt.Token) {
 		case "Y":
-			y += math.Exp(alt.Logprob)
+			y += math.Exp(*alt.Logprob)
 		case "N":
-			n += math.Exp(alt.Logprob)
+			n += math.Exp(*alt.Logprob)
 		}
 	}
 	// Read the answer exactly as Hunch's engine does (hunch/engine.py _parse): the chosen (greedy)
@@ -216,15 +222,73 @@ func parseLabelProbability(payload []byte) (float64, error) {
 	// so would hold exactly the most-confident-correct memories. If the chosen label itself carried
 	// no top-k mass, fall back to its own logprob so it always contributes (Hunch does the same).
 	if chosen == "Y" && y == 0 {
-		y = math.Exp(first.Logprob)
+		y = math.Exp(*first.Logprob)
 	}
 	if chosen == "N" && n == 0 {
-		n = math.Exp(first.Logprob)
+		n = math.Exp(*first.Logprob)
 	}
 	if y+n == 0 {
 		return 0, fmt.Errorf("%w: first token %q carried no label mass", ErrLabelMass, first.Token)
 	}
 	return y / (y + n), nil
+}
+
+func validLogprob(p *float64) bool {
+	return p != nil && !math.IsNaN(*p) && !math.IsInf(*p, 0) && *p <= 0
+}
+
+// Check metadata before sending either memory or evidence. A loopback Ollama
+// endpoint can serve a cloud alias, including one renamed to a local-looking tag.
+func (c *LocalClient) requireLocalModel(ctx context.Context) error {
+	raw, err := json.Marshal(map[string]string{"model": c.Model})
+	if err != nil {
+		return err
+	}
+	base := strings.TrimSuffix(strings.TrimRight(c.BaseURL, "/"), "/v1")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/show", bytes.NewReader(raw))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http().Do(req)
+	if err != nil {
+		return fmt.Errorf("local judge model metadata unavailable: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("local judge model metadata HTTP %d", resp.StatusCode)
+	}
+	var model struct {
+		Modelfile   string `json:"modelfile"`
+		RemoteHost  string `json:"remote_host"`
+		RemoteModel string `json:"remote_model"`
+		Details     struct {
+			Format string `json:"format"`
+		} `json:"details"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&model); err != nil {
+		return fmt.Errorf("local judge model metadata: %w", err)
+	}
+	if model.RemoteHost != "" || model.RemoteModel != "" || model.Details.Format != "gguf" {
+		return fmt.Errorf("local judge requires a local GGUF model; cloud or unknown model refused")
+	}
+
+	if c.ExpectedGGUFSHA256 != "" && !hasPinnedGGUF(model.Modelfile, c.ExpectedGGUFSHA256) {
+		return fmt.Errorf("local judge model does not match the pinned GGUF; refusing to judge")
+	}
+	return nil
+}
+
+func hasPinnedGGUF(modelfile, digest string) bool {
+	for _, line := range strings.Split(modelfile, "\n") {
+		directive, arg, _ := strings.Cut(strings.TrimSpace(line), " ")
+		if !strings.EqualFold(directive, "FROM") {
+			continue
+		}
+		blob := strings.ReplaceAll(strings.Trim(strings.TrimSpace(arg), "\""), "\\", "/")
+		return strings.HasSuffix(blob, "/sha256-"+digest)
+	}
+	return false
 }
 
 func isLabel(tok string) bool {

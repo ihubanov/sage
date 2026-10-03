@@ -4,12 +4,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
 
 	"github.com/l33tdawg/sage/internal/hunch"
+	"github.com/l33tdawg/sage/internal/ollamad"
 	"github.com/l33tdawg/sage/internal/voter"
 )
 
@@ -47,15 +49,18 @@ func localJudgeFromEnv(logger zerolog.Logger, ollamaURL string) *voter.Gate {
 		BaseURL: strings.TrimRight(ollamaURL, "/") + "/v1",
 		Model:   model, Timeout: timeout, Debias: debias,
 	}
+	if model == ollamad.JudgeModelTag {
+		client.ExpectedGGUFSHA256 = ollamad.JudgeGGUFSHA256
+	}
 	logger.Info().
 		Str("ollama", ollamaURL).Str("model", model).Bool("debias", debias).
-		Str("verdict_cache", localJudgeVersion(model, ollamaURL, os.Getenv("SAGE_LOCAL_JUDGE_REVISION"))).
+		Str("verdict_cache", localJudgeVersion(model, ollamaURL, os.Getenv("SAGE_LOCAL_JUDGE_REVISION"))+"|debias="+strconv.FormatBool(debias)).
 		Msg("memory gate ON with the LOCAL judge — proposed memories are judged by the model this node serves; nothing leaves the node")
 	return &voter.Gate{
 		Judges:        []voter.LastingJudge{hunch.LastingJudge{Client: client}},
 		SupportJudges: []voter.SupportJudge{hunch.SupportJudge{Client: client}},
 		Timeout:       timeout,
-		Version:       localJudgeVersion(model, ollamaURL, os.Getenv("SAGE_LOCAL_JUDGE_REVISION")),
+		Version:       localJudgeVersion(model, ollamaURL, os.Getenv("SAGE_LOCAL_JUDGE_REVISION")) + "|debias=" + strconv.FormatBool(debias),
 	}
 }
 
@@ -65,7 +70,7 @@ func localJudgeFromEnv(logger zerolog.Logger, ollamaURL string) *voter.Gate {
 // so switching a node between the two re-judges rather than reusing verdicts from a different
 // questioner.
 func localJudgeVersion(model, ollamaURL, revision string) string {
-	sum := sha256.Sum256([]byte(hunch.ChecksVersion + "|local|" + model + "|" + strings.TrimRight(ollamaURL, "/")))
+	sum := sha256.Sum256([]byte(hunch.ChecksVersion + "|local-loopback-hold-v1|" + model + "|" + strings.TrimRight(ollamaURL, "/")))
 	v := "local:" + hex.EncodeToString(sum[:])[:12]
 	if r := strings.TrimSpace(revision); r != "" {
 		v += "|rev=" + r

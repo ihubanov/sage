@@ -33,6 +33,10 @@ func logprobBody(first string, firstLP float64, alts map[string]float64) []byte 
 func localServer(t *testing.T, body []byte, status int, check func(*http.Request, map[string]any)) *LocalClient {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/show" {
+			_, _ = w.Write([]byte(`{"details":{"format":"gguf"}}`))
+			return
+		}
 		var req map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		if check != nil {
@@ -150,6 +154,10 @@ func TestLocalReader_OnlyDialsConfiguredURL(t *testing.T) {
 	var hits []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits = append(hits, r.Host+r.URL.Path)
+		if r.URL.Path == "/api/show" {
+			_, _ = w.Write([]byte(`{"details":{"format":"gguf"}}`))
+			return
+		}
 		w.WriteHeader(200)
 		_, _ = w.Write(logprobBody("Y", -0.1, map[string]float64{"Y": -0.1, "N": -2.4}))
 	}))
@@ -158,6 +166,7 @@ func TestLocalReader_OnlyDialsConfiguredURL(t *testing.T) {
 	_, err := c.YesNo(context.Background(), map[string]string{"memory": "m", "evidence": "e"},
 		map[string]Check{"c": {Kind: "yesno", Question: "q"}})
 	require.NoError(t, err)
-	require.Len(t, hits, 1)
-	require.Contains(t, hits[0], "/v1/chat/completions")
+	require.Len(t, hits, 2)
+	require.Contains(t, hits[0], "/api/show")
+	require.Contains(t, hits[1], "/v1/chat/completions")
 }

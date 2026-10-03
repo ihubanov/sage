@@ -50,7 +50,7 @@ func localJudgeFromEnv(logger zerolog.Logger, ollamaURL string) *voter.Gate {
 		Model:   model, Timeout: timeout, Debias: debias,
 	}
 	if model == ollamad.JudgeModelTag {
-		client.ExpectedGGUFSHA256 = ollamad.JudgeGGUFSHA256
+		client.ExpectedGGUFSHA256 = ollamad.JudgeModelBlobSHA256
 	}
 	logger.Info().
 		Str("ollama", ollamaURL).Str("model", model).Bool("debias", debias).
@@ -70,7 +70,7 @@ func localJudgeFromEnv(logger zerolog.Logger, ollamaURL string) *voter.Gate {
 // so switching a node between the two re-judges rather than reusing verdicts from a different
 // questioner.
 func localJudgeVersion(model, ollamaURL, revision string) string {
-	sum := sha256.Sum256([]byte(hunch.ChecksVersion + "|local-loopback-hold-v1|" + model + "|" + strings.TrimRight(ollamaURL, "/")))
+	sum := sha256.Sum256([]byte(hunch.ChecksVersion + "|local-loopback-hold-v2|" + model + "|" + strings.TrimRight(ollamaURL, "/")))
 	v := "local:" + hex.EncodeToString(sum[:])[:12]
 	if r := strings.TrimSpace(revision); r != "" {
 		v += "|rev=" + r

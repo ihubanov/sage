@@ -3,6 +3,9 @@ package main
 import (
 	"testing"
 
+	"github.com/l33tdawg/sage/internal/hunch"
+	"github.com/l33tdawg/sage/internal/ollamad"
+
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 )
@@ -45,4 +48,16 @@ func TestLocalJudge_DebiasInvalidatesVerdictCache(t *testing.T) {
 	t.Setenv("SAGE_LOCAL_JUDGE_DEBIAS", "1")
 	both := localJudgeFromEnv(zerolog.Nop(), "http://127.0.0.1:11434")
 	require.NotEqual(t, one.Version, both.Version)
+}
+
+func TestLocalJudge_ManagedModelPinsTheRegisteredBlob(t *testing.T) {
+	t.Setenv("SAGE_LOCAL_JUDGE_MODEL", ollamad.JudgeModelTag)
+	gate := localJudgeFromEnv(zerolog.Nop(), "http://127.0.0.1:11434")
+	require.NotNil(t, gate)
+	lasting, ok := gate.Judges[0].(hunch.LastingJudge)
+	require.True(t, ok)
+	client, ok := lasting.Client.(*hunch.LocalClient)
+	require.True(t, ok)
+	require.Equal(t, ollamad.JudgeModelBlobSHA256, client.ExpectedGGUFSHA256)
+	require.NotEqual(t, ollamad.JudgeGGUFSHA256, client.ExpectedGGUFSHA256, "the runtime rewrites the downloaded GGUF during registration")
 }

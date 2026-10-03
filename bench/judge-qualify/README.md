@@ -136,3 +136,11 @@ What the runs show:
   attribution distinctions may do better than an off-the-shelf XNLI checkpoint.
 
 See `results/*.json` for per-item scores, category breakdowns and failure lists.
+
+## SAGE Go reader on the pinned runtime
+
+The v15 GGUF was also measured with SAGE's actual Go reader and pinned Ollama
+v0.31.1, using OS-enforced loopback-only networking after installation. Both
+checks qualify on the public seed set, with one support trap accepted. See the
+[runtime qualification report](reports/sage-judge-v15-sage-runtime.md) for
+per-item scores, reproduction steps and limits.

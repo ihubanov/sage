@@ -121,7 +121,7 @@ conversation, should not be asked this question. List their domain prefixes in
 Set `SAGE_LOCAL_JUDGE_MODEL=sage-memory-judge:v15` to use the pinned judge
 through SAGE's managed Ollama. Its GGUF download is verified by SHA-256 before
 registration. Before sending content, the reader binds the managed tag to the
-pinned GGUF blob reported by `/api/show` and refuses mismatched weights,
+pinned registered GGUF blob reported by `/api/show` and refuses mismatched weights,
 cloud aliases or models without local GGUF metadata. SAGE starts its managed
 Ollama with `OLLAMA_NO_CLOUD=1`, overriding an inherited false setting.
 
@@ -134,8 +134,13 @@ invalidates cached verdicts. `SAGE_LOCAL_JUDGE_TIMEOUT` bounds the per-memory
 judge budget (default `60s`), and `SAGE_LOCAL_JUDGE_REVISION` invalidates the
 cache after changing model weights behind the same name.
 
-The model's measured quality and offline runtime qualification still require
-review before broader enablement; the feature remains optional and experimental.
+The public seed set has been independently qualified with the real Go reader
+and SAGE's pinned Ollama v0.31.1 on darwin/arm64, with external networking
+blocked. Support precision was 0.9697 (one accepted trap), and lasting precision
+was 1.0. This is experimental: private fresh holdouts, other platforms and
+multilingual behavior have not been independently remeasured. See the
+[qualification report](../../bench/judge-qualify/reports/sage-judge-v15-sage-runtime.md)
+for per-item results and limits.
 
 ## Configuration (personal node)
 

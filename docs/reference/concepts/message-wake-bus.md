@@ -159,13 +159,13 @@ command hook for Claude Code and Codex that reads the signed, lease-free
 `/v1/messages/wake-state` snapshot as the verified continuation path. The check is on by default when
 `SAGE_PROVIDER=claude-code` or `SAGE_PROVIDER=codex`; legacy installed Stop
 hooks with no provider label also default on. Set `SAGE_STOP_NUDGE=0` (or another accepted false
-spelling) to opt out (`stopNudgeEnabled`, `cmd/sage-gui/hook.go:455`).
+spelling) to opt out (`stopNudgeEnabled`, `cmd/sage-gui/hook.go:462`).
 
 When the durable cursor has advanced and unfinished work exists, the hook emits
 Codex's documented top-level `{"decision":"block","reason":"..."}` result.
 The host converts that result into one continuation prompt for the same thread, so
 the agent calls the canonical inbox operation before the turn becomes idle
-(`runHookStopCheck`, `cmd/sage-gui/hook.go:471`). The check never acquires the
+(`runHookStopCheck`, `cmd/sage-gui/hook.go:478`). The check never acquires the
 SSE lease, never sees message content or sender, refuses `SubagentStop`, blocks
 at most once per newer cursor and session, and fails open on every error.
 

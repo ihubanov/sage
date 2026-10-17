@@ -87,6 +87,19 @@ newer than the installed binary supports; do not mutate the executable or edit
 Badger to manufacture a result. The desktop updater performs this same check
 automatically before it changes the installed application.
 
+For a chain that still has to cross app-v28, preflight also audits the PUBLIC
+memory corpus and refuses to say "clear to climb" if the activation stage would
+reject an envelope. To name every offending record and the exact failing check
+before proposing the fork:
+
+```bash
+sage-gui upgrade public-memory-audit
+```
+
+It is read-only, requires a stopped node, prints no memory contents, and reports
+which records the legacy quarantine would skip separately from those that block
+activation.
+
 On a personal node that is the whole upgrade. The node proposes and activates
 each consensus fork by itself until it reaches the binary's ceiling.
 

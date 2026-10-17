@@ -170,29 +170,38 @@ func publicLeafFromCanonical(reader *BadgerStore, identifier string) (*PublicMem
 	// SyncPublicMemoryChanges folds every changed memory back into the promoted
 	// index.
 	//
-	// Deliberately narrow. Only a record accepted before app-v25 lacks a
-	// submission-height marker, and only those could have their hash erased by a
-	// legacy lifecycle transition. A record born under app-v25 or later must
-	// carry a complete canonical envelope, so a missing hash there is still a
-	// hard inconsistency that refuses the build.
-	if len(state.ContentHash) == 0 {
-		_, bornUnderAppV25, markerErr := reader.GetMemorySubmissionHeight(identifier)
-		if markerErr != nil {
-			return nil, markerErr
-		}
+	// The quarantine covers every envelope defect on a pre-app-v25 record, not
+	// only an erased hash. Those records predate the canonical envelope
+	// contract, and a legacy lifecycle transition could erase or truncate any
+	// recorded field, not just the hash. A record born under app-v25 or later
+	// must carry a complete envelope, so every defect there is still a hard
+	// inconsistency that refuses the build. The read-only corpus audit
+	// (AuditPublicMemoryEnvelopes) names every quarantined record and the exact
+	// checks it failed, so the omission is never silent.
+	_, bornUnderAppV25, markerErr := reader.GetMemorySubmissionHeight(identifier)
+	if markerErr != nil {
+		return nil, markerErr
+	}
+	quarantineLegacy := func() (*PublicMemoryLeaf, error) {
 		if !bornUnderAppV25 {
 			return nil, nil
 		}
 		return nil, ErrPublicMemoryIndex
 	}
-	if !state.DomainRecorded || !state.AuthorRecorded || !state.AuthorPrincipalRecorded || len(state.ContentHash) != 32 || state.CoCommitRecorded {
-		return nil, ErrPublicMemoryIndex
+	if !state.DomainRecorded || !state.AuthorRecorded || !state.AuthorPrincipalRecorded ||
+		len(state.ContentHash) != 32 || state.CoCommitRecorded {
+		return quarantineLegacy()
 	}
 	leaf := &PublicMemoryLeaf{MemoryID: identifier, Author: state.Author, AuthorPrincipal: state.AuthorPrincipal,
 		Domain: state.Domain, Status: state.Status}
 	copy(leaf.ContentHash[:], state.ContentHash)
-	_, err = leaf.canonical()
-	return leaf, err
+	// A field that is recorded but empty or malformed is not the legacy
+	// missing-binding class: someone wrote an explicit invalid value, so refuse
+	// it even on an old record.
+	if _, encodeErr := leaf.canonical(); encodeErr != nil {
+		return nil, encodeErr
+	}
+	return leaf, nil
 }
 
 func (s *BadgerStore) InitializeEmptyPublicMemoryIndex() error {

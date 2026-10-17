@@ -154,6 +154,16 @@ func runUpgradePreflight(args []string) error {
 
 	ladderOK, firstProblem := ladderVerdict(rungs)
 	admins, adminErr := listLegacyAdmins(bs)
+	publicMemoryAudit, publicMemoryAuditErr := maybeAuditPublicMemoryCorpus(bs, reached, maxCompiled)
+
+	if publicMemoryAudit != nil || publicMemoryAuditErr != nil {
+		fmt.Println()
+		if publicMemoryAuditErr != nil {
+			fmt.Printf("Public-memory envelope audit unavailable: %v\n", publicMemoryAuditErr)
+		} else {
+			printPublicMemoryAudit(publicMemoryAudit)
+		}
+	}
 
 	fmt.Println()
 	switch {
@@ -173,6 +183,18 @@ func runUpgradePreflight(args []string) error {
 		fmt.Println("  No agent holds Role==admin on chain, so the migration has no legacy Admin")
 		fmt.Println("  to promote to the singleton CEREBRUM Root.")
 		fmt.Println("  Register or materialize an admin agent before starting the climb.")
+	case publicMemoryAuditErr != nil:
+		fmt.Println("VERDICT: this chain CANNOT be cleared for app-v28.")
+		fmt.Printf("  The public-memory corpus audit failed: %v\n", publicMemoryAuditErr)
+		fmt.Println("  app-v28 activation prepares that index outside the consensus transaction,")
+		fmt.Println("  so an envelope defect there aborts the activation block on every replay.")
+	case publicMemoryAudit != nil && publicMemoryAudit.Blocking > 0:
+		fmt.Println("VERDICT: this chain CANNOT safely activate app-v28.")
+		fmt.Printf("  %d PUBLIC record(s) fail the canonical envelope checks the activation stage\n", publicMemoryAudit.Blocking)
+		fmt.Println("  requires. List them with `sage-gui upgrade public-memory-audit`.")
+		fmt.Println("  Do not propose app-v28 until the corpus is repaired or a reviewed")
+		fmt.Println("  quarantine covers the class; a failed activation leaves a pending plan")
+		fmt.Println("  with no in-band downgrade.")
 	case reached >= maxCompiled:
 		fmt.Printf("VERDICT: nothing to do — the chain is already at app-v%d, this binary's ceiling.\n", maxCompiled)
 	default:
@@ -339,14 +361,46 @@ func reportDirectV23Genesis(bs *store.BadgerStore, ceiling uint64) error {
 	fmt.Println("The app-v22 predecessor ladder does not apply to it — consensus exempts")
 	fmt.Println("direct-v23 genesis chains from that invariant.")
 	fmt.Printf("\nHighest applied activation record: app-v%d\n\n", reached)
-	if reached >= ceiling {
+	publicMemoryAudit, publicMemoryAuditErr := maybeAuditPublicMemoryCorpus(bs, reached, ceiling)
+	switch {
+	case publicMemoryAuditErr != nil:
+		fmt.Println("VERDICT: this chain CANNOT be cleared for app-v28.")
+		fmt.Printf("  The public-memory corpus audit failed: %v\n", publicMemoryAuditErr)
+	case publicMemoryAudit != nil && publicMemoryAudit.Blocking > 0:
+		fmt.Println("VERDICT: this chain CANNOT safely activate app-v28.")
+		fmt.Printf("  %d PUBLIC record(s) fail the canonical envelope checks the activation stage requires.\n",
+			publicMemoryAudit.Blocking)
+		fmt.Println("  List them with `sage-gui upgrade public-memory-audit` before proposing the fork.")
+	case reached >= ceiling:
 		fmt.Printf("VERDICT: nothing to do — the chain is already at app-v%d, this binary's ceiling.\n", ceiling)
-	} else {
+	default:
 		fmt.Printf("VERDICT: clear to climb from app-v%d to app-v%d.\n", reached, ceiling)
+	}
+	if publicMemoryAudit != nil || publicMemoryAuditErr != nil {
+		fmt.Println()
+		if publicMemoryAuditErr != nil {
+			fmt.Printf("Public-memory envelope audit unavailable: %v\n", publicMemoryAuditErr)
+		} else {
+			printPublicMemoryAudit(publicMemoryAudit)
+		}
 	}
 	fmt.Println()
 	fmt.Println("Full procedure: docs/UPGRADING.md")
 	return nil
+}
+
+// appV28AuditFloor is the first app version whose activation prepares the
+// public-memory index. The corpus audit only changes the verdict for a chain
+// that still has to cross that activation.
+const appV28AuditFloor uint64 = 28
+
+func maybeAuditPublicMemoryCorpus(
+	bs *store.BadgerStore, reached, ceiling uint64,
+) (*store.PublicMemoryAudit, error) {
+	if ceiling < appV28AuditFloor || reached >= ceiling {
+		return nil, nil
+	}
+	return inspectPublicMemoryCorpus(bs, 50)
 }
 
 // inspectLadder evaluates the predecessor evidence, applying the consensus rules

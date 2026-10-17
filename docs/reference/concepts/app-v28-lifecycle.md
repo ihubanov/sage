@@ -65,6 +65,25 @@ requires intact promoted indexes once an applied v28 record exists
 `promoteAppV28Indexes`, `internal/abci/appv28_lifecycle.go:142`;
 `syncAppV28IndexesForBlock`, `internal/abci/appv28_lifecycle.go:173`).
 
+### Envelope quarantine and the preflight audit
+
+A PUBLIC record enters the tree only if its canonical envelope is complete:
+classification recorded as PUBLIC, domain/author/author-principal recorded, a
+32-byte content hash, and no co-commit tombstone. A pre-app-v25 record that
+fails those checks is quarantined rather than treated as a build error — legacy
+lifecycle transitions could erase or truncate a recorded field, and the stage is
+prepared outside the consensus transaction, so a hard error there makes the
+activation block unreplayable and leaves the node unable to start. Records born
+under app-v25 or later still refuse, and a recorded-but-empty or malformed field
+refuses on every record.
+
+Quarantine is never silent: `sage-gui upgrade public-memory-audit` (stopped node,
+read-only) names every defect, the failing checks, and whether the activation
+stage would skip or refuse it. `upgrade preflight` runs the same census for a
+chain that still has to cross app-v28 and refuses its "clear to climb" verdict
+when a blocking record exists, so the failure is discovered before the fork is
+proposed rather than at the activation height.
+
 ## The co-commit tombstone rule rides in this fork
 
 A co-commit does not consult the voter: block inclusion is decisive for it.

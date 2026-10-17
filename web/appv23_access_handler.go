@@ -104,6 +104,37 @@ type appV23FederatedGuestEligibility interface {
 	) error
 }
 
+// appV23GroupFederatedMembers is an OPTIONAL extension of the guest control
+// surface. It exists so the Access projection can show a federated agent beside
+// the local members of its group instead of only in a separate identity
+// inventory. Because it is asserted rather than required, a manager that
+// predates it simply leaves the field empty instead of failing the roster.
+//
+// The links it returns are node-local, read-only capability records. They are
+// not consensus group membership and never carry write authority — federated
+// Write is disabled at the policy layer (store.ErrPeerRBACWriteCapabilityUnavailable).
+type appV23GroupFederatedMembers interface {
+	ListFederatedGroupMembers(
+		context.Context,
+		string,
+		string,
+	) ([]federation.FederatedGuestLinkView, error)
+}
+
+// appV23GroupProjection is one Access Group as CEREBRUM renders it: the
+// consensus membership plus the federated guest links attached to it.
+//
+// The embedded group keeps the existing wire shape exactly, so this is additive
+// for every current client.
+type appV23GroupProjection struct {
+	store.AppV23AccessGroup
+	FederatedMembers []federation.FederatedGuestLinkView `json:"federated_members"`
+	// FederatedAuthority states, per group, what those members may do. It is a
+	// constant because the answer is a property of the tree, not of the group:
+	// a federated link authorizes Read only.
+	FederatedAuthority string `json:"federated_authority"`
+}
+
 // appV23LinkedMessageConsentControl is deliberately narrower than the
 // linked-reader manager. A read link and receiver-local message acceptance are
 // separate capabilities, and neither interface can manufacture the other.
@@ -977,6 +1008,32 @@ func (h *DashboardHandler) handleAppV23AccessState(agentStore store.AgentStore) 
 				Message:    "Messaging starts blocked and requires receiver-local consent for one exact remote-to-local agent pair.",
 			}
 		}
+		// Federated members are attached to the group they belong to, so an
+		// operator sees one group rather than two inventories. This is additive
+		// and best-effort: a manager that cannot prove a link's currency leaves
+		// that group's projection empty rather than showing a stale link as if it
+		// were live authority.
+		groupViews := make([]appV23GroupProjection, len(groups))
+		for i := range groups {
+			groupViews[i] = appV23GroupProjection{
+				AppV23AccessGroup:  groups[i],
+				FederatedMembers:   []federation.FederatedGuestLinkView{},
+				FederatedAuthority: "read",
+			}
+		}
+		if driver, ok := h.Federation.(appV23GroupFederatedMembers); ok {
+			if actor, _, _ := h.appV23ResolveControlActor(r); actor != nil {
+				for i := range groupViews {
+					members, memberErr := driver.ListFederatedGroupMembers(
+						r.Context(), actor.ID, groupViews[i].GroupID,
+					)
+					if memberErr != nil || len(members) == 0 {
+						continue
+					}
+					groupViews[i].FederatedMembers = members
+				}
+			}
+		}
 		writeJSONResp(w, http.StatusOK, map[string]any{
 			"ok":                     true,
 			"active":                 h.appV23IsActive(),
@@ -984,7 +1041,7 @@ func (h *DashboardHandler) handleAppV23AccessState(agentStore store.AgentStore) 
 			"root":                   root,
 			"broker":                 broker,
 			"agents":                 views,
-			"groups":                 groups,
+			"groups":                 groupViews,
 			"profiles": []string{
 				store.AppV23ProfileStandard,
 				store.AppV23ProfileCompanion,

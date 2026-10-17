@@ -10651,6 +10651,35 @@ function AppV23AccessControl() {
                                     `;
                                 })}
                                 ${group.members.length === 0 && html`<div class="v23-drop-empty">Add approved local agents</div>`}
+                                ${(group.federated_members || []).map(link => {
+                                    const guest = link.guest || {};
+                                    const shortID = (guest.remote_agent_id || '').slice(0, 8) || 'unknown';
+                                    const linkState = link.effective_state || guest.state || 'unknown';
+                                    const live = link.binding_current === true && linkState === 'active';
+                                    return html`
+                                        <div class="v23-member-chip federated ${live ? '' : 'stale'}"
+                                            title=${live
+                                                ? 'Federated agent. Node-local, read-only capability bound to the active federation agreement.'
+                                                : `This federated link is ${linkState} and grants nothing until it is rebound.`}>
+                                            <span aria-hidden="true">\u{1F517}</span>
+                                            <strong>${shortID}</strong>
+                                            <em>${guest.remote_chain_id || 'unknown chain'} · ${live ? 'federated · read' : linkState}</em>
+                                        </div>
+                                    `;
+                                })}
+                                ${(group.federated_members || []).length > 0 && html`
+                                    <label class="v23-field v23-federated-authority">
+                                        <span>Federated authority</span>
+                                        <select value="read" disabled
+                                            aria-label=${`Federated member authority for ${group.name}`}
+                                            title="Federated agents hold read authority only. Federated write requires a consensus-bound federation ingress capability, which this release does not ship.">
+                                            <option value="read">Read-only</option>
+                                            <option value="read_write" disabled>Read and write — needs consensus ingress</option>
+                                            <option value="read_write_modify" disabled>Read, write and modify — needs consensus ingress</option>
+                                        </select>
+                                        <small>Federated agents can read this group’s domains. Write and modify stay disabled until federated write is enabled at the consensus layer — this control will not offer a permission no code path honours.</small>
+                                    </label>
+                                `}
                                 <label class="v23-field">
                                     <span>Add local agent</span>
                                     <select value=""

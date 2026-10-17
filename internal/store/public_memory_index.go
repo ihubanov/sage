@@ -152,7 +152,13 @@ func publicLeafFromCanonical(reader *BadgerStore, identifier string) (*PublicMem
 		return nil, err
 	}
 	if !state.ClassificationRecorded {
-		return nil, ErrPublicMemoryIndex
+		// GetMemoryDisclosureState defaults a missing class record to INTERNAL,
+		// so the record is not part of the public set. The corpus audit uses the
+		// same selector and must agree with this path: treating the default as a
+		// hard error made an audit-clean 72,761-memory corpus still abort the
+		// activation stage. An app-v23 record that recorded a principal but lost
+		// its class is caught earlier as ErrMemoryDisclosureCorrupt.
+		return nil, nil
 	}
 	if state.Classification != 0 {
 		return nil, nil

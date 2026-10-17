@@ -117,3 +117,38 @@ func TestLegacyEnvelopeQuarantineUnblocksActivationButModernStillRefuses(t *test
 	_, err = modern.BuildPublicMemoryMigration(context.Background(), newTestBadger(t))
 	require.ErrorIs(t, err, ErrPublicMemoryIndex)
 }
+
+// TestPublicMemoryMigrationSkipsMissingLegacyClassification covers the
+// remaining real-chain blocker found by Level Up on 2026-10-17: a record with
+// no classification record carries the historical INTERNAL default, and the
+// audit correctly excluded it from the public census, but the stage treated the
+// same record as a fatal error. Both paths must use the same selector.
+func TestPublicMemoryMigrationSkipsMissingLegacyClassification(t *testing.T) {
+	base := newTestBadger(t)
+	scoped := base.BeginConsensusTransaction(nil)
+	publicTestRecord(t, scoped, "no-class")
+	require.NoError(t, scoped.update(func(txn *badger.Txn) error {
+		if err := scoped.txnDelete(txn, memClassKey("no-class")); err != nil {
+			return err
+		}
+		return scoped.txnDelete(txn, memoryAuthorPrincipalKey("no-class"))
+	}))
+	publicTestRecord(t, scoped, "clean")
+	require.NoError(t, scoped.CommitConsensusTransaction())
+
+	audit, err := base.AuditPublicMemoryEnvelopes(10)
+	require.NoError(t, err)
+	require.Equal(t, 2, audit.Scanned)
+	require.Equal(t, 1, audit.Public, "a missing class record is INTERNAL, not PUBLIC")
+	require.Zero(t, audit.Blocking)
+
+	target := newTestBadger(t)
+	result, err := base.BuildPublicMemoryMigration(context.Background(), target)
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), result.Scanned)
+	require.Equal(t, uint64(1), result.Public,
+		"the stage must skip what the audit excludes instead of aborting activation")
+	proof, err := target.PublicMemoryBranch("clean")
+	require.NoError(t, err)
+	require.NoError(t, VerifyPublicMemoryBranch(*proof, result.Root))
+}

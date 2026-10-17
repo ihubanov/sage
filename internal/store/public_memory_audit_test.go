@@ -152,3 +152,67 @@ func TestPublicMemoryMigrationSkipsMissingLegacyClassification(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, VerifyPublicMemoryBranch(*proof, result.Root))
 }
+
+// TestPublicMemoryAuditAgreesWithStageClassification is the durable invariant:
+// the audit and the activation stage must classify every record identically.
+// Two separate tests asserting each path's documented behaviour would let the
+// next change widen one side and silently reopen the "audit-clean chain still
+// aborts" defect. This runs both predicates over the same fixtures.
+func TestPublicMemoryAuditAgreesWithStageClassification(t *testing.T) {
+	base := newTestBadger(t)
+	scoped := base.BeginConsensusTransaction(nil)
+	publicTestRecord(t, scoped, "clean")
+	publicTestRecord(t, scoped, "no-class")
+	require.NoError(t, scoped.update(func(txn *badger.Txn) error {
+		if err := scoped.txnDelete(txn, memClassKey("no-class")); err != nil {
+			return err
+		}
+		return scoped.txnDelete(txn, memoryAuthorPrincipalKey("no-class"))
+	}))
+	publicTestRecord(t, scoped, "legacy-missing-principal")
+	require.NoError(t, scoped.update(func(txn *badger.Txn) error {
+		return scoped.txnDelete(txn, memoryAuthorPrincipalKey("legacy-missing-principal"))
+	}))
+	publicTestRecord(t, scoped, "modern-missing-principal")
+	require.NoError(t, scoped.SetMemorySubmissionHeight("modern-missing-principal", 56126))
+	require.NoError(t, scoped.update(func(txn *badger.Txn) error {
+		return scoped.txnDelete(txn, memoryAuthorPrincipalKey("modern-missing-principal"))
+	}))
+	publicTestRecord(t, scoped, "legacy-short-hash")
+	require.NoError(t, scoped.SetMemoryHash("legacy-short-hash", make([]byte, 16), "committed"))
+	publicTestRecord(t, scoped, "modern-short-hash")
+	require.NoError(t, scoped.SetMemorySubmissionHeight("modern-short-hash", 56126))
+	require.NoError(t, scoped.SetMemoryHash("modern-short-hash", make([]byte, 16), "committed"))
+	publicTestRecord(t, scoped, "private")
+	require.NoError(t, scoped.SetMemoryClassification("private", 1))
+	require.NoError(t, scoped.CommitConsensusTransaction())
+
+	audit, err := base.AuditPublicMemoryEnvelopes(50)
+	require.NoError(t, err)
+	defects := map[string]PublicMemoryEnvelopeDefect{}
+	for _, defect := range audit.Defects {
+		defects[defect.MemoryID] = defect
+	}
+
+	identifiers := []string{
+		"clean", "no-class", "legacy-missing-principal", "modern-missing-principal",
+		"legacy-short-hash", "modern-short-hash", "private",
+	}
+	for _, identifier := range identifiers {
+		leaf, stageErr := publicLeafFromCanonical(base, identifier)
+		defect, reported := defects[identifier]
+		switch {
+		case reported && defect.Quarantined:
+			require.NoError(t, stageErr, "%s: audit says quarantine, stage must skip", identifier)
+			require.Nil(t, leaf, "%s: audit says quarantine, stage must not include", identifier)
+		case reported:
+			require.Error(t, stageErr, "%s: audit says blocking, stage must refuse", identifier)
+		case identifier == "clean":
+			require.NoError(t, stageErr)
+			require.NotNil(t, leaf, "%s: audit says public+clean, stage must include", identifier)
+		default:
+			require.NoError(t, stageErr, "%s: audit excludes, stage must skip", identifier)
+			require.Nil(t, leaf, "%s: audit excludes, stage must not include", identifier)
+		}
+	}
+}

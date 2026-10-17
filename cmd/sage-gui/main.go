@@ -59,11 +59,11 @@ func main() {
 
 	var err error
 	switch os.Args[1] {
-	case "init-lantern-private":
-		err = runLanternFreshInit(os.Args[2:])
-	case "check-lantern-private-config":
-		if len(os.Args) != 2 || os.Getenv("SAGE_LANTERN_PRIVATE_LISTENERS") != "1" {
-			err = fmt.Errorf("lantern private listener policy required")
+	case "init-fresh-personal-sage":
+		err = runFreshPersonalInit(os.Args[2:])
+	case "check-private-config":
+		if len(os.Args) != 2 {
+			err = fmt.Errorf("private listener policy check takes no arguments")
 		} else {
 			_, err = LoadConfig()
 		}
@@ -284,8 +284,12 @@ Commands:
   serve     Start the SAGE personal node (CometBFT + REST + Dashboard)
   mcp       Run as MCP server (stdio, for Claude Desktop / ChatGPT)
   setup     Run first-time setup wizard
-  init-lantern-private --owner-approved-companion-bootstrap unit-a|unit-b
-            Native fresh-only Lantern identities; no services or public enrollment
+  init-fresh-personal-sage --profile <path> --unit <id> --owner-approved-companion-bootstrap
+            Native fresh-only companion identity from a root-owned provisioning
+            profile; no services or public enrollment
+  check-private-config
+            Refuse to boot unless the effective configuration satisfies the
+            host provisioning profile's private-listener policy
   seed      Seed memories from a text/JSON file (bootstrap your AI's brain)
   export    Export memories to a .vault file (optionally encrypted)
   import    Import memories from a .vault file

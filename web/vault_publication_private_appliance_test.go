@@ -12,7 +12,7 @@ import (
 	"github.com/l33tdawg/sage/internal/vault"
 )
 
-func TestLanternEnablePublishesExpectedBeforeConfigSave(t *testing.T) {
+func TestPrivateApplianceEnablePublishesExpectedBeforeConfigSave(t *testing.T) {
 	for _, failSave := range []bool{false, true} {
 		name := "saved"
 		if failSave {
@@ -58,7 +58,7 @@ func TestLanternEnablePublishesExpectedBeforeConfigSave(t *testing.T) {
 	}
 }
 
-func TestLanternUnlockPublishesExpectedBeforeOpeningAdmission(t *testing.T) {
+func TestPrivateApplianceUnlockPublishesExpectedBeforeOpeningAdmission(t *testing.T) {
 	projection := &store.SQLiteStore{}
 	handler := &DashboardHandler{store: projection}
 	handler.VaultLocked.Store(true)

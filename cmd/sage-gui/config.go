@@ -282,12 +282,17 @@ func LoadConfig() (*Config, error) {
 	home := SageHome()
 	cfg := DefaultConfig(home)
 
+	privateListeners, err := privateListenerPolicy()
+	if err != nil {
+		return nil, err
+	}
+
 	configPath := filepath.Join(home, "config.yaml")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			if os.Getenv("SAGE_LANTERN_PRIVATE_LISTENERS") != "" {
-				return nil, errors.New("lantern private node requires explicit configuration")
+			if privateListeners {
+				return nil, errors.New("private-listener node requires explicit configuration")
 			}
 			applyEnvOverrides(cfg)
 			if vErr := cfg.validate(); vErr != nil {
@@ -299,7 +304,7 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
 
-	if err := validateLanternPrivateYAML(data); err != nil {
+	if err := validatePrivateListenerYAML(data, privateListeners); err != nil {
 		return nil, err
 	}
 	if err := yaml.Unmarshal(data, cfg); err != nil {
@@ -357,7 +362,11 @@ func rawConfigRoundTripDefaults() Config {
 // validate rejects contradictory configuration after the file + env merge.
 // Load-time, so a misconfigured node refuses to boot instead of guessing.
 func (cfg *Config) validate() error {
-	if err := enforceLanternPrivateListeners(cfg); err != nil {
+	privateListeners, err := privateListenerPolicy()
+	if err != nil {
+		return err
+	}
+	if err := enforcePrivateListeners(cfg, privateListeners); err != nil {
 		return err
 	}
 	if err := cfg.PrivateMedia.validate(); err != nil {

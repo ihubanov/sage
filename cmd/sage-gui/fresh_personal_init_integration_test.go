@@ -15,13 +15,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestLanternFreshInitRealGenesisIntegration(t *testing.T) {
+func TestFreshPersonalInitRealGenesisIntegration(t *testing.T) {
 	identities, chains := map[string]bool{}, map[string]bool{}
 	for _, unit := range []string{"fixture-a", "fixture-b"} {
 		t.Run(unit, func(t *testing.T) {
-			home, cfg := lanternInitFixture(t)
-			t.Setenv("SAGE_HOME", home)
-			t.Setenv("SAGE_LANTERN_PRIVATE_LISTENERS", "1")
+			profile, cfg := personalInitFixture(t)
+			writeProfileFile(t, profile)
+			t.Setenv("SAGE_HOME", profile.Home)
 			t.Setenv("REST_ADDR", "127.0.0.1:8080")
 			t.Setenv("SAGE_TLS_ADDR", "127.0.0.1:8443")
 			t.Setenv("SAGE_CMT_RPC_ADDR", "tcp://127.0.0.1:26657")
@@ -36,15 +36,15 @@ func TestLanternFreshInitRealGenesisIntegration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(home, "config.yaml"), raw, 0600); err != nil {
+			if err := os.WriteFile(filepath.Join(profile.Home, "config.yaml"), raw, 0600); err != nil {
 				t.Fatal(err)
 			}
 			cfg, err = LoadConfig()
 			if err != nil {
 				t.Fatal(err)
 			}
-			publicPath := filepath.Join(filepath.Dir(home), "identity", "lantern-public.key")
-			result, err := initializeFreshLantern(home, cfg, initCometBFTConfigWithBootstrap, func(path string) (string, error) {
+			publicPath := filepath.Join(profile.IdentityDir, profile.PublicKeyFile)
+			result, err := initializeFreshPersonalSage(profile, cfg, initCometBFTConfigWithBootstrap, func(path string) (string, error) {
 				key, err := loadOrGenerateKey(path)
 				if err != nil {
 					return "", err
@@ -115,7 +115,7 @@ func TestLanternFreshInitRealGenesisIntegration(t *testing.T) {
 					t.Fatal("invalid signature accepted", role)
 				}
 			}
-			for _, path := range []string{genesisPath, filepath.Join(comet, "config", "priv_validator_key.json"), filepath.Join(comet, "config", "node_key.json"), filepath.Join(comet, "data", "priv_validator_state.json"), filepath.Join(home, "config.yaml")} {
+			for _, path := range []string{genesisPath, filepath.Join(comet, "config", "priv_validator_key.json"), filepath.Join(comet, "config", "node_key.json"), filepath.Join(comet, "data", "priv_validator_state.json"), filepath.Join(profile.Home, "config.yaml")} {
 				data, err := os.ReadFile(path)
 				if err != nil {
 					t.Fatal(err)
@@ -134,7 +134,7 @@ func TestLanternFreshInitRealGenesisIntegration(t *testing.T) {
 					t.Fatal("reopened config inconsistent")
 				}
 			}
-			if _, err := initializeFreshLantern(home, cfg, initCometBFTConfigWithBootstrap, func(string) (string, error) { t.Fatal("retry reached generator"); return "", nil }); err == nil {
+			if _, err := initializeFreshPersonalSage(profile, cfg, initCometBFTConfigWithBootstrap, func(string) (string, error) { t.Fatal("retry reached generator"); return "", nil }); err == nil {
 				t.Fatal("repeat init accepted")
 			}
 			for path, prior := range preserved {
@@ -143,7 +143,7 @@ func TestLanternFreshInitRealGenesisIntegration(t *testing.T) {
 					t.Fatal("reread/retry changed generated state")
 				}
 			}
-			for _, path := range []string{filepath.Join(cfg.DataDir, "sage.db"), filepath.Join(cfg.DataDir, "badger"), filepath.Join(home, "certs")} {
+			for _, path := range []string{filepath.Join(cfg.DataDir, "sage.db"), filepath.Join(cfg.DataDir, "badger"), filepath.Join(profile.Home, "certs")} {
 				if _, err := os.Stat(path); !os.IsNotExist(err) {
 					t.Fatal("initialization created runtime state", err)
 				}

@@ -339,6 +339,53 @@ func TestPreflightPresentInvalidLineageIsRestoreOnly(t *testing.T) {
 	}
 }
 
+// The app-v28 corpus audit must run only when the chain still has to cross the
+// app-v28 activation. A blocking PUBLIC envelope must turn a would-be "clear to
+// climb" verdict into a refusal, and the printed audit must name the record.
+func TestPreflightAuditsPublicMemoryCorpusBeforeAppV28(t *testing.T) {
+	bs, _ := newPreflightStore(t)
+	const id = "modern-short-hash"
+	if err := bs.SetMemoryHash(id, make([]byte, 16), "committed"); err != nil {
+		t.Fatalf("seed hash: %v", err)
+	}
+	if err := bs.SetMemoryAuthor(id, strings.Repeat("a", 64)); err != nil {
+		t.Fatalf("seed author: %v", err)
+	}
+	if err := bs.SetMemoryAuthorPrincipal(id, "synthetic-principal"); err != nil {
+		t.Fatalf("seed principal: %v", err)
+	}
+	if err := bs.SetMemoryDomain(id, "public-test"); err != nil {
+		t.Fatalf("seed domain: %v", err)
+	}
+	if err := bs.SetMemoryClassification(id, 0); err != nil {
+		t.Fatalf("seed classification: %v", err)
+	}
+	if err := bs.SetMemorySubmissionHeight(id, 56126); err != nil {
+		t.Fatalf("seed submission height: %v", err)
+	}
+
+	audit, err := maybeAuditPublicMemoryCorpus(bs, 27, 28)
+	if err != nil || audit == nil {
+		t.Fatalf("app-v27 to app-v28 must audit the corpus: audit=%v err=%v", audit, err)
+	}
+	if audit.Blocking != 1 {
+		t.Fatalf("blocking = %d, want 1", audit.Blocking)
+	}
+	out := capturePreflightStdout(t, func() { printPublicMemoryAudit(audit) })
+	for _, required := range []string{"BLOCKING", id, "content_hash_length_16"} {
+		if !strings.Contains(out, required) {
+			t.Fatalf("audit output does not contain %q:\n%s", required, out)
+		}
+	}
+
+	if audit, err := maybeAuditPublicMemoryCorpus(bs, 28, 28); err != nil || audit != nil {
+		t.Fatalf("a chain already at app-v28 must not audit: audit=%v err=%v", audit, err)
+	}
+	if audit, err := maybeAuditPublicMemoryCorpus(bs, 27, 27); err != nil || audit != nil {
+		t.Fatalf("a chain below the app-v28 ceiling must not audit: audit=%v err=%v", audit, err)
+	}
+}
+
 // The app-v23 Root election is deterministic: earliest RegisteredAt wins, with
 // the canonical Agent ID as tie-breaker.
 func TestAppV23RootElectionOrdering(t *testing.T) {

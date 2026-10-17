@@ -1567,12 +1567,19 @@ func (s *Server) applyRecallFederation(ctx context.Context, r recallRequest, opt
 		AuthorizationModels       map[string]string                                    `json:"authorization_models"`
 		AuthorizationAttestations map[string]federation.SourceAuthorizationAttestation `json:"authorization_attestations"`
 		Errors                    map[string]string                                    `json:"errors"`
+		UnavailableReason         string                                               `json:"unavailable_reason"`
 	}
 	if err := s.doSignedJSON(ctx, "POST", "/v1/federation/recall-plan", planBody, &plan); err != nil {
 		return fmt.Errorf("plan federated recall: %w", err)
 	}
 	if len(plan.Destinations) == 0 {
-		return fmt.Errorf("no authorized v23 federation destination is available: %v", plan.Errors)
+		// Never report an empty destination set as a bare verdict. "This node
+		// has no peer", "no peer authorizes this domain", and "the planner could
+		// not be reached" are three different faults with three different fixes,
+		// and flattening them into one message is what made an earlier operator
+		// go looking for a permissions problem in a plan timeout.
+		return fmt.Errorf("no authorized v23 federation destination is available: %s",
+			recallUnavailableDetail(plan.UnavailableReason, plan.Errors))
 	}
 	r["federated"] = true
 	r["federate_chains"] = plan.Destinations
@@ -1584,6 +1591,41 @@ func (s *Server) applyRecallFederation(ctx context.Context, r recallRequest, opt
 		"authorization_attestations": plan.AuthorizationAttestations,
 	}
 	return nil
+}
+
+// recallUnavailableDetail renders the node's aggregate unavailability reason as
+// an actionable sentence and appends per-peer detail when the node supplied it.
+//
+// The distinction this preserves is the whole point: a topology filter that
+// hides peers leaves the per-peer error map empty, so a caller cannot tell an
+// authorization answer from a plan that never happened. A node that predates
+// the reason code sends none, and we keep the historical behaviour rather than
+// inventing a verdict.
+func recallUnavailableDetail(reason string, planErrors map[string]string) string {
+	var detail string
+	switch federation.UnavailableReason(reason) {
+	case federation.RecallUnavailableNoAgreement:
+		detail = "this node holds no active federation agreement; no peer is implicated"
+	case federation.RecallUnavailableDomainNotShared:
+		detail = "peers are connected, but none authorizes this exact domain for you; this is an access answer, not a connectivity fault"
+	case federation.RecallUnavailablePeerUnreachable:
+		detail = "peers are configured, but every probe failed before any domain decision was reached; this is a connectivity fault, not a permission verdict"
+	case federation.RecallUnavailableRequestedChains:
+		detail = "none of the chains named is a currently active agreement on this node"
+	case federation.RecallUnavailablePlanner:
+		detail = "the recall planner did not answer within its deadline; this is a local availability fault, not an authorization verdict"
+	case federation.RecallUnavailableFederation:
+		detail = "this node's federation subsystem cannot answer right now"
+	default:
+		if len(planErrors) == 0 {
+			return "the node returned no destinations and no reason (older node?)"
+		}
+		return fmt.Sprintf("%v", planErrors)
+	}
+	if len(planErrors) > 0 {
+		return fmt.Sprintf("%s (per-peer: %v)", detail, planErrors)
+	}
+	return detail
 }
 
 // hybridRecallEnabled gates the hybrid recall path. Defaults to ON; set

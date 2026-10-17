@@ -10598,12 +10598,11 @@ function AppV23AccessControl() {
                                 <span aria-label=${`${group.members.length} local agent${group.members.length === 1 ? '' : 's'}`}>
                                     ${group.members.length} agent${group.members.length === 1 ? '' : 's'}
                                 </span>
-                                <button class="v23-icon-btn danger" title="Delete group"
-                                    aria-label=${`Delete Access Group ${group.name}`}
-                                    disabled=${!!groupBusy || !mutationReady}
-                                    onClick=${() => deleteGroup(group)}>×</button>
-                                <button class="access-control-drawer-close" type="button"
-                                    aria-label="Close Access Group editor" onClick=${closeAccessDrawer}>×</button>
+                                <button class="access-control-drawer-close access-control-drawer-close-labeled" type="button"
+                                    title="Close editor"
+                                    aria-label="Close Access Group editor" onClick=${closeAccessDrawer}>
+                                    Close <span aria-hidden="true">×</span>
+                                </button>
                             </div>
                             <label class="v23-field v23-group-authority">
                                 <span>Members may</span>
@@ -10700,6 +10699,17 @@ function AppV23AccessControl() {
                                 <summary>Policy record</summary>
                                 <span>Revision ${group.revision} · updated at block ${group.updated_height}</span>
                             </details>
+                            <div class="v23-save-row v23-group-actions">
+                                <span role="status" aria-live="polite">
+                                    ${groupBusy === group.group_id
+                                        ? 'Saving changes…'
+                                        : 'Changes save automatically when you edit.'}
+                                </span>
+                                <button class="btn btn-danger" disabled=${!!groupBusy || !mutationReady}
+                                    onClick=${() => deleteGroup(group)}>
+                                    Delete group…
+                                </button>
+                            </div>
                         </article>
                     `)}
                 </div>

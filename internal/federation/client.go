@@ -59,6 +59,25 @@ func boundedFederatedQueryContext(ctx context.Context) (context.Context, context
 	return context.WithTimeout(ctx, maxFederatedQueryAuthorizationLease)
 }
 
+// maxFederatedRecallPlanPeer bounds ONE peer's contribution to a recall plan.
+// A plan costs two sequential round trips per peer (status, then the plan), so
+// this is larger than the single-round-trip authorization lease above.
+//
+// This bound is load-bearing rather than defensive: PlanRecall walks peers
+// sequentially, so without a per-peer ceiling the first unreachable peer
+// consumes the entire request budget and every peer after it fails for a
+// reason that has nothing to do with that peer's actual state.
+const maxFederatedRecallPlanPeer = 15 * time.Second
+
+func planPeerTimeout() time.Duration {
+	if v := os.Getenv("SAGE_FED_RECALL_PLAN_PEER_TIMEOUT_MS"); v != "" {
+		if ms, err := strconv.Atoi(v); err == nil && ms > 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
+	return maxFederatedRecallPlanPeer
+}
+
 // A v11.13.0 peer ignores the compact-status preference and can legally send
 // its older full v1 contact snapshot. Allow that compatibility retry one at a
 // time so an eight-peer named discovery fan-out never multiplies the legacy
@@ -718,87 +737,125 @@ func (m *Manager) PlanRecall(ctx context.Context, targets []string, agentID, dom
 		Errors:                    make(map[string]string),
 	}
 	for _, chain := range chains {
-		agreement, err := m.ActiveAgreement(chain)
-		if err != nil {
-			plan.Errors[chain] = err.Error()
+		// Once the caller's budget is gone, stop paying for round trips. The
+		// remaining peers are still named so the caller can see the plan was
+		// cut short rather than conclude those peers were unreachable.
+		if ctx.Err() != nil {
+			plan.Errors[chain] = "recall plan deadline exceeded"
 			continue
 		}
-		status, err := m.fetchPeerStatus(ctx, agreement)
-		if err != nil {
-			plan.Errors[chain] = err.Error()
-			continue
-		}
-		if validationErr := validatePeerV23Status(status); validationErr != nil {
-			plan.Errors[chain] = validationErr.Error()
-			continue
-		}
-		request := &QueryPlanRequest{AgentID: agentID, DomainTag: domain}
-		authorizationModel := ""
-		authorizationAttestation := SourceAuthorizationAttestation{}
-		if slices.Contains(status.Capabilities, CapabilityPeerExportReadV1) {
-			ceiling, eligible, attestErr := m.attestLocalFederatedAgent(agentID)
-			if attestErr != nil || !eligible {
-				plan.Errors[chain] = "federated recall requires an active ordinary source agent"
-				continue
-			}
-			request.SourceAuthorizationModel = SourceAuthorizationPeerExportV1
-			authorizationModel = SourceAuthorizationPeerExportV1
-			request.SourceAgentEligible = true
-			request.SourceAgentMaxClassification = ceiling
-			authorizationAttestation = SourceAuthorizationAttestation{
-				Eligible: true, MaxClassification: ceiling,
-			}
-		}
-		ss := m.syncStore()
-		if ss == nil {
-			plan.Errors[chain] = "federated reader restrictions require SQLite"
-			continue
-		}
-		readerUnlock := ss.LockSyncPolicyRead()
-		readerAllowed, readerErr := m.federatedReaderAllowsLocked(ctx, agreement, agentID, domain)
-		if readerErr != nil || !readerAllowed {
-			readerUnlock()
-			plan.Errors[chain] = "local federation access controls deny this peer domain"
-			continue
-		}
-		body, httpStatus, err := m.doPeerRequest(ctx, agreement, http.MethodPost,
-			"/fed/v1/query/plan", request)
-		readerUnlock()
-		if err != nil {
-			plan.Errors[chain] = err.Error()
-			continue
-		}
-		if httpStatus != http.StatusOK {
-			plan.Errors[chain] = fmt.Sprintf("peer returned %d: %s", httpStatus, truncate(body, 200))
-			continue
-		}
-		var destination QueryPlanResponse
-		if err := json.Unmarshal(body, &destination); err != nil {
-			plan.Errors[chain] = fmt.Sprintf("decode recall plan: %v", err)
-			continue
-		}
-		if destination.ProtocolVersion != FederationProtocolV23 ||
-			destination.SourceChainID != m.localChainID ||
-			destination.DestinationChainID != chain ||
-			destination.AgreementBindingDigest != status.QueryAgreementBindingDigest ||
-			destination.SourceAuthorizationModel != authorizationModel ||
-			destination.SourceAgentEligible != authorizationAttestation.Eligible ||
-			destination.SourceAgentMaxClassification != authorizationAttestation.MaxClassification ||
-			destination.QueryChallenge == "" || destination.ExpiresAt <= time.Now().Unix() {
-			plan.Errors[chain] = "peer returned a stale or mismatched v23 recall plan"
-			continue
-		}
-		plan.Destinations = append(plan.Destinations, chain)
-		plan.AgreementBindings[chain] = destination.AgreementBindingDigest
-		plan.QueryChallenges[chain] = destination.QueryChallenge
-		plan.AuthorizationModels[chain] = authorizationModel
-		plan.AuthorizationAttestations[chain] = authorizationAttestation
-		plan.ExpiresAt[chain] = destination.ExpiresAt
+		m.planRecallChain(ctx, plan, chain, agentID, domain)
 	}
 	if len(plan.Errors) == 0 {
 		plan.Errors = nil
 	}
+	if len(plan.Destinations) == 0 && len(chains) == 0 {
+		// Errors carries per-peer detail whenever there were peers to try, so
+		// this aggregate reason is only needed for the case with no peers at all.
+		plan.UnavailableReason = RecallUnavailableNoAgreement
+	}
 	return plan, nil
+}
+
+// planRecallChain resolves one destination under its own deadline.
+//
+// Two properties matter here, and both were previously missing:
+//   - each peer's round trips are bounded, so one blackholed peer cannot eat the
+//     whole request budget and mislabel every peer that follows it;
+//   - the sync-policy read lease is released on EVERY exit path, including a
+//     panic. It used to be released by a bare call after the network round trip,
+//     which both held the lease across the request and leaked it permanently if
+//     anything panicked. Because Go's RWMutex is writer-preferring, a lease held
+//     that way lets one slow peer block every inbound federation read once any
+//     policy writer queues behind it.
+func (m *Manager) planRecallChain(ctx context.Context, plan *RecallPlan, chain, agentID, domain string) {
+	peerCtx, cancelPeer := context.WithTimeout(ctx, planPeerTimeout())
+	defer cancelPeer()
+
+	agreement, err := m.ActiveAgreement(chain)
+	if err != nil {
+		plan.Errors[chain] = err.Error()
+		return
+	}
+	status, err := m.fetchPeerStatus(peerCtx, agreement)
+	if err != nil {
+		plan.Errors[chain] = err.Error()
+		return
+	}
+	if validationErr := validatePeerV23Status(status); validationErr != nil {
+		plan.Errors[chain] = validationErr.Error()
+		return
+	}
+	request := &QueryPlanRequest{AgentID: agentID, DomainTag: domain}
+	authorizationModel := ""
+	authorizationAttestation := SourceAuthorizationAttestation{}
+	if slices.Contains(status.Capabilities, CapabilityPeerExportReadV1) {
+		ceiling, eligible, attestErr := m.attestLocalFederatedAgent(agentID)
+		if attestErr != nil || !eligible {
+			plan.Errors[chain] = "federated recall requires an active ordinary source agent"
+			return
+		}
+		request.SourceAuthorizationModel = SourceAuthorizationPeerExportV1
+		authorizationModel = SourceAuthorizationPeerExportV1
+		request.SourceAgentEligible = true
+		request.SourceAgentMaxClassification = ceiling
+		authorizationAttestation = SourceAuthorizationAttestation{
+			Eligible: true, MaxClassification: ceiling,
+		}
+	}
+	ss := m.syncStore()
+	if ss == nil {
+		plan.Errors[chain] = "federated reader restrictions require SQLite"
+		return
+	}
+	body, httpStatus, err := m.planRecallRequest(peerCtx, ss, agreement, agentID, domain, request)
+	if err != nil {
+		plan.Errors[chain] = err.Error()
+		return
+	}
+	if httpStatus != http.StatusOK {
+		plan.Errors[chain] = fmt.Sprintf("peer returned %d: %s", httpStatus, truncate(body, 200))
+		return
+	}
+	var destination QueryPlanResponse
+	if err := json.Unmarshal(body, &destination); err != nil {
+		plan.Errors[chain] = fmt.Sprintf("decode recall plan: %v", err)
+		return
+	}
+	if destination.ProtocolVersion != FederationProtocolV23 ||
+		destination.SourceChainID != m.localChainID ||
+		destination.DestinationChainID != chain ||
+		destination.AgreementBindingDigest != status.QueryAgreementBindingDigest ||
+		destination.SourceAuthorizationModel != authorizationModel ||
+		destination.SourceAgentEligible != authorizationAttestation.Eligible ||
+		destination.SourceAgentMaxClassification != authorizationAttestation.MaxClassification ||
+		destination.QueryChallenge == "" || destination.ExpiresAt <= time.Now().Unix() {
+		plan.Errors[chain] = "peer returned a stale or mismatched v23 recall plan"
+		return
+	}
+	plan.Destinations = append(plan.Destinations, chain)
+	plan.AgreementBindings[chain] = destination.AgreementBindingDigest
+	plan.QueryChallenges[chain] = destination.QueryChallenge
+	plan.AuthorizationModels[chain] = authorizationModel
+	plan.AuthorizationAttestations[chain] = authorizationAttestation
+	plan.ExpiresAt[chain] = destination.ExpiresAt
+}
+
+var errFederatedReaderDenied = errors.New("local federation access controls deny this peer domain")
+
+// planRecallRequest issues the plan round trip while holding the sync-policy
+// read lease, and releases it — including on panic — no matter how the call
+// returns. The lease still spans the request, as the final-attestation contract
+// requires; what changes is that the region is now bounded by the caller's
+// per-peer deadline and cannot outlive a panic.
+func (m *Manager) planRecallRequest(ctx context.Context, ss *store.SQLiteStore, agreement *store.CrossFedRecord, agentID, domain string, request *QueryPlanRequest) ([]byte, int, error) {
+	readerUnlock := ss.LockSyncPolicyRead()
+	defer readerUnlock()
+	readerAllowed, readerErr := m.federatedReaderAllowsLocked(ctx, agreement, agentID, domain)
+	if readerErr != nil || !readerAllowed {
+		return nil, 0, errFederatedReaderDenied
+	}
+	return m.doPeerRequest(ctx, agreement, http.MethodPost, "/fed/v1/query/plan", request)
 }
 
 func authorizationModelDiagnostic(model string) string {

@@ -620,15 +620,26 @@ func statusAllowsFederatedRead(status *federation.StatusResponse, domain string)
 
 // federationRecallTargets converts an agent request into the finite set of
 // currently authenticated peers that actually expose the requested domain.
-// Failures and non-sharing peers are deliberately omitted so ordinary recall
-// cannot enumerate hidden federation topology through queried/error fields.
 func (s *Server) federationRecallTargets(ctx context.Context, requested []string, domain string) []string {
+	targets, _ := s.federationRecallTargetsWithReason(ctx, requested, domain)
+	return targets
+}
+
+// federationRecallTargetsWithReason also classifies WHY the set is empty.
+//
+// Failures and non-sharing peers are deliberately omitted, so ordinary recall
+// cannot enumerate hidden federation topology through queried/error fields.
+// That omission is what made an empty plan unreadable: a caller could not tell
+// "no peer authorizes this domain" from "this node has no peers" from "every
+// probe failed". The returned reason answers only that — it is an aggregate
+// statement about this node's own state and never names a peer.
+func (s *Server) federationRecallTargetsWithReason(ctx context.Context, requested []string, domain string) ([]string, federation.UnavailableReason) {
 	if s.federation == nil || s.badgerStore == nil || domain == "" {
-		return nil
+		return nil, federation.RecallUnavailableFederation
 	}
 	records, err := s.badgerStore.ListCrossFed()
 	if err != nil {
-		return nil
+		return nil, federation.RecallUnavailableFederation
 	}
 	active := make(map[string]struct{}, len(records))
 	now := time.Now().Unix()
@@ -664,6 +675,15 @@ func (s *Server) federationRecallTargets(ctx context.Context, requested []string
 	if len(candidates) > maxAgentFederationTargets {
 		candidates = candidates[:maxAgentFederationTargets]
 	}
+	if len(candidates) == 0 {
+		// Distinguish "this node has no peers at all" from "the caller named
+		// chains that are not connected". Both are aggregate facts about this
+		// node and name no peer.
+		if len(active) == 0 {
+			return nil, federation.RecallUnavailableNoAgreement
+		}
+		return nil, federation.RecallUnavailableRequestedChains
+	}
 
 	type probe struct {
 		chain  string
@@ -688,12 +708,24 @@ func (s *Server) federationRecallTargets(ctx context.Context, requested []string
 	}
 	wg.Wait()
 	out := make([]string, 0, len(probes))
+	probed := 0
 	for _, peer := range probes {
+		if peer.status != nil {
+			probed++
+		}
 		if statusAllowsFederatedRead(peer.status, domain) {
 			out = append(out, peer.chain)
 		}
 	}
-	return out
+	if len(out) > 0 {
+		return out, ""
+	}
+	if probed == 0 {
+		// Every probe failed, so no domain decision was ever reached. Saying
+		// "domain not shared" here would be a false and misleading verdict.
+		return out, federation.RecallUnavailablePeerUnreachable
+	}
+	return out, federation.RecallUnavailableDomainNotShared
 }
 
 // handleFederationAvailable is the ordinary-agent control-plane view. It

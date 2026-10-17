@@ -139,7 +139,48 @@ type RecallPlan struct {
 	AuthorizationAttestations map[string]SourceAuthorizationAttestation `json:"authorization_attestations"`
 	ExpiresAt                 map[string]int64                          `json:"expires_at"`
 	Errors                    map[string]string                         `json:"errors,omitempty"`
+
+	// UnavailableReason classifies an EMPTY plan by the LAYER that produced it.
+	//
+	// Errors is keyed by peer, and the topology-filter path deliberately leaves
+	// it empty: naming the peers it filtered out would disclose federation
+	// topology to an unprivileged caller. Without this field an empty plan is
+	// therefore indistinguishable from a planner that failed silently, and a
+	// caller reading "no authorized destination" cannot tell that apart from
+	// "the planner was never reached". The value is an aggregate statement about
+	// the CALLER'S OWN node and never names a peer.
+	//
+	// Absent when Destinations is non-empty.
+	UnavailableReason UnavailableReason `json:"unavailable_reason,omitempty"`
 }
+
+// UnavailableReason enumerates why a recall plan produced no destinations.
+// These are deliberately coarse: each one is safe to show an unprivileged
+// caller and answers "which layer", not "which peer".
+type UnavailableReason string
+
+const (
+	// RecallUnavailableNoAgreement means this node currently holds no active
+	// federation agreement. Nothing about any peer is implied.
+	RecallUnavailableNoAgreement UnavailableReason = "no_active_agreement"
+	// RecallUnavailableDomainNotShared means agreements exist, but none of them
+	// authorizes this exact domain for this caller. Deliberately aggregate: the
+	// specific peers that said no are not named.
+	RecallUnavailableDomainNotShared UnavailableReason = "domain_not_shared"
+	// RecallUnavailablePeerUnreachable means agreements exist, but every peer
+	// probe failed before a domain decision could be made.
+	RecallUnavailablePeerUnreachable UnavailableReason = "peer_unreachable"
+	// RecallUnavailableRequestedChains means the caller named specific chains
+	// and none of them is a currently active agreement.
+	RecallUnavailableRequestedChains UnavailableReason = "requested_chains_not_connected"
+	// RecallUnavailablePlanner means the planner itself could not be reached or
+	// timed out. This is the one that used to read as an authorization verdict.
+	RecallUnavailablePlanner UnavailableReason = "planner_unavailable"
+	// RecallUnavailableFederation means this node's federation subsystem is not
+	// able to answer at all (no local chain state). Nothing about the caller's
+	// authority or about any peer is implied.
+	RecallUnavailableFederation UnavailableReason = "federation_unavailable"
+)
 
 // QueryAgentProof is the original local REST authentication proof. The
 // canonical request is one of the three recall POST bodies; the receiver

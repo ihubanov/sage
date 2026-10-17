@@ -6551,6 +6551,20 @@ input[type="range"]::-moz-range-thumb {
     min-width: 34px;
     padding: 0;
 }
+.access-control-drawer-close-labeled {
+    font-size: 11px;
+    font-weight: 600;
+    gap: 7px;
+    letter-spacing: .02em;
+    padding: 0 12px;
+    white-space: nowrap;
+    width: auto;
+}
+.access-control-drawer-close-labeled > span[aria-hidden="true"] {
+    font-size: 18px;
+    font-weight: 400;
+    line-height: 1;
+}
 .access-control-federation-drawer > .access-control-drawer-close {
     position: sticky;
     float: right;
@@ -7203,6 +7217,8 @@ input[type="range"]::-moz-range-thumb {
 .v23-group-head { align-items: center; display: grid; gap: 7px; grid-template-columns: minmax(0, 1fr) auto auto; }
 .v23-group-head input { background: transparent; border-color: transparent; font-weight: 700; min-width: 0; padding: 6px 7px; }
 .v23-group-head input:hover { border-color: var(--border); }
+.v23-group-actions { margin-top: 14px; }
+.v23-group-actions .btn { font-size: 11px; padding: 6px 10px; }
 .v23-group-head > span {
     background: var(--bg-deep);
     border-radius: 999px;

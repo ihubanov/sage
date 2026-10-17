@@ -229,10 +229,17 @@ func TestPublicMemoryIndexMissingBindingAndPrivateRefuse(t *testing.T) {
 	publicTestRecord(t, scoped, "private")
 	require.NoError(t, scoped.SetMemoryClassification("private", 1))
 	require.NoError(t, scoped.SyncPublicMemoryIndex("private"))
-	publicTestRecord(t, scoped, "incomplete")
+	publicTestRecord(t, scoped, "legacy-incomplete")
 	require.NoError(t, scoped.update(func(txn *badger.Txn) error {
-		return scoped.txnDelete(txn, memoryAuthorPrincipalKey("incomplete"))
+		return scoped.txnDelete(txn, memoryAuthorPrincipalKey("legacy-incomplete"))
 	}))
-	require.Error(t, scoped.SyncPublicMemoryIndex("incomplete"))
+	require.NoError(t, scoped.SyncPublicMemoryIndex("legacy-incomplete"),
+		"a pre-app-v25 PUBLIC record missing a legacy binding is quarantined, not fatal")
+	publicTestRecord(t, scoped, "modern-incomplete")
+	require.NoError(t, scoped.SetMemorySubmissionHeight("modern-incomplete", 56126))
+	require.NoError(t, scoped.update(func(txn *badger.Txn) error {
+		return scoped.txnDelete(txn, memoryAuthorPrincipalKey("modern-incomplete"))
+	}))
+	require.ErrorIs(t, scoped.SyncPublicMemoryIndex("modern-incomplete"), ErrPublicMemoryIndex)
 	scoped.DiscardConsensusTransaction()
 }

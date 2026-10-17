@@ -72,6 +72,8 @@ func runUpgrade(args []string) error {
 		return runUpgradePreflight(args[1:])
 	case "lineage":
 		return runUpgradeLineage(args[1:])
+	case "public-memory-audit":
+		return runUpgradePublicMemoryAudit(args[1:])
 	case "help", "--help", "-h":
 		printUpgradeUsage()
 		return nil
@@ -99,6 +101,10 @@ Subcommands:
   preflight                    Read-only pre-upgrade check on a STOPPED node: verifies the
                                app-v22/app-v23 predecessor-ladder invariant and previews the
                                app-v23 Root election. Run this before adopting a new binary.
+  public-memory-audit          Read-only app-v28 corpus check on a STOPPED node: names every
+                               PUBLIC record the activation stage would refuse (and every
+                               legacy record its quarantine skips), with the exact envelope
+                               condition that failed.
   lineage status --json        Live, read-only persisted lineage inventory
   lineage doctor --json        At app-v21, diagnose MISSING canonical records and optionally
                                emit a repair manifest; take a stopped-node backup first

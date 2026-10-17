@@ -492,6 +492,18 @@ test('app-v23 access UI uses named policy choices and visibly separates local gr
         'the JOIN transport/operator key may be Root and must never become a linked-reader target');
     assert.match(access, /Add local agent menu/,
         'drag and drop must keep an accessible non-pointer alternative');
+    assert.match(access, /access-control-drawer-close access-control-drawer-close-labeled/,
+        'the group editor must expose a single, visibly labeled Close control');
+    assert.match(access, /Close <span aria-hidden="true">×<\/span>/,
+        'the Close affordance must carry a word, not only the × glyph');
+    assert.doesNotMatch(access, /v23-icon-btn danger/,
+        'an unlabeled destructive × must not sit in the group header beside Close');
+    assert.match(access, /v23-save-row v23-group-actions[\s\S]*Delete group…/,
+        'group deletion must be a labeled footer action, separate from Close');
+    assert.match(access, /Changes save automatically when you edit\./,
+        'the group editor must say edits commit automatically so the missing Save button is not ambiguous');
+    assert.match(access, /Saving changes…/,
+        'in-card save progress must be visible while a group mutation is in flight');
     assert.match(access, /appV23DirectLocalGroupPlan\(state\?\.groups \|\| \[\], source, target\)/,
         'dropping one approved local agent onto another must create a real narrow Access Group');
     assert.match(access, /Drop here to remove this agent from this Access Group/,

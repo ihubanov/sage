@@ -1181,6 +1181,22 @@ const vaultEncryptedSearchMarker = "text search unavailable: content is vault-en
 // both rather than hard-asserting "hash mode".
 const nonSemanticRecallReason = "no semantic embedder available (non-semantic hash provider or embedder unreachable); recall is keyword-quality"
 
+// isRecallQueryTooBroad recognizes the node's deliberate refusal of an
+// over-wide ranked recall. The three recall surfaces (semantic, hybrid, FTS5)
+// each title the same condition slightly differently — "Recall", "Search",
+// "Hybrid" — so match the shared "query too broad" suffix and the HTTP status
+// instead of any one full title, and never the wording of the detail.
+func isRecallQueryTooBroad(err error) bool {
+	var problem *apiProblemError
+	if !errors.As(err, &problem) {
+		return false
+	}
+	if problem.StatusCode != http.StatusUnprocessableEntity {
+		return false
+	}
+	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(problem.Title)), "query too broad")
+}
+
 func (s *Server) toolRecall(ctx context.Context, params map[string]any) (any, error) {
 	query, _ := params["query"].(string)
 	if query == "" {
@@ -1220,37 +1236,48 @@ func (s *Server) toolRecall(ctx context.Context, params map[string]any) (any, er
 	var degraded bool     // true when recall dropped to keyword-only
 	var degradedReason string
 
-	if s.isSemanticMode(ctx) {
-		recallMode = "semantic_only"
-		if err := s.recallSemantic(ctx, query, domain, topK, minConf, federationOptions, &queryResp); err != nil {
-			return nil, err
+	// serveRecall runs one attempt against an explicit recall domain. It clears
+	// the accumulated response/mode state first so the home-domain retry below
+	// cannot blend a refused domainless attempt into a successful scoped one.
+	serveRecall := func(recallDomain string) error {
+		queryResp = recallResp{}
+		recallMode = ""
+		degraded = false
+		degradedReason = ""
+
+		if s.isSemanticMode(ctx) {
+			recallMode = "semantic_only"
+			return s.recallSemantic(ctx, query, recallDomain, topK, minConf, federationOptions, &queryResp)
 		}
-	} else if hybridRecallEnabled() {
-		// Hybrid path: BM25 ⊕ vector cosine fused via Reciprocal Rank Fusion.
-		// This branch only runs when isSemanticMode() is false — the node has NO
-		// usable semantic embedder (non-semantic hash provider, or /v1/embed/info
-		// unreachable), so the hybrid vector arm is hash noise and recall is
-		// keyword-quality. Flag it degraded even on the happy hybrid path; the
-		// caller sees recall_mode="hybrid" but semantic_degraded=true.
-		recallMode = "hybrid"
-		degraded = true
-		degradedReason = nonSemanticRecallReason
-		if hybridErr := s.recallHybrid(ctx, query, domain, topK, minConf, federationOptions, &queryResp); hybridErr != nil {
-			fmt.Fprintf(os.Stderr, "SAGE MCP: hybrid recall failed (%v); falling back to FTS5 path\n", hybridErr)
-			fallbackMode, legacyErr := s.recallFTSWithFallback(ctx, query, domain, topK, minConf, federationOptions, &queryResp)
-			if legacyErr != nil {
-				return nil, legacyErr
+
+		if hybridRecallEnabled() {
+			// Hybrid path: BM25 ⊕ vector cosine fused via Reciprocal Rank Fusion.
+			// This branch only runs when isSemanticMode() is false — the node has NO
+			// usable semantic embedder (non-semantic hash provider, or /v1/embed/info
+			// unreachable), so the hybrid vector arm is hash noise and recall is
+			// keyword-quality. Flag it degraded even on the happy hybrid path; the
+			// caller sees recall_mode="hybrid" but semantic_degraded=true.
+			recallMode = "hybrid"
+			degraded = true
+			degradedReason = nonSemanticRecallReason
+			if hybridErr := s.recallHybrid(ctx, query, recallDomain, topK, minConf, federationOptions, &queryResp); hybridErr != nil {
+				fmt.Fprintf(os.Stderr, "SAGE MCP: hybrid recall failed (%v); falling back to FTS5 path\n", hybridErr)
+				fallbackMode, legacyErr := s.recallFTSWithFallback(ctx, query, recallDomain, topK, minConf, federationOptions, &queryResp)
+				if legacyErr != nil {
+					return legacyErr
+				}
+				recallMode = fallbackMode
+				if fallbackMode == "semantic_only" {
+					// The vault-encrypted retry actually served semantically — not a degrade.
+					degraded = false
+					degradedReason = ""
+				} else {
+					degradedReason = fmt.Sprintf("hybrid recall failed (%v); fell back to keyword-only FTS5", hybridErr)
+				}
 			}
-			recallMode = fallbackMode
-			if fallbackMode == "semantic_only" {
-				// The vault-encrypted retry actually served semantically — not a degrade.
-				degraded = false
-				degradedReason = ""
-			} else {
-				degradedReason = fmt.Sprintf("hybrid recall failed (%v); fell back to keyword-only FTS5", hybridErr)
-			}
+			return nil
 		}
-	} else {
+
 		// FTS5 path: full-text search when embeddings aren't semantic. By
 		// definition this is keyword-only — the node has no semantic embedder.
 		recallMode = "keyword_only"
@@ -1258,14 +1285,14 @@ func (s *Server) toolRecall(ctx context.Context, params map[string]any) (any, er
 		degradedReason = nonSemanticRecallReason
 		request := recallRequest{
 			"query":          query,
-			"domain_tag":     domain,
+			"domain_tag":     recallDomain,
 			"provider":       s.provider,
 			"min_confidence": minConf,
 			"status_filter":  "committed",
 			"top_k":          topK,
 		}
 		if err := s.applyRecallFederation(ctx, request, federationOptions); err != nil {
-			return nil, err
+			return err
 		}
 		searchReq, _ := json.Marshal(request)
 		if searchErr := s.doSignedJSON(ctx, "POST", "/v1/memory/search", searchReq, &queryResp); searchErr != nil {
@@ -1277,17 +1304,41 @@ func (s *Server) toolRecall(ctx context.Context, params map[string]any) (any, er
 			if strings.Contains(searchErr.Error(), vaultEncryptedSearchMarker) {
 				fmt.Fprintf(os.Stderr, "SAGE MCP: /v1/memory/search reports vault-encrypted; retrying with semantic path\n")
 				s.setSemanticMode(true)
-				if retryErr := s.recallSemantic(ctx, query, domain, topK, minConf, federationOptions, &queryResp); retryErr != nil {
-					return nil, retryErr
+				if retryErr := s.recallSemantic(ctx, query, recallDomain, topK, minConf, federationOptions, &queryResp); retryErr != nil {
+					return retryErr
 				}
 				// Actually served semantically — not a degrade after all.
 				recallMode = "semantic_only"
 				degraded = false
 				degradedReason = ""
-			} else {
-				return nil, fmt.Errorf("search memories: %w", searchErr)
+				return nil
+			}
+			return fmt.Errorf("search memories: %w", searchErr)
+		}
+		return nil
+	}
+
+	recallDomain := domain
+	recallErr := serveRecall(domain)
+	if recallErr != nil && domain == "" && !federationOptions.requested() && isRecallQueryTooBroad(recallErr) {
+		// app-v23's ranked recall is deliberately scan-bounded: a domainless
+		// query over a corpus larger than the node's authorization budget is
+		// refused outright rather than ranked over an arbitrary prefix. That
+		// refusal is correct, but it makes an unscoped sage_recall fail
+		// PERMANENTLY on exactly the mature nodes worth recalling from — the
+		// default shape of the tool. Mirror sage_turn (which already resolves
+		// the caller's governed home domain for the same reason) and serve the
+		// same query scoped to that domain, so the caller gets an honest,
+		// working answer plus the effective scope instead of a raw tool failure.
+		if home, resolveErr := s.resolveWriteDomain(ctx, params); resolveErr == nil && home != "" {
+			if retryErr := serveRecall(home); retryErr == nil {
+				recallDomain = home
+				recallErr = nil
 			}
 		}
+	}
+	if recallErr != nil {
+		return nil, recallErr
 	}
 
 	memories := make([]map[string]any, 0, len(queryResp.Results))
@@ -1343,6 +1394,16 @@ func (s *Server) toolRecall(ctx context.Context, params map[string]any) (any, er
 		"total_count":       queryResp.TotalCount,
 		"recall_mode":       recallMode,
 		"semantic_degraded": degraded,
+	}
+	if recallDomain != "" && recallDomain != domain {
+		// Disclose the fallback rather than silently narrowing a request the
+		// caller believed was cross-domain. An agent that does not know its
+		// recall was scoped will read an empty home domain as "this does not
+		// exist anywhere", which is the exact false absence this surface is
+		// supposed to prevent.
+		out["domain"] = recallDomain
+		out["recall_scope"] = "home_domain"
+		out["recall_scope_note"] = "This node refuses a domainless recall once the candidate set exceeds its authorization scan budget, so the query ran scoped to your home domain. Pass an explicit domain to search elsewhere."
 	}
 	if degradedReason != "" {
 		out["degraded_reason"] = degradedReason

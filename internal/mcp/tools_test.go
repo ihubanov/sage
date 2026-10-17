@@ -5183,6 +5183,146 @@ func TestSageRecall_VaultActiveForcesSemantic(t *testing.T) {
 // TestSageRecall_RetriesSemanticOnVaultEncryptedFTSError exercises the v6.6.10
 // belt-and-braces retry: if /v1/embed/info LIES (semantic=false) but
 // /v1/memory/search reveals the truth by returning the vault-encrypted marker
+// TestSageRecall_DomainlessRecallFallsBackToHomeDomain pins the fix for the
+// scan-bounded refusal that made a plain sage_recall fail permanently on any
+// mature app-v23 node. The node refuses a domainless ranked recall once the
+// candidate set exceeds its authorization scan budget (422 "Recall query too
+// broad"). sage_turn already resolves the caller's governed home domain for
+// the same reason; sage_recall did not, so the tool's DEFAULT shape — a query
+// with no domain — was the one shape guaranteed to fail on a large corpus.
+// The fallback must serve the query scoped to the home domain AND disclose
+// that it narrowed, so an empty home-domain result is never read as proof the
+// memory does not exist anywhere.
+func TestSageRecall_DomainlessRecallFallsBackToHomeDomain(t *testing.T) {
+	var queriedDomains []string
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/agent/me", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"agent_id": r.Header.Get("X-Agent-ID"), "role": "member",
+			"profile": "companion", "home_domain": "operator-notes",
+			"enrollment_status": "active",
+		})
+	})
+	mux.HandleFunc("/v1/embed/info", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"semantic": true, "provider": "vault-encrypted", "dimension": 768, "ready": true,
+		})
+	})
+	mux.HandleFunc("/v1/embed", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"embedding": []float32{0.1, 0.2, 0.3}})
+	})
+	mux.HandleFunc("/v1/memory/query", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			DomainTag string `json:"domain_tag"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		queriedDomains = append(queriedDomains, req.DomainTag)
+
+		if req.DomainTag == "" {
+			// Exactly the shape the REST layer emits for
+			// store.ErrCandidateFilterScanBudgetExceeded.
+			w.Header().Set("Content-Type", "application/problem+json")
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"type":   "https://sage.dev/errors/422",
+				"title":  "Recall query too broad",
+				"status": http.StatusUnprocessableEntity,
+				"detail": "Too many candidates require authorization; choose a domain, provider, tag, or tighter status filter.",
+			})
+			return
+		}
+
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{{
+				"memory_id":        "mem-home-1",
+				"content":          "recalled from the home domain",
+				"domain_tag":       req.DomainTag,
+				"confidence_score": 0.93,
+				"memory_type":      "fact",
+				"status":           "committed",
+				"created_at":       "2026-10-17T00:00:00Z",
+			}},
+			"total_count": 1,
+		})
+	})
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	_, priv, _ := ed25519.GenerateKey(nil)
+	s := NewServer(ts.URL, priv)
+
+	result, err := s.toolRecall(context.Background(), map[string]any{"query": "what did we decide"})
+	require.NoError(t, err, "a domainless recall must recover via the home-domain fallback, not surface a raw tool failure")
+
+	assert.Equal(t, []string{"", "operator-notes"}, queriedDomains,
+		"the unscoped attempt must run first, then exactly one home-domain retry")
+
+	m := result.(map[string]any)
+	assert.Equal(t, "operator-notes", m["domain"])
+	assert.Equal(t, "home_domain", m["recall_scope"])
+	assert.Contains(t, m["recall_scope_note"], "home domain",
+		"the caller must be told its recall was narrowed")
+
+	memories, ok := m["memories"].([]map[string]any)
+	require.True(t, ok)
+	require.Len(t, memories, 1)
+	assert.Equal(t, "mem-home-1", memories[0]["memory_id"])
+}
+
+// TestSageRecall_ExplicitDomainDoesNotFallBack guards the other side of the
+// boundary: a caller that named a domain gets that domain's answer, and a
+// refusal there is a real refusal — never silently redirected elsewhere.
+func TestSageRecall_ExplicitDomainDoesNotFallBack(t *testing.T) {
+	var queriedDomains []string
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/agent/me", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"agent_id": r.Header.Get("X-Agent-ID"), "role": "member",
+			"profile": "companion", "home_domain": "operator-notes",
+			"enrollment_status": "active",
+		})
+	})
+	mux.HandleFunc("/v1/embed/info", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"semantic": true, "provider": "vault-encrypted", "dimension": 768, "ready": true,
+		})
+	})
+	mux.HandleFunc("/v1/embed", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"embedding": []float32{0.1, 0.2, 0.3}})
+	})
+	mux.HandleFunc("/v1/memory/query", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			DomainTag string `json:"domain_tag"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		queriedDomains = append(queriedDomains, req.DomainTag)
+
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"type":   "https://sage.dev/errors/422",
+			"title":  "Recall query too broad",
+			"status": http.StatusUnprocessableEntity,
+			"detail": "Too many candidates require authorization; choose a domain, provider, tag, or tighter status filter.",
+		})
+	})
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	_, priv, _ := ed25519.GenerateKey(nil)
+	s := NewServer(ts.URL, priv)
+
+	_, err := s.toolRecall(context.Background(), map[string]any{"query": "x", "domain": "wide-domain"})
+	require.Error(t, err)
+	assert.True(t, isRecallQueryTooBroad(err), "the refusal must stay recognizable to callers")
+	assert.Equal(t, []string{"wide-domain"}, queriedDomains,
+		"an explicitly scoped recall must never be redirected to another domain")
+}
+
 // (e.g. an older node where embed_handler.go isn't patched), toolRecall must
 // detect the marker substring, log a warning, and silently retry the semantic
 // path with the same query and params. This protects mixed-version networks.

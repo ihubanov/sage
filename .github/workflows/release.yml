@@ -329,7 +329,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
       - run: npm ci
@@ -505,7 +505,7 @@ jobs:
             fi
           )
       - name: Upload private unsigned native evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-evidence-native-shell-${{ matrix.id }}
           path: ${{ runner.temp }}/native-shell-release-evidence/${{ matrix.id }}
@@ -598,7 +598,7 @@ jobs:
           go test ./web -run '^TestLinuxPackagedBinarySwapEndToEnd$' -count=1
 
       - name: Upload private GoReleaser assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-assets-goreleaser
           path: |
@@ -643,7 +643,7 @@ jobs:
           done
 
       - name: Upload private Linux assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-assets-linux-desktop
           path: |
@@ -861,7 +861,7 @@ jobs:
           done
 
       - name: Upload private macOS assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-assets-macos-${{ steps.arch.outputs.label }}
           path: |
@@ -913,7 +913,7 @@ jobs:
           done
 
       - name: Upload private Windows assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-assets-windows
           path: |
@@ -986,7 +986,7 @@ jobs:
           test -s "${ARCHIVE}"
 
       - name: Upload private Docker image
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-image-docker
           path: ${{ runner.temp }}/sage-image.tar
@@ -1025,7 +1025,7 @@ jobs:
             "import sage_sdk; assert sage_sdk.__version__ == '${RELEASE_VERSION}'"
 
       - name: Upload private Python package
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-package-python
           path: sdk/python/dist/*
@@ -1058,7 +1058,7 @@ jobs:
           test -x mcp-publisher
 
       - name: Upload private MCP publication inputs
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-package-mcp
           path: |
@@ -1082,7 +1082,7 @@ jobs:
       - native-shell-production-promotion
     steps:
       - name: Download every private release input
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: release-*
           path: staged
@@ -1256,7 +1256,7 @@ jobs:
       contents: write
     steps:
       - name: Download public release assets
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: release-assets-*
           path: release-assets
@@ -1489,7 +1489,7 @@ jobs:
       packages: write
     steps:
       - name: Download private OCI archive
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-image-docker
           path: docker-image
@@ -1552,7 +1552,7 @@ jobs:
       packages: read
     steps:
       - name: Download validated MCP inputs
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-package-mcp
           path: mcp-package
@@ -1611,7 +1611,7 @@ jobs:
       id-token: write
     steps:
       - name: Download validated Python package
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-package-python
           path: python-dist

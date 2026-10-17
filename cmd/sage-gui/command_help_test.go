@@ -38,7 +38,7 @@ func TestSubcommandHelpHasNoSideEffects(t *testing.T) {
 		{"pair", "--help"}, {"fence", "abandon", "--help"},
 		{"mcp-token", "create", "--help"}, {"nevercompact", "enable", "--help"},
 		{"upgrade", "propose", "--help"}, {"hook", "session-start", "--help"},
-		{"init-lantern-private", "--help"}, {"repair-chain", "--help"},
+		{"init-fresh-personal-sage", "--help"}, {"check-private-config", "--help"}, {"repair-chain", "--help"},
 	} {
 		t.Run(args[0]+"/"+args[1], func(t *testing.T) {
 			dir := t.TempDir()

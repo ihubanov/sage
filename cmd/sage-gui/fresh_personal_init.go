@@ -13,18 +13,21 @@ import (
 	"strings"
 )
 
-const lanternHome = "/var/lib/sage-lantern/sage-personal"
-
-func freshLanternPaths(home string, cfg *Config) error {
+// freshPersonalPaths verifies that the prepared on-disk layout for a fresh
+// personal-SAGE initialization is exactly what the profile promised. Every
+// check here is a refusal, not a repair: partially-prepared state is preserved
+// for reconciliation rather than reset.
+func freshPersonalPaths(profile *provisioningProfile, cfg *Config) error {
+	home, identityDir := profile.Home, profile.IdentityDir
 	if cfg.VendoredAgentBootstrap == nil || cfg.DataDir != filepath.Join(home, "data") ||
 		cfg.AgentKey != filepath.Join(home, "agent.key") ||
-		cfg.VendoredAgentBootstrap.AgentKeyFile != filepath.Join(filepath.Dir(home), "identity", "lantern-agent.key") || cfg.ChainID != "" {
-		return errors.New("explicit fixed-path Lantern Companion bootstrap required")
+		filepath.Dir(cfg.VendoredAgentBootstrap.AgentKeyFile) != identityDir || cfg.ChainID != "" {
+		return errors.New("explicit fixed-path companion bootstrap required")
 	}
 	for path := home; ; path = filepath.Dir(path) {
 		info, err := os.Lstat(path)
 		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || (info.Mode().Perm()&0022 != 0 && info.Mode()&os.ModeSticky == 0) {
-			return errors.New("unsafe Lantern initialization directory")
+			return errors.New("unsafe initialization directory")
 		}
 		if path == filepath.Dir(path) {
 			break
@@ -34,7 +37,6 @@ func freshLanternPaths(home string, cfg *Config) error {
 	if err != nil || info.Mode().Perm() != 0700 {
 		return errors.New("private home must be 0700")
 	}
-	identityDir := filepath.Join(filepath.Dir(home), "identity")
 	info, err = os.Lstat(identityDir)
 	if err != nil || !info.IsDir() || info.Mode().Perm() != 0700 {
 		return errors.New("prepared private identity directory required")
@@ -44,7 +46,7 @@ func freshLanternPaths(home string, cfg *Config) error {
 		return err
 	}
 	for _, entry := range identityEntries {
-		if entry.Name() != "EXTERNAL_IDENTITY_REQUIREMENTS.txt" {
+		if entry.Name() != profile.IdentityRequirementsFile {
 			return errors.New("existing identity material; reconciliation required")
 		}
 	}
@@ -64,12 +66,16 @@ func freshLanternPaths(home string, cfg *Config) error {
 	return nil
 }
 
-func initializeFreshLantern(home string, cfg *Config, initialize func(string, string, *VendoredAgentBootstrapConfig) error,
+// initializeFreshPersonalSage performs one claimed, all-or-nothing
+// initialization. A failed attempt deliberately leaves its claim marker in
+// place so a retry cannot silently continue from partial state.
+func initializeFreshPersonalSage(profile *provisioningProfile, cfg *Config, initialize func(string, string, *VendoredAgentBootstrapConfig) error,
 	publicIdentity func(string) (string, error)) (map[string]any, error) {
-	if err := freshLanternPaths(home, cfg); err != nil {
+	home := profile.Home
+	if err := freshPersonalPaths(profile, cfg); err != nil {
 		return nil, err
 	}
-	claim, err := os.OpenFile(filepath.Join(home, "lantern-initialization-started"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	claim, err := os.OpenFile(filepath.Join(home, profile.ClaimFile), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return nil, errors.New("initialization already claimed")
 	}
@@ -92,41 +98,92 @@ func initializeFreshLantern(home string, cfg *Config, initialize func(string, st
 	if initErr := initialize(filepath.Join(cfg.DataDir, "cometbft"), cfg.AgentKey, cfg.VendoredAgentBootstrap); initErr != nil {
 		return nil, errors.New("initialization incomplete; preserve state for reconciliation")
 	}
-	publicID, err := publicIdentity(filepath.Join(filepath.Dir(home), "identity", "lantern-public.key"))
+	publicID, err := publicIdentity(filepath.Join(profile.IdentityDir, profile.PublicKeyFile))
 	if err != nil {
 		return nil, errors.New("public identity incomplete; preserve state for reconciliation")
 	}
-	return map[string]any{"schema": "sage.lantern.initialized.v1", "public_agent_id": publicID,
+	return map[string]any{"schema": profile.ResultSchema, "public_agent_id": publicID,
 		"public_enrolled": false, "vault_initialized": false, "ready": false, "provisioned": false}, nil
 }
 
-func runLanternFreshInit(args []string) error {
-	if len(args) != 2 || args[0] != "--owner-approved-companion-bootstrap" || (args[1] != "unit-a" && args[1] != "unit-b") ||
-		SageHome() != lanternHome || os.Getenv("SAGE_LANTERN_PRIVATE_LISTENERS") != "1" {
+// parseFreshPersonalInitArgs accepts exactly one consent flag, one profile and
+// one unit. Anything extra — a repeated flag, a positional argument, an empty
+// value — is refused, so consent can never be inferred from a near miss.
+func parseFreshPersonalInitArgs(args []string) (profilePath, unit string, ok bool) {
+	const consentFlag = "--owner-approved-companion-bootstrap"
+	if len(args) != 5 {
+		return "", "", false
+	}
+	consent := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case consentFlag:
+			if consent {
+				return "", "", false
+			}
+			consent = true
+		case "--profile":
+			if profilePath != "" || i+1 >= len(args) {
+				return "", "", false
+			}
+			// Bounds are proven by the i+1 >= len(args) guard above; gosec cannot
+			// follow that guard through the loop counter.
+			profilePath = args[i+1] //nolint:gosec // G602: guarded immediately above
+			i++
+		case "--unit":
+			if unit != "" || i+1 >= len(args) {
+				return "", "", false
+			}
+			unit = args[i+1] //nolint:gosec // G602: guarded immediately above
+			i++
+		default:
+			return "", "", false
+		}
+	}
+	if !consent || profilePath == "" || unit == "" {
+		return "", "", false
+	}
+	return profilePath, unit, true
+}
+
+func runFreshPersonalInit(args []string) error {
+	profilePath, unit, ok := parseFreshPersonalInitArgs(args)
+	if !ok {
+		return errors.New("explicit owner Companion bootstrap consent and fixed private home required")
+	}
+	profile, err := loadProvisioningProfile(profilePath)
+	if err != nil {
+		return err
+	}
+	if !profile.PrivateListeners || SageHome() != profile.Home {
 		return errors.New("explicit owner Companion bootstrap consent and fixed private home required")
 	}
 	account, err := user.Current()
-	if runtime.GOOS != "linux" || runtime.GOARCH != "arm64" || err != nil || account.Username != "sage-lantern" || os.Geteuid() == 0 {
-		return errors.New("initialization requires the native ARM64 sage-lantern account")
+	if runtime.GOOS != "linux" || runtime.GOARCH != "arm64" || err != nil ||
+		account.Username != profile.Account || os.Geteuid() == 0 {
+		return errors.New("initialization requires the prepared native ARM64 account")
 	}
-	metadata, err := os.ReadFile("/etc/sage-lantern/unit.env")
-	if err != nil || len(metadata) > 16384 || strings.Count(string(metadata), "UNIT_ID=") != 1 ||
-		!strings.Contains("\n"+string(metadata), "\nUNIT_ID="+args[1]+"\n") {
-		return errors.New("prepared unit binding mismatch")
+	if bindErr := profile.verifyUnitBinding(unit); bindErr != nil {
+		return bindErr
 	}
+	// LoadConfig re-reads the active profile to enforce the private-listener
+	// policy. Pin it to the profile this invocation was authorized against so
+	// the two can never disagree. The command exits after initializing, so this
+	// process-wide binding cannot outlive the check it protects.
+	provisioningProfilePath = profilePath
 	cfg, err := LoadConfig()
 	if err != nil {
 		return err
 	}
-	if pathErr := freshLanternPaths(lanternHome, cfg); pathErr != nil {
+	if pathErr := freshPersonalPaths(profile, cfg); pathErr != nil {
 		return pathErr
 	}
-	lock, err := acquireInstanceLock(lanternHome)
+	lock, err := acquireInstanceLock(profile.Home)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = lock.Close() }()
-	result, err := initializeFreshLantern(lanternHome, cfg, initCometBFTConfigWithBootstrap, func(path string) (string, error) {
+	result, err := initializeFreshPersonalSage(profile, cfg, initCometBFTConfigWithBootstrap, func(path string) (string, error) {
 		key, keyErr := loadOrGenerateKey(path)
 		if keyErr != nil {
 			return "", keyErr
@@ -136,14 +193,14 @@ func runLanternFreshInit(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := completeFreshLanternInitialization(lanternHome, cfg, result); err != nil {
+	if err := completeFreshPersonalInitialization(profile, cfg, result); err != nil {
 		return err
 	}
-	result["unit_id"] = args[1]
+	result["unit_id"] = unit
 	return json.NewEncoder(os.Stdout).Encode(result)
 }
 
-func completeFreshLanternInitialization(home string, cfg *Config, result map[string]any) error {
+func completeFreshPersonalInitialization(profile *provisioningProfile, cfg *Config, result map[string]any) error {
 	if err := preflightExistingVendoredGenesis(filepath.Join(cfg.DataDir, "cometbft"), cfg); err != nil {
 		return errors.New("generated genesis verification failed; preserve partial state")
 	}
@@ -166,10 +223,10 @@ func completeFreshLanternInitialization(home string, cfg *Config, result map[str
 	}
 	result["chain_id"] = chainID
 	result["local_enrollment_committed"] = false
-	return writeFreshLanternMarkers(home)
+	return writeFreshPersonalMarkers(profile.Home)
 }
 
-func writeFreshLanternMarkers(home string) error {
+func writeFreshPersonalMarkers(home string) error {
 	if strings.TrimSpace(version) != version || version == "" || strings.ContainsAny(version, "\r\n") || ConsensusForkVersion <= 0 {
 		return errors.New("invalid initialization lineage metadata")
 	}

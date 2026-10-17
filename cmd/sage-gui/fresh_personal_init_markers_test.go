@@ -12,41 +12,27 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func markerInitFixture(t *testing.T) (string, *Config) {
+func markerInitFixture(t *testing.T) (*provisioningProfile, *Config) {
 	t.Helper()
-	base, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	home := filepath.Join(base, "sage-personal")
-	for _, path := range []string{home, filepath.Join(base, "identity")} {
-		if err := os.Mkdir(path, 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Setenv("SAGE_HOME", home)
-	cfg := DefaultConfig(home)
+	profile, cfg := personalInitFixture(t)
+	t.Setenv("SAGE_HOME", profile.Home)
 	cfg.Quorum.TLSAddr = "127.0.0.1:8443"
-	cfg.VendoredAgentBootstrap = &VendoredAgentBootstrapConfig{
-		AgentKeyFile: filepath.Join(base, "identity", "lantern-agent.key"),
-		HomeDomain:   "private-fixture", Clearance: 1,
-	}
 	raw, err := yaml.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, "config.yaml"), raw, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(profile.Home, "config.yaml"), raw, 0600); err != nil {
 		t.Fatal(err)
 	}
 	prior := version
-	version = "lantern-local.marker-regression-v27"
+	version = "companion-local.marker-regression-v27"
 	t.Cleanup(func() { version = prior })
-	return home, cfg
+	return profile, cfg
 }
 
-func realMarkerInitialization(t *testing.T, home string, cfg *Config) map[string]any {
+func realMarkerInitialization(t *testing.T, profile *provisioningProfile, cfg *Config) map[string]any {
 	t.Helper()
-	result, err := initializeFreshLantern(home, cfg, initCometBFTConfigWithBootstrap, func(path string) (string, error) {
+	result, err := initializeFreshPersonalSage(profile, cfg, initCometBFTConfigWithBootstrap, func(path string) (string, error) {
 		key, err := loadOrGenerateKey(path)
 		if err != nil {
 			return "", err
@@ -68,14 +54,15 @@ func assertNoInitMarkers(t *testing.T, home string) {
 	}
 }
 
-func TestFreshLanternReleaseInitializationMigration(t *testing.T) {
-	home, cfg := markerInitFixture(t)
-	result := realMarkerInitialization(t, home, cfg)
+func TestFreshPersonalReleaseInitializationMigration(t *testing.T) {
+	profile, cfg := markerInitFixture(t)
+	home := profile.Home
+	result := realMarkerInitialization(t, profile, cfg)
 	assertNoInitMarkers(t, home)
 	comet := filepath.Join(cfg.DataDir, "cometbft")
 	preserved := map[string][]byte{}
 	for _, path := range []string{cfg.AgentKey, cfg.VendoredAgentBootstrap.AgentKeyFile,
-		filepath.Join(filepath.Dir(home), "identity", "lantern-public.key"),
+		filepath.Join(profile.IdentityDir, profile.PublicKeyFile),
 		filepath.Join(comet, "config", "genesis.json"),
 		filepath.Join(comet, "config", "priv_validator_key.json"),
 		filepath.Join(comet, "config", "node_key.json"),
@@ -90,7 +77,7 @@ func TestFreshLanternReleaseInitializationMigration(t *testing.T) {
 		t.Fatalf("markerless existing genesis must still refuse: %v", err)
 	}
 	assertNoInitMarkers(t, home)
-	if err := completeFreshLanternInitialization(home, cfg, result); err != nil {
+	if err := completeFreshPersonalInitialization(profile, cfg, result); err != nil {
 		t.Fatal(err)
 	}
 	for name, expected := range map[string]string{versionFile: version + "\n", forkVersionFile: "1\n"} {
@@ -130,17 +117,18 @@ func TestFreshLanternReleaseInitializationMigration(t *testing.T) {
 			t.Fatal("completion created runtime store")
 		}
 	}
-	if err := completeFreshLanternInitialization(home, cfg, result); err == nil {
+	if err := completeFreshPersonalInitialization(profile, cfg, result); err == nil {
 		t.Fatal("repeated completion accepted")
 	}
 }
 
-func TestFreshLanternMarkersNeverOverwrite(t *testing.T) {
+func TestFreshPersonalMarkersNeverOverwrite(t *testing.T) {
 	for _, name := range []string{versionFile, forkVersionFile} {
 		for _, kind := range []string{"valid", "malformed", "symlink", "directory"} {
 			t.Run(name+"/"+kind, func(t *testing.T) {
-				home, cfg := markerInitFixture(t)
-				result := realMarkerInitialization(t, home, cfg)
+				profile, cfg := markerInitFixture(t)
+				home := profile.Home
+				result := realMarkerInitialization(t, profile, cfg)
 				path := filepath.Join(home, name)
 				raw := []byte("1\n")
 				var err error
@@ -159,7 +147,7 @@ func TestFreshLanternMarkersNeverOverwrite(t *testing.T) {
 					t.Fatal(err)
 				}
 				before, _ := os.Lstat(path)
-				if err := completeFreshLanternInitialization(home, cfg, result); err == nil {
+				if err := completeFreshPersonalInitialization(profile, cfg, result); err == nil {
 					t.Fatal("existing marker accepted")
 				}
 				after, err := os.Lstat(path)
@@ -179,7 +167,7 @@ func TestFreshLanternMarkersNeverOverwrite(t *testing.T) {
 				if _, err := os.Lstat(filepath.Join(home, other)); !os.IsNotExist(err) {
 					t.Fatal("created another marker despite conflict")
 				}
-				if _, err := os.Stat(filepath.Join(home, "lantern-initialization-started")); err != nil {
+				if _, err := os.Stat(filepath.Join(home, profile.ClaimFile)); err != nil {
 					t.Fatal("partial claim lost")
 				}
 			})
@@ -187,20 +175,21 @@ func TestFreshLanternMarkersNeverOverwrite(t *testing.T) {
 	}
 }
 
-func TestFreshLanternFailedInitializationHasNoMarkers(t *testing.T) {
+func TestFreshPersonalFailedInitializationHasNoMarkers(t *testing.T) {
 	for _, failure := range []string{"initializer", "public-identity", "genesis", "root-key", "chain-id", "duplicate-identity"} {
 		t.Run(failure, func(t *testing.T) {
-			home, cfg := markerInitFixture(t)
+			profile, cfg := markerInitFixture(t)
+			home := profile.Home
 			if failure == "initializer" || failure == "public-identity" {
 				initialize := initCometBFTConfigWithBootstrap
 				if failure == "initializer" {
 					initialize = func(string, string, *VendoredAgentBootstrapConfig) error { return errors.New("injected") }
 				}
-				if _, err := initializeFreshLantern(home, cfg, initialize, func(string) (string, error) { return "", errors.New("injected") }); err == nil {
+				if _, err := initializeFreshPersonalSage(profile, cfg, initialize, func(string) (string, error) { return "", errors.New("injected") }); err == nil {
 					t.Fatal("failed initializer accepted")
 				}
 			} else {
-				result := realMarkerInitialization(t, home, cfg)
+				result := realMarkerInitialization(t, profile, cfg)
 				switch failure {
 				case "genesis":
 					if err := os.WriteFile(filepath.Join(cfg.DataDir, "cometbft", "config", "genesis.json"), []byte("invalid"), 0600); err != nil {
@@ -219,27 +208,28 @@ func TestFreshLanternFailedInitializationHasNoMarkers(t *testing.T) {
 					}
 					result["public_agent_id"] = hex.EncodeToString(ed25519.NewKeyFromSeed(seed)[32:])
 				}
-				if err := completeFreshLanternInitialization(home, cfg, result); err == nil {
+				if err := completeFreshPersonalInitialization(profile, cfg, result); err == nil {
 					t.Fatal("failed verification accepted")
 				}
 			}
 			assertNoInitMarkers(t, home)
-			if _, err := os.Stat(filepath.Join(home, "lantern-initialization-started")); err != nil {
+			if _, err := os.Stat(filepath.Join(home, profile.ClaimFile)); err != nil {
 				t.Fatal("partial claim lost")
 			}
 		})
 	}
 }
 
-func TestFreshLanternPreexistingMarkersRefuseBeforeGenerating(t *testing.T) {
+func TestFreshPersonalPreexistingMarkersRefuseBeforeGenerating(t *testing.T) {
 	for _, name := range []string{versionFile, forkVersionFile} {
 		t.Run(name, func(t *testing.T) {
-			home, cfg := markerInitFixture(t)
+			profile, cfg := markerInitFixture(t)
+			home := profile.Home
 			path := filepath.Join(home, name)
 			if err := os.WriteFile(path, []byte("unreviewed\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			_, err := initializeFreshLantern(home, cfg,
+			_, err := initializeFreshPersonalSage(profile, cfg,
 				func(string, string, *VendoredAgentBootstrapConfig) error {
 					t.Fatal("preexisting lineage reached key/genesis generation")
 					return nil
@@ -250,7 +240,7 @@ func TestFreshLanternPreexistingMarkersRefuseBeforeGenerating(t *testing.T) {
 			if err == nil {
 				t.Fatal("preexisting marker accepted")
 			}
-			if _, err := os.Lstat(filepath.Join(home, "lantern-initialization-started")); !os.IsNotExist(err) {
+			if _, err := os.Lstat(filepath.Join(home, profile.ClaimFile)); !os.IsNotExist(err) {
 				t.Fatal("claimed an existing origin")
 			}
 			actual, err := os.ReadFile(path)

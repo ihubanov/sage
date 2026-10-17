@@ -70,7 +70,7 @@ func validateSimpleCommandArgs(args []string) error {
 		return nil
 	}
 	switch args[0] {
-	case "serve", "setup", "status", "version", "cert-status", "check-lantern-private-config":
+	case "serve", "setup", "status", "version", "cert-status", "check-private-config":
 		return fmt.Errorf("unknown argument %q for %s (see: sage-gui %s --help)", args[1], args[0], args[0])
 	case "mcp":
 		if args[1] == "install" {

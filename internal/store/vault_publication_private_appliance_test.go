@@ -18,7 +18,7 @@ func publicationTestVault(t *testing.T) *vault.Vault {
 	return active
 }
 
-func TestLanternVaultPublicationLatchesExpectedAndGeneration(t *testing.T) {
+func TestPrivateApplianceVaultPublicationLatchesExpectedAndGeneration(t *testing.T) {
 	projection := &SQLiteStore{vaultGeneration: &atomic.Uint64{}}
 	active := publicationTestVault(t)
 	initial := projection.MessageStorageStatus()
@@ -54,7 +54,7 @@ func TestLanternVaultPublicationLatchesExpectedAndGeneration(t *testing.T) {
 	}
 }
 
-func TestLanternVaultPublicationSnapshotIsAtomic(t *testing.T) {
+func TestPrivateApplianceVaultPublicationSnapshotIsAtomic(t *testing.T) {
 	projection := &SQLiteStore{vaultGeneration: &atomic.Uint64{}}
 	active := publicationTestVault(t)
 	var invalid atomic.Bool

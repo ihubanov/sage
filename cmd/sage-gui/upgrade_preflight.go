@@ -400,6 +400,7 @@ func maybeAuditPublicMemoryCorpus(
 	if ceiling < appV28AuditFloor || reached >= ceiling {
 		return nil, nil
 	}
+	fmt.Println("Scanning the PUBLIC memory corpus (read-only; this can take minutes on a large node)…")
 	return inspectPublicMemoryCorpus(bs, 50)
 }
 

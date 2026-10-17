@@ -45,6 +45,7 @@ func runUpgradePublicMemoryAudit(args []string) error {
 	}
 	defer func() { _ = bs.CloseBadger() }()
 
+	fmt.Println("Scanning the PUBLIC memory corpus (read-only; this can take minutes on a large node)…")
 	audit, err := inspectPublicMemoryCorpus(bs, *limit)
 	if err != nil {
 		return err

@@ -97,7 +97,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.24`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.25`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -314,7 +314,21 @@ uses re-enrollment; historical memory authorship is preserved.
 ---
 
 <details>
-<summary>Recent release notes (v11.23.24 and earlier)</summary>
+<summary>Recent release notes (v11.23.25 and earlier)</summary>
+
+## What's New in v11.23.25
+
+**Unscoped recall works again on a mature node.** An app-v23 node refuses a ranked recall whose candidate set exceeds its authorization scan budget rather than ranking an arbitrary prefix. On a node with a large corpus that made a domainless `sage_recall` fail permanently — the tool's default shape. Recall now falls back once to your governed home domain and reports the effective scope in `domain`, `recall_scope` and `recall_scope_note`, so an empty home-domain result is never read as proof the memory does not exist elsewhere. An explicitly scoped recall is never redirected.
+
+**Federated recall is bounded, and says why it is empty.** `/v1/federation/recall-plan` now carries a server-side deadline with a per-peer budget, so one unreachable peer can no longer hold the request open until the caller gives up. An empty plan reports `unavailable_reason` — `no_active_agreement`, `requested_chains_not_connected`, `peer_unreachable`, `domain_not_shared`, `planner_unavailable` or `federation_unavailable` — instead of an empty error map that read as an authorization verdict. The reasons are aggregate by design and never name a peer.
+
+**Federated agents appear inside their Access Group.** A federated agent linked to a local Access Group is now shown with the local members, with its authority stated. Federated write remains unavailable: it requires a consensus-bound federation ingress capability.
+
+**Product-specific bootstrap policy leaves core.** A root-owned provisioning profile now drives `init-fresh-personal-sage` and `check-private-config`. SAGE core no longer carries any one product's home path, Unix account, or unit list. Products that shipped `init-lantern-private` must ship the profile and update their scripts before pinning this release.
+
+App-v28 remains active and no chain migration is required.
+
+Container: `ghcr.io/l33tdawg/sage:11.23.25`. SDK 11.23.25.
 
 ## What's New in v11.23.24
 

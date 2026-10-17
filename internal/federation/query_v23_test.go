@@ -30,6 +30,16 @@ func (f v23GuestStoreFake) ListFederatedGroupGuests(context.Context, string, str
 	return append([]store.FederatedGroupGuest(nil), f.guests...), nil
 }
 
+func (f v23GuestStoreFake) ListFederatedGroupGuestsForGroup(_ context.Context, groupID string) ([]store.FederatedGroupGuest, error) {
+	out := make([]store.FederatedGroupGuest, 0, len(f.guests))
+	for _, guest := range f.guests {
+		if guest.GroupID == groupID {
+			out = append(out, guest)
+		}
+	}
+	return out, nil
+}
+
 type v23GroupResolverFake map[string]map[string]bool
 
 func (f v23GroupResolverFake) FederatedGuestGroupAllowsDomain(_ context.Context, groupID, domain string) (bool, error) {

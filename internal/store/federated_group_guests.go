@@ -494,6 +494,54 @@ func (s *SQLiteStore) ListFederatedGroupGuests(ctx context.Context, remoteChainI
 	return out, rows.Err()
 }
 
+// MaxFederatedGuestsPerGroup bounds one group's federated member projection. It
+// matches the local Access Group member ceiling, so a group can never hold more
+// federated links than it could hold local members.
+const MaxFederatedGuestsPerGroup = 64
+
+// ListFederatedGroupGuestsForGroup returns every non-revoked signed link that
+// references one local Access Group, across all remote identities.
+//
+// This exists so a federated agent is visible where its group is visible, rather
+// than only inside a separate per-identity inventory. The links are still
+// node-local capability records, not consensus membership: callers must check
+// state, current agreement binding, signer, classification ceiling, and the live
+// local group resolver before treating any of them as authority.
+func (s *SQLiteStore) ListFederatedGroupGuestsForGroup(ctx context.Context, groupID string) ([]FederatedGroupGuest, error) {
+	rows, err := s.conn.QueryContext(ctx, `
+		SELECT group_id, remote_chain_id, remote_agent_id, agreement_binding_digest,
+			max_classification, revision, state, authorized_by,
+			authority_kind, authority_root_generation, authority_role_revision,
+			authority_enrollment_revision, signature
+		FROM federated_group_guest
+		WHERE group_id=? AND state<>?
+		ORDER BY remote_chain_id, remote_agent_id
+		LIMIT ?`, groupID, FederatedGuestStateRevoked, MaxFederatedGuestsPerGroup+1)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []FederatedGroupGuest
+	for rows.Next() {
+		var g FederatedGroupGuest
+		if err := rows.Scan(&g.GroupID, &g.RemoteChainID, &g.RemoteAgentID,
+			&g.AgreementBindingDigest, &g.MaxClassification, &g.Revision,
+			&g.State, &g.AuthorizedBy, &g.AuthorityKind,
+			&g.AuthorityRootGeneration, &g.AuthorityRoleRevision,
+			&g.AuthorityEnrollmentRevision, &g.Signature); err != nil {
+			return nil, err
+		}
+		if err := validateFederatedGroupGuest(g); err != nil {
+			return nil, fmt.Errorf("stored federated guest is invalid: %w", err)
+		}
+		out = append(out, g)
+		if len(out) > MaxFederatedGuestsPerGroup {
+			return nil, fmt.Errorf("stored federated guest member limit %d exceeded", MaxFederatedGuestsPerGroup)
+		}
+	}
+	return out, rows.Err()
+}
+
 // ListFederatedGuestIdentities returns a bounded distinct inventory of exact
 // foreign principals which already have a live local Linked-reader record.
 // Callers must still enforce current local Admin authority, active agreement

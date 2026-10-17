@@ -2037,3 +2037,48 @@ func mustFederatedGuestSigningBytes(t *testing.T, guest store.FederatedGroupGues
 	require.NoError(t, err)
 	return body
 }
+
+// TestAppV23AccessStateAlwaysProjectsFederatedGroupFields pins the additive wire
+// contract the CEREBRUM group card relies on. Every group carries
+// federated_members as an ARRAY (never null — a null reads as length/map on the
+// client and leaves the previous render on screen) and states the authority
+// those members hold. That authority is a constant "read" because federated
+// Write is disabled at the policy layer; the projection must not imply
+// otherwise even when no federation driver is present.
+func TestAppV23AccessStateAlwaysProjectsFederatedGroupFields(t *testing.T) {
+	fixture := newAppV23AccessFixture(t)
+	require.NoError(t, fixture.badger.MutateAppV23AccessGroup(
+		fixture.rootID, "local-team", "Local team", []string{fixture.agentID}, 0, false, 2,
+	))
+	sqlStore, err := store.NewSQLiteStore(context.Background(), filepath.Join(t.TempDir(), "sage.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, sqlStore.Close()) })
+	for _, agent := range []*store.AgentEntry{
+		{AgentID: fixture.rootID, Name: "CEREBRUM", Role: "admin", Status: "active", Clearance: 4},
+		{AgentID: fixture.agentID, Name: "Mynah", Role: "member", Status: "active", Clearance: 1},
+	} {
+		require.NoError(t, sqlStore.CreateAgent(context.Background(), agent))
+	}
+	h := appV23AccessTestHandler(fixture, "", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/dashboard/network/access", nil)
+	rec := httptest.NewRecorder()
+	h.handleAppV23AccessState(sqlStore).ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var response struct {
+		Groups []struct {
+			GroupID            string            `json:"group_id"`
+			FederatedMembers   []json.RawMessage `json:"federated_members"`
+			FederatedAuthority string            `json:"federated_authority"`
+		} `json:"groups"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
+	require.NotEmpty(t, response.Groups)
+	for _, group := range response.Groups {
+		assert.NotNil(t, group.FederatedMembers,
+			"group %q must project federated_members as an array, never null", group.GroupID)
+		assert.Empty(t, group.FederatedMembers)
+		assert.Equal(t, "read", group.FederatedAuthority,
+			"federated members hold read authority only; federated write is not available")
+	}
+}

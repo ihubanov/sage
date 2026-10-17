@@ -7143,6 +7143,26 @@ input[type="range"]::-moz-range-thumb {
     border-style: dashed;
     color: var(--primary);
 }
+/* Federated group members are node-local read-only links, never consensus
+   membership. The dashed cyan border matches the existing federated pill so the
+   two surfaces read as one concept, and a stale/rebind-required link is muted
+   rather than hidden — an operator should see that the link exists but grants
+   nothing right now. */
+.v23-member-chip.federated {
+    border-color: rgba(6, 182, 212, .55);
+    border-style: dashed;
+    color: var(--primary);
+}
+.v23-member-chip.federated.stale {
+    border-color: var(--border);
+    color: var(--text-dim);
+    opacity: .65;
+}
+.v23-federated-authority small {
+    color: var(--text-dim);
+    display: block;
+    margin-top: 4px;
+}
 .v23-agent-pill em,
 .v23-member-chip em {
     color: var(--text-muted);

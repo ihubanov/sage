@@ -860,6 +860,87 @@ func (m *Manager) ListFederatedGuestLinks(
 	return out, nil
 }
 
+// ListFederatedGroupMembers returns the federated guest links attached to one
+// local Access Group, so an operator sees a federated agent where its group is
+// shown instead of only inside a separate per-identity inventory.
+//
+// The authority these links carry is READ ONLY, and that is a statement about
+// the tree, not a limitation of this projection: federated Write is deliberately
+// disabled (store.ErrPeerRBACWriteCapabilityUnavailable — a remote write needs a
+// consensus-bound ingress capability). Reporting any higher authority here would
+// advertise something no code path honours.
+func (m *Manager) ListFederatedGroupMembers(
+	ctx context.Context,
+	callerID, groupID string,
+) ([]FederatedGuestLinkView, error) {
+	if m.federatedGuestStore == nil || m.badger == nil {
+		return nil, errors.New("federated guest store is unavailable")
+	}
+	groupID = strings.TrimSpace(groupID)
+	if groupID == "" {
+		return nil, errors.New("an exact group id is required")
+	}
+	unlockAgreement := m.LockAgreementMutation()
+	defer unlockAgreement()
+	ss := m.syncStore()
+	if ss == nil {
+		return nil, errors.New("federated guest control requires SQLite")
+	}
+	unlockPolicy := ss.LockSyncPolicyRead()
+	defer unlockPolicy()
+	unlockBadger := m.badger.LockDomainOwnershipRead()
+	defer unlockBadger()
+	if !m.localAdminSignerActive(callerID) {
+		return nil, errors.New("current local Admin or root credential is required")
+	}
+	guests, err := m.federatedGuestStore.ListFederatedGroupGuestsForGroup(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	// One binding digest per remote chain, not per link: a group can hold links
+	// from several peers and re-deriving the digest for each would repeat the
+	// same work under the agreement lock.
+	digests := make(map[string]string, 1)
+	out := make([]FederatedGuestLinkView, 0, len(guests))
+	for _, guest := range guests {
+		digest, known := digests[guest.RemoteChainID]
+		if !known {
+			digest = m.groupMemberBindingDigest(ctx, guest.RemoteChainID)
+			digests[guest.RemoteChainID] = digest
+		}
+		// An unprovable digest (peer removed, agreement rotated) must read as
+		// rebind-required rather than current. Failing open here would present a
+		// stale link as live authority.
+		current := digest != "" && guest.AgreementBindingDigest == digest
+		state := guest.State
+		if !current && state != store.FederatedGuestStateRevoked {
+			state = store.FederatedGuestStateRebindRequired
+		}
+		out = append(out, FederatedGuestLinkView{
+			Guest: guest, EffectiveState: state, BindingCurrent: current,
+		})
+	}
+	return out, nil
+}
+
+// groupMemberBindingDigest returns the current agreement binding digest for one
+// remote chain, or "" when it cannot be proven.
+func (m *Manager) groupMemberBindingDigest(ctx context.Context, remoteChainID string) string {
+	agreement, err := m.ActiveAgreement(remoteChainID)
+	if err != nil {
+		return ""
+	}
+	peerAgentID, err := m.ResolvePeerOperatorAgentID(ctx, remoteChainID)
+	if err != nil {
+		return ""
+	}
+	digest, err := m.agreementBindingDigestV23(ctx, agreement, peerAgentID)
+	if err != nil {
+		return ""
+	}
+	return digest
+}
+
 // ListFederatedGuestIdentities returns existing exact Linked-reader principals
 // from local durable rows. New rows can enter this inventory only through the
 // live target verification above; the JOIN peer operator key is never used.

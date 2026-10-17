@@ -19,6 +19,10 @@ import (
 // infer consensus-local membership.
 type FederatedGuestStore interface {
 	ListFederatedGroupGuests(ctx context.Context, remoteChainID, remoteAgentID string) ([]store.FederatedGroupGuest, error)
+	// ListFederatedGroupGuestsForGroup backs the group projection: a federated
+	// agent should appear where its group appears, not only in a per-identity
+	// inventory.
+	ListFederatedGroupGuestsForGroup(ctx context.Context, groupID string) ([]store.FederatedGroupGuest, error)
 }
 
 type FederatedQueryChallengeStore interface {

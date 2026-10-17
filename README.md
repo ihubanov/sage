@@ -97,7 +97,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.25`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.26`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -314,7 +314,17 @@ uses re-enrollment; historical memory authorship is preserved.
 ---
 
 <details>
-<summary>Recent release notes (v11.23.25 and earlier)</summary>
+<summary>Recent release notes (v11.23.26 and earlier)</summary>
+
+## What's New in v11.23.26
+
+**App-v28 activation now succeeds on legacy public corpora.** The public-memory stage is built before the activation block's consensus transaction, so a record it could not encode aborted the activation on every replay and left the pending plan with no in-band downgrade. Records born before app-v25 whose canonical envelope lacks a domain, author, or author principal, carries a non-32-byte content hash, or carries a co-commit tombstone are now quarantined out of the committed public set instead of refusing the build. Records born under app-v25 or later still fail closed, and a recorded-but-empty or malformed field still refuses on every record. A record returns to the public set in the block that re-anchors its envelope.
+
+**Preflight now checks the corpus before the fork.** `sage-gui upgrade preflight` runs the same read-only census as `sage-gui upgrade public-memory-audit` when a chain still has to cross app-v28, and refuses "clear to climb" when a record would block activation. The audit names every record, the exact failed checks, and whether the stage would quarantine or refuse it. `--limit` bounds the printed list; the counters still cover the whole corpus.
+
+**Quarantined records are visible, not silent.** The audit reports them by memory id, and they stay outside the app-v28 public-memory tree until re-anchored. No chain migration is required; app-v28 remains active.
+
+Container: `ghcr.io/l33tdawg/sage:11.23.26`. SDK 11.23.26.
 
 ## What's New in v11.23.25
 

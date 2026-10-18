@@ -136,6 +136,7 @@ type conversationState struct {
 	inceptionChecked     bool
 	autoInceptionMsg     string
 	lastUsed             time.Time
+	startedAt            time.Time
 	claimantSessionID    string
 	claimantIdentityMode string
 	claimantIdentityErr  error
@@ -163,6 +164,11 @@ func withClaimantDurableScope(ctx context.Context, scope string) context.Context
 	return context.WithValue(ctx, claimantDurableScopeContextKey{}, scope)
 }
 
+func claimantDurableScopeFromContext(ctx context.Context) string {
+	scope, _ := ctx.Value(claimantDurableScopeContextKey{}).(string)
+	return strings.TrimSpace(scope)
+}
+
 func (s *Server) conversation(ctx context.Context) *conversationState {
 	id, _ := ctx.Value(conversationIDContextKey{}).(string)
 	if id == "" {
@@ -178,7 +184,12 @@ func (s *Server) conversation(ctx context.Context) *conversationState {
 }
 
 func (s *Server) newConversationStateLocked(ctx context.Context, id string, now time.Time) *conversationState {
-	state := &conversationState{lastUsed: now, claimantSessionID: newMCPClaimantSessionID(), claimantIdentityMode: "ephemeral"}
+	state := &conversationState{
+		lastUsed:             now,
+		startedAt:            now,
+		claimantSessionID:    newMCPClaimantSessionID(),
+		claimantIdentityMode: "ephemeral",
+	}
 	if id == "stdio" {
 		if inherited := trustedHandoffClaimantSessionID(); inherited != "" {
 			state.claimantSessionID = inherited
@@ -355,6 +366,22 @@ func (s *Server) claimantIdentityStatus(ctx context.Context) (string, string) {
 		return state.claimantIdentityMode, state.claimantIdentityErr.Error()
 	}
 	return state.claimantIdentityMode, ""
+}
+
+// conversationStartedAt reports when this MCP conversation state was created.
+// It is a local diagnostic for the current session, not a cross-process
+// presence or liveness signal.
+func (s *Server) conversationStartedAt(ctx context.Context) time.Time {
+	id, _ := ctx.Value(conversationIDContextKey{}).(string)
+	if id == "" {
+		id = "stdio"
+	}
+	s.conversationMu.Lock()
+	defer s.conversationMu.Unlock()
+	if state := s.conversations[id]; state != nil {
+		return state.startedAt
+	}
+	return time.Time{}
 }
 
 // ForgetConversation releases state for a transport session that has closed.

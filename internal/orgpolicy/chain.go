@@ -90,12 +90,12 @@ func Admit(prev AcceptedState, p *Policy, authorizedPub ed25519.PublicKey) (Acce
 // never raw bytes. The caller maps this onto the operator-notice store and the
 // Cerebrum SSE event.
 type EquivocationNotice struct {
-	OrgID         string `json:"org_id"`
-	Revision      uint64 `json:"revision"`
+	OrgID          string `json:"org_id"`
+	Revision       uint64 `json:"revision"`
 	AcceptedDigest string `json:"accepted_digest"`
 	ConflictDigest string `json:"conflict_digest"`
-	IssuerKeyID   string `json:"issuer_key_id"`
-	KeyEpoch      string `json:"key_epoch"`
+	IssuerKeyID    string `json:"issuer_key_id"`
+	KeyEpoch       string `json:"key_epoch"`
 }
 
 // NewEquivocationNotice builds the notice for a conflicting policy p against the

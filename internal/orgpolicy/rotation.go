@@ -22,12 +22,12 @@ const rotationDomainSep = "sage-org-policy-rotation-v1\x00"
 type RotationAttestation struct {
 	Schema       string `json:"schema"`
 	OrgID        string `json:"org_id"`
-	FromKeyID    string `json:"from_key_id"`    // hex ed25519 pub of the signer (binds + verifies this attestation)
-	ToKeyID      string `json:"to_key_id"`      // hex ed25519 pub of the successor
-	NewKeyEpoch  string `json:"new_key_epoch"`  // epoch token the successor's policies carry
-	NotBefore    int64  `json:"not_before"`     // unix seconds; successor authorized from here
-	OverlapUntil int64  `json:"overlap_until"`  // unix seconds; From key honored until here (0 == no overlap)
-	Sig          string `json:"sig"`            // hex ed25519 by the From key over canonicalBytes()
+	FromKeyID    string `json:"from_key_id"`   // hex ed25519 pub of the signer (binds + verifies this attestation)
+	ToKeyID      string `json:"to_key_id"`     // hex ed25519 pub of the successor
+	NewKeyEpoch  string `json:"new_key_epoch"` // epoch token the successor's policies carry
+	NotBefore    int64  `json:"not_before"`    // unix seconds; successor authorized from here
+	OverlapUntil int64  `json:"overlap_until"` // unix seconds; From key honored until here (0 == no overlap)
+	Sig          string `json:"sig"`           // hex ed25519 by the From key over canonicalBytes()
 }
 
 func (a *RotationAttestation) canonicalBytes() []byte {

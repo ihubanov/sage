@@ -84,7 +84,7 @@ type Policy struct {
 	Schema      string  `json:"schema"`
 	OrgID       string  `json:"org_id"`
 	Scope       string  `json:"scope"`
-	Revision    uint64  `json:"revision"`     // 1-based, monotonic; a node refuses revision < current
+	Revision    uint64  `json:"revision"`      // 1-based, monotonic; a node refuses revision < current
 	IssuerKeyID string  `json:"issuer_key_id"` // hex ed25519 public key of the signer
 	KeyEpoch    string  `json:"key_epoch"`     // orders rotations; authorization is by attestation, not by this value
 	IssuedAt    int64   `json:"issued_at"`     // unix seconds

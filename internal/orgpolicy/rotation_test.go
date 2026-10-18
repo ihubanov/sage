@@ -96,9 +96,9 @@ func TestAuthorizedKeysOverlapWindow(t *testing.T) {
 		now          int64
 		wantA, wantB bool
 	}{
-		{50, true, false},   // before NotBefore: only A
-		{150, true, true},   // inside overlap: both
-		{250, false, true},  // after overlap: only B
+		{50, true, false},  // before NotBefore: only A
+		{150, true, true},  // inside overlap: both
+		{250, false, true}, // after overlap: only B
 	}
 	for _, c := range cases {
 		keys, err := AuthorizedKeys(pub(A), []RotationAttestation{att}, c.now)

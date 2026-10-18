@@ -1,13 +1,16 @@
 # (S)AGE — Sovereign Agent Governed Experience
 
-![SAGE: persistent memory for AI agents, with a lavender neural brain](docs/brand/sage-twitter-cover.png)
+![SAGE: governed memory for AI agents, with a lavender neural brain](docs/brand/sage-twitter-cover.png)
 
-**Stop re-explaining your project.**
+**Memory your agents can be held to.**
 
-SAGE gives AI agents a persistent memory of project decisions, failed approaches
-and useful lessons. Connect your tools to the same local node so authorized
-agents can record experience and recall relevant context in later sessions.
-Inspect what they keep in CEREBRUM, SAGE's local dashboard.
+SAGE is a governed memory and messaging layer for AI agents. Every memory is
+signed by an agent, admitted through a reviewable process, scoped by permissions
+you set, and kept with an audit trail you can inspect.
+
+Connect your tools to the same local node so authorized agents can record
+experience and recall relevant context in later sessions. Inspect what they keep
+in CEREBRUM, SAGE's local dashboard.
 
 Works with Claude Code, Codex, Cursor and other MCP-capable clients. Developers
 can integrate through the Python SDK or signed REST API. Recall depends on what

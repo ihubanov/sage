@@ -18,3 +18,13 @@ Text (verbatim): "SAGE" in large bold clean geometric sans serif, pale lavender-
 Style: premium editorial technology cover, refined cinematic 3D neural sculpture, clear beautiful typography. Preserve the recognizable aesthetic of the supplied artwork.
 Constraints: only those two text elements, exact spelling and punctuation. No new slogan, URL, version number, platform logo, mockup, UI, border, watermark, people or robots. Do not stretch or squash the artwork. Produce a finished 3:1 cover, not a presentation slide.
 
+
+2026-10-17 REFRESH
+Subtitle changed from "Persistent memory for AI agents." to
+"Governed memory for AI agents." to match the live gh-pages site.
+The built-in image generation tool was unavailable, so this refresh is a
+deterministic HTML/CSS composition over the same neural hero artwork and
+sage-wordmark.svg, using Poppins 700/400. Rendered at 3000 x 1000 and
+downscaled to 1500 x 500 with native sips.
+Old master retained at masters/sage-twitter-master.png.
+Refreshed master at masters/sage-twitter-master-20261017.png.

@@ -41,8 +41,8 @@ func acquireDurableClaimantIdentity(agentID, provider, project, transportScope s
 		scopeInput += "\x00" + transportScope
 	}
 	scope := sha256.Sum256([]byte(scopeInput))
-	if err := os.MkdirAll(dir, 0700); err != nil { //nolint:gosec // operator-selected SAGE_HOME, scope leaf is a local hash
-		return "", nil, fmt.Errorf("create claimant identity directory: %w", err)
+	if mkdirErr := os.MkdirAll(dir, 0700); mkdirErr != nil { //nolint:gosec // operator-selected SAGE_HOME, scope leaf is a local hash
+		return "", nil, fmt.Errorf("create claimant identity directory: %w", mkdirErr)
 	}
 	base := hex.EncodeToString(scope[:])
 	lease, acquired, err := tryLockClaimantFile(filepath.Join(dir, base+".lock"))

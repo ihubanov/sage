@@ -239,6 +239,15 @@ func NewServer(cometbftRPC string, memStore store.MemoryStore, scoreStore store.
 		agentStore = as
 	}
 
+	// Type-assert memStore to the org-enrollment token lookup. When the backing
+	// store implements it (the node's *store.SQLiteStore does), the enroll
+	// endpoint goes live automatically; otherwise it stays nil and the handler
+	// reports 503. Tests inject a stub into this field directly.
+	var orgEnrollTokens orgEnrollTokenStore
+	if ts, ok := memStore.(orgEnrollTokenStore); ok {
+		orgEnrollTokens = ts
+	}
+
 	s := &Server{
 		cometbftRPC:                   cometbftRPC,
 		store:                         memStore,
@@ -247,6 +256,7 @@ func NewServer(cometbftRPC string, memStore store.MemoryStore, scoreStore store.
 		accessStore:                   accessStore,
 		orgStore:                      orgStore,
 		agentStore:                    agentStore,
+		orgEnrollTokens:               orgEnrollTokens,
 		health:                        health,
 		logger:                        logger,
 		signingKey:                    signingKey,

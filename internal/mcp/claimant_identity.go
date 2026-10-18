@@ -10,17 +10,19 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 var errDurableClaimantIdentityBusy = errors.New("durable claimant identity is owned by a live concurrent runtime")
 
 type durableClaimantIdentity struct {
-	Version           int    `json:"version"`
-	AgentID           string `json:"agent_id"`
-	Provider          string `json:"provider"`
-	Project           string `json:"project"`
-	TransportScope    string `json:"transport_scope,omitempty"`
-	ClaimantSessionID string `json:"claimant_session_id"`
+	Version           int        `json:"version"`
+	AgentID           string     `json:"agent_id"`
+	Provider          string     `json:"provider"`
+	Project           string     `json:"project"`
+	TransportScope    string     `json:"transport_scope,omitempty"`
+	ClaimantSessionID string     `json:"claimant_session_id"`
+	CreatedAt         *time.Time `json:"created_at,omitempty"`
 }
 
 // acquireDurableClaimantIdentity gives the primary runtime for one stable scope
@@ -30,22 +32,17 @@ type durableClaimantIdentity struct {
 // distinct from storage failure because only a live competitor may safely make
 // this runtime use an independent ephemeral identity.
 func acquireDurableClaimantIdentity(agentID, provider, project, transportScope string) (string, io.Closer, error) {
-	home := strings.TrimSpace(os.Getenv("SAGE_HOME"))
-	if home == "" {
-		userHome, err := os.UserHomeDir()
-		if err != nil {
-			return "", nil, fmt.Errorf("resolve SAGE home for claimant identity: %w", err)
-		}
-		home = filepath.Join(userHome, ".sage")
+	dir, err := claimantIdentityDir()
+	if err != nil {
+		return "", nil, err
 	}
 	scopeInput := agentID + "\x00" + provider + "\x00" + project
 	if transportScope != "" {
 		scopeInput += "\x00" + transportScope
 	}
 	scope := sha256.Sum256([]byte(scopeInput))
-	dir := filepath.Join(home, "runtime", "mcp-claimants")
-	if err := os.MkdirAll(dir, 0700); err != nil { //nolint:gosec // operator-selected SAGE_HOME, scope leaf is a local hash
-		return "", nil, fmt.Errorf("create claimant identity directory: %w", err)
+	if mkdirErr := os.MkdirAll(dir, 0700); mkdirErr != nil { //nolint:gosec // operator-selected SAGE_HOME, scope leaf is a local hash
+		return "", nil, fmt.Errorf("create claimant identity directory: %w", mkdirErr)
 	}
 	base := hex.EncodeToString(scope[:])
 	lease, acquired, err := tryLockClaimantFile(filepath.Join(dir, base+".lock"))
@@ -76,9 +73,10 @@ func acquireDurableClaimantIdentity(agentID, provider, project, transportScope s
 		_ = lease.Close()
 		return "", nil, fmt.Errorf("generate durable claimant identity")
 	}
+	createdAt := time.Now().UTC()
 	record := durableClaimantIdentity{
 		Version: 1, AgentID: agentID, Provider: provider, Project: project,
-		TransportScope: transportScope, ClaimantSessionID: id,
+		TransportScope: transportScope, ClaimantSessionID: id, CreatedAt: &createdAt,
 	}
 	raw, err := json.Marshal(record)
 	if err != nil {

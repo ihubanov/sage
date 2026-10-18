@@ -2,7 +2,7 @@ Reconciled against internal/mcp for SAGE v11.23.26, with the unified agent looku
 
 # SAGE MCP Tools Reference
 
-SAGE advertises exactly 37 MCP tools over JSON-RPC 2.0. Four deprecated
+SAGE advertises exactly 38 MCP tools over JSON-RPC 2.0. Four deprecated
 `sage_pipe*` compatibility names remain callable for one migration window but
 are intentionally absent from `tools/list`, so new clients learn the canonical
 Messages API. Stdio tools sign REST calls with
@@ -1204,6 +1204,59 @@ protocol. Display names such as “Mynah” do not define identity.
 
 ---
 
+### sage_sessions
+
+**Purpose:** Read-only, self-only inventory of this agent's live MCP claimant
+sessions on this SAGE node. Use it when an operator or peer needs to name the
+exact runtime that should act, especially before `sage_message_handoff`. It
+returns the opaque `session_id`, transport kind, provider/project, whether the
+session is the caller's current one, and the exact count of unfinished claims
+held by that session. It never claims, hands off, replies, acknowledges, or
+mutates work.
+
+The scan covers `SAGE_HOME/runtime/mcp-claimants/` for the exact authenticated
+agent ID and is bounded. Liveness comes from the same OS advisory lock that
+claimant identity acquisition uses; a durable identity whose lock is free is
+reported only as `stale_identity_count`, not as a session. A concurrent runtime
+that could not acquire a durable lease keeps an ephemeral session ID and is
+visible only from that session itself; the caller's current session is always
+included. This is not cross-node presence, delivery, read, or reachability
+evidence.
+
+Session IDs are opaque coordination metadata, not authorization principals.
+Calling this tool does not authorize a handover or grant the named session any
+new capability. An operator must still decide which session should act.
+
+| Name | Type | Required | Description |
+|---|---|---:|---|
+| *(none)* | — | — | The tool always enumerates the caller's own identity. |
+
+**Returns:** `agent_id`, `current_session_id`, `current_identity_mode`,
+`sessions[]` with `session_id`, `current`, `transport`, `provider`, `project`,
+`identity_created_at`, `liveness`, `unfinished_claim_count`, and
+`unfinished_claim_count_state`, plus `session_count`, `stale_identity_count`,
+`invalid_identity_count`, `truncated`, `claim_counts_queried`, and
+`claim_counts_truncated`, `live_session_count`, and `unknown_liveness_count`.
+`unfinished_claim_count_state` is `exact` when the node answered the passive
+own-claimed route, `unavailable` when that route failed or is absent, and
+`not_queried` beyond the bounded 20-session count probe.
+`identity_created_at` for older identity records falls back to the identity
+file mtime; it is not a claim of exact process start time.
+`invalid_identity_count` includes unreadable records in the shared local
+identity directory, including records that cannot be attributed to an agent.
+
+**Source:** `internal/mcp/claimant_identity.go`
+(`acquireDurableClaimantIdentity`), `internal/mcp/claimant_sessions.go`
+(`listDurableClaimantIdentities`), and `internal/mcp/tools.go`
+(`toolSessions`). The unfinished-claim count uses the existing passive
+`GET /v1/messages/own-claimed-unfinished` projection with `limit=1`; it does
+not return message content in the tool response.
+
+**REST:** none. This is a local MCP runtime inventory over existing exact-caller
+claim projections.
+
+---
+
 ### sage_message_close
 
 **Purpose:** Close an authorized, reviewed message that needs no answer. This is
@@ -1928,7 +1981,7 @@ Cancellation never retries a mutation or proves that consensus did not commit
 it. Use the normal reconciliation contract for an indeterminate write. EOF and
 installed-runtime handoff drain already-dispatched requests before closing or
 transferring stdout (`Wait`, `internal/mcp/stdio_requests.go:91`;
-`Run`, `internal/mcp/server.go:439`).
+`Run`, `internal/mcp/server.go:466`).
 
 **Stdio client lifetime:** the bridge watches its launch parent when that
 process can be identified. Confirmed parent death cancels the session and
@@ -1937,7 +1990,7 @@ prevents cleanup from finishing, the orphan terminates. A live client may stay
 silent indefinitely; inactivity does not end its session. The guard remains
 active during installed-runtime handoff, so the retained pump also exits when
 its client disappears. Cancellation retains the normal reconciliation
-requirements for an in-flight mutation (`Run`, `internal/mcp/server.go:439`).
+requirements for an in-flight mutation (`Run`, `internal/mcp/server.go:466`).
 An initial Unix parent PID of 0 or 1 is treated conservatively: it may be a
 container or system launcher, so that starting state alone never triggers
 termination.
@@ -2336,6 +2389,10 @@ manually.
 changes only the mutable display name/bio (self-only `AgentUpdate`); the immutable
 registration name from `sage_register` is untouched.
 
+`sage_sessions` - an on-demand, read-only inventory of this agent's own live
+MCP claimant sessions. It is not part of the boot sequence and claims, hands
+off, acknowledges, or mutates nothing.
+
 ---
 
 ## Summary
@@ -2350,7 +2407,7 @@ registration name from `sage_register` is untouched.
 | Browse       | `sage_list`, `sage_timeline`, `sage_status`, `sage_domains` |
 | Tasks        | `sage_task`, `sage_backlog` |
 | Identity     | `sage_register`, `sage_rename`, `sage_directory` |
-| Messages     | `sage_find_agent`, `sage_message_send`, `sage_inbox`, `sage_message_claim`, `sage_message_handoff`, `sage_message_close`, `sage_message_reply`, `sage_message_replies`, `sage_message_status`, `sage_message_history` |
+| Messages     | `sage_find_agent`, `sage_message_send`, `sage_inbox`, `sage_message_claim`, `sage_message_handoff`, `sage_sessions`, `sage_message_close`, `sage_message_reply`, `sage_message_replies`, `sage_message_status`, `sage_message_history` |
 | Governance   | `sage_gov_propose`, `sage_gov_vote`, `sage_gov_status`, `sage_scope_list`, `sage_scope_get` |
 
 Hidden compatibility dispatch (not returned by `tools/list`): `sage_pipe`,

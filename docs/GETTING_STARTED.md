@@ -211,7 +211,7 @@ sage-gui setup
 
 ### 3. Start using it
 
-Just chat normally. SAGE v11.23.26 advertises 37 MCP tools. Use `sage_message_close(message_id, reason)` for reviewed notices that need no answer; closing keeps history and clears future inbox reminders without sending a reply. The core workflow is:
+Just chat normally. SAGE v11.23.26 advertises 38 MCP tools. Use `sage_message_close(message_id, reason)` for reviewed notices that need no answer; closing keeps history and clears future inbox reminders without sending a reply. The core workflow is:
 
 | Tool | What it does |
 |------|-------------|
@@ -235,6 +235,7 @@ Just chat normally. SAGE v11.23.26 advertises 37 MCP tools. Use `sage_message_cl
 | `sage_task_notice_ack` | Acknowledge one reviewed task assignment notice |
 | `sage_message_reply` | Reply to one received message |
 | `sage_message_replies` | Read the replies recipients returned for messages **you** sent |
+| `sage_sessions` | List this agent's own live MCP claimant sessions on this node |
 | `sage_message_status` / `sage_message_history` | Inspect sender-only lifecycle state and retained history |
 
 Governance, quorum-scope, directory, federation, rename, reinstate, and

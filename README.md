@@ -100,7 +100,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.26`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.27`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -317,7 +317,15 @@ uses re-enrollment; historical memory authorship is preserved.
 ---
 
 <details>
-<summary>Recent release notes (v11.23.26 and earlier)</summary>
+<summary>Recent release notes (v11.23.27 and earlier)</summary>
+
+## What's New in v11.23.27
+
+**Find the exact MCP session before a handover.** `sage_sessions` is a new read-only, self-only inventory of this agent's live MCP claimant sessions on the local node. It returns each exact `session_id`, transport kind, provider/project, whether it is the current session, liveness from the same OS advisory lock used by claimant identity acquisition, and the exact count of unfinished claims held by that session. Stale identity records are counted separately and are not presented as live sessions. The tool never claims, hands off, replies, or grants authority; session IDs remain coordination metadata, not authorization principals.
+
+**Access Group controls say what they do.** CEREBRUM's Access Group editor now labels its close and delete actions accurately instead of putting Delete in the conventional close slot.
+
+**No chain migration.** App-v28 remains active. The MCP catalog grows to 38 tools; clients with a cached catalog should re-list or reconnect. Container: `ghcr.io/l33tdawg/sage:11.23.27`. SDK 11.23.27.
 
 ## What's New in v11.23.26
 

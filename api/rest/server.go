@@ -53,10 +53,13 @@ type Server struct {
 	// POST /v1/org/{org_id}/enroll. NewServer wires it when the store implements
 	// the lookup; the handler reports 503 while nil. See org_enroll_handler.go.
 	orgEnrollTokens orgEnrollTokenStore
-	health          *metrics.HealthChecker
-	logger          zerolog.Logger
-	httpServer      *http.Server
-	signingKey      ed25519.PrivateKey // Node-level key for signing on-chain txs
+	// orgPolicyState is the node-local (SQLite, never Badger/AppHash) store for
+	// org enrollment outcomes, accepted policy chains and equivocation notices.
+	orgPolicyState orgPolicyStateStore
+	health         *metrics.HealthChecker
+	logger         zerolog.Logger
+	httpServer     *http.Server
+	signingKey     ed25519.PrivateKey // Node-level key for signing on-chain txs
 	// validatorSigningKeyConfigured is true only when signingKey came from the
 	// live CometBFT priv-validator key (environment or explicit runtime wiring).
 	// The legacy random fallback keeps non-governance embedded/test callers
@@ -247,6 +250,10 @@ func NewServer(cometbftRPC string, memStore store.MemoryStore, scoreStore store.
 	if ts, ok := memStore.(orgEnrollTokenStore); ok {
 		orgEnrollTokens = ts
 	}
+	var orgPolicyState orgPolicyStateStore
+	if ps, ok := memStore.(orgPolicyStateStore); ok {
+		orgPolicyState = ps
+	}
 
 	s := &Server{
 		cometbftRPC:                   cometbftRPC,
@@ -257,6 +264,7 @@ func NewServer(cometbftRPC string, memStore store.MemoryStore, scoreStore store.
 		orgStore:                      orgStore,
 		agentStore:                    agentStore,
 		orgEnrollTokens:               orgEnrollTokens,
+		orgPolicyState:                orgPolicyState,
 		health:                        health,
 		logger:                        logger,
 		signingKey:                    signingKey,

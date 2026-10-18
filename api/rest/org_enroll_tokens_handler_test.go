@@ -45,6 +45,7 @@ func newOrgTokenServer(t *testing.T) *Server {
 		store:           memStore,
 		badgerStore:     bs,
 		orgEnrollTokens: memStore,
+		orgPolicyState:  memStore,
 		logger:          zerolog.Nop(),
 	}
 }

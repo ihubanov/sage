@@ -13,12 +13,15 @@ package rest
 // request converges: a fresh commit in the first case, a verbatim replay in the
 // second, and a refusal for any other identity in both.
 //
-// Scope: this proves process-crash atomicity at every write boundary. Power-loss
-// durability of a committed-but-unsynced write rests on Badger's value-log sync,
-// which SetStatesAtomic performs before reporting success.
+// The state lives in the node's SQLite store (WAL, synchronous=FULL), whose
+// SetOrgPolicyStatesAtomic fires the same four hook stages; with
+// synchronous=FULL the commit is fsynced, so after_atomic_commit and after_sync
+// coincide. Scope: this proves process-crash atomicity at every write boundary;
+// power-loss durability of a committed write rests on SQLite's FULL sync.
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
@@ -81,8 +84,8 @@ func newEnrollCrashFixture(t *testing.T) enrollCrashFixture {
 	}
 }
 
-func (f enrollCrashFixture) enroll(bs *store.BadgerStore, callerHex string) *httptest.ResponseRecorder {
-	s := &Server{badgerStore: bs, orgEnrollTokens: f.tokens, logger: zerolog.Nop()}
+func (f enrollCrashFixture) enroll(sq *store.SQLiteStore, callerHex string) *httptest.ResponseRecorder {
+	s := &Server{orgPolicyState: sq, orgEnrollTokens: f.tokens, logger: zerolog.Nop()}
 	rr := httptest.NewRecorder()
 	enrollRouterAs(s, callerHex).ServeHTTP(rr, httptest.NewRequest(http.MethodPost,
 		"/v1/org/"+enrollCrashOrgID+"/enroll", bytes.NewReader(f.body)))
@@ -102,7 +105,7 @@ func TestOrgEnrollCrashWorker(t *testing.T) {
 		t.Fatal("enroll crash worker environment is incomplete")
 	}
 
-	bs, err := store.NewBadgerStore(path)
+	sq, err := store.NewSQLiteStore(context.Background(), path)
 	require.NoError(t, err)
 	restore := store.SetAtomicStateWriteFaultHookForTest(func(stage store.AtomicStateWriteStage) error {
 		if stage != target {
@@ -128,7 +131,7 @@ func TestOrgEnrollCrashWorker(t *testing.T) {
 	defer restore()
 
 	f := newEnrollCrashFixture(t)
-	rr := f.enroll(bs, f.nodeHex)
+	rr := f.enroll(sq, f.nodeHex)
 	t.Fatalf("requested crash stage %q did not fire (HTTP %d: %s)", target, rr.Code, rr.Body.String())
 }
 
@@ -146,13 +149,13 @@ func TestOrgEnrollCrashBoundariesReopenAllOrNothingAndRetryConverges(t *testing.
 	for _, tt := range tests {
 		t.Run(string(tt.stage), func(t *testing.T) {
 			root := t.TempDir()
-			badgerPath := filepath.Join(root, "badger")
+			dbPath := filepath.Join(root, "org-policy.db")
 			marker := filepath.Join(root, "crash-ready")
 
 			cmd := exec.Command(os.Args[0], "-test.run=^TestOrgEnrollCrashWorker$", "-test.v")
 			cmd.Env = append(os.Environ(),
 				enrollCrashWorkerEnv+"=1",
-				enrollCrashStoreEnv+"="+badgerPath,
+				enrollCrashStoreEnv+"="+dbPath,
 				enrollCrashMarkerEnv+"="+marker,
 				enrollCrashStageEnv+"="+string(tt.stage),
 			)
@@ -180,10 +183,10 @@ func TestOrgEnrollCrashBoundariesReopenAllOrNothingAndRetryConverges(t *testing.
 			require.NoError(t, cmd.Process.Kill())
 			require.Error(t, cmd.Wait(), "SIGKILLed worker must not exit successfully")
 
-			reopened, err := store.NewBadgerStore(badgerPath)
+			reopened, err := store.NewSQLiteStore(context.Background(), dbPath)
 			require.NoError(t, err)
-			t.Cleanup(func() { _ = reopened.CloseBadger() })
-			ps := orgpolicy.NewStore(badgerKV{bs: reopened})
+			t.Cleanup(func() { _ = reopened.Close() })
+			ps := orgpolicy.NewStore(orgKV{ctx: context.Background(), st: reopened})
 			fx := newEnrollCrashFixture(t)
 
 			// All-or-nothing: the consume marker and the accepted high-water mark

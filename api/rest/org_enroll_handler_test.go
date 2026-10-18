@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -53,16 +54,16 @@ func (s *stubEnrollTokenStore) seed(plaintext string, tok *store.OrgEnrollmentTo
 	s.byDigest[hex.EncodeToString(sum[:])] = tok
 }
 
-// newEnrollServer builds a Server with a real temp BadgerStore (so the orgpolicy
-// accepted-chain writes go through the production single-write path) and the
-// supplied token store.
+// newEnrollServer builds a Server with a real temp SQLite store as the node-local
+// org policy state (so the orgpolicy writes go through the production
+// single-transaction path) and the supplied token store.
 func newEnrollServer(t *testing.T, ts orgEnrollTokenStore) *Server {
 	t.Helper()
-	bs, err := store.NewBadgerStore(t.TempDir())
+	ps, err := store.NewSQLiteStore(context.Background(), filepath.Join(t.TempDir(), "org-policy.db"))
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = bs.CloseBadger() })
+	t.Cleanup(func() { _ = ps.Close() })
 	return &Server{
-		badgerStore:     bs,
+		orgPolicyState:  ps,
 		orgEnrollTokens: ts,
 		logger:          zerolog.Nop(),
 	}
@@ -91,7 +92,7 @@ func signedOrgPolicy(t *testing.T, key ed25519.PrivateKey, orgID, epoch string, 
 		KeyEpoch:  epoch,
 		IssuedAt:  1000,
 		NotBefore: 1000,
-		Expiry:    2000,
+		Expiry:    4102444800, // 2100-01-01: valid against the real clock
 		Payload: orgpolicy.Payload{
 			Judge: orgpolicy.Judge{
 				ModelTag:   "sage-memory-judge:v16",
@@ -159,7 +160,7 @@ func TestOrgEnroll_FirstRedeemCommitsAndDelivers(t *testing.T) {
 
 	// Persisted durably: the outcome and the accepted high-water mark are both
 	// readable straight from the store the handler wrote through.
-	estore := orgpolicy.NewStore(badgerKV{bs: s.badgerStore})
+	estore := s.orgPolicyStore(context.Background())
 	got, ok, err := estore.LoadEnrollment("tok-1")
 	require.NoError(t, err)
 	require.True(t, ok, "enrollment outcome must be durable after first redeem")
@@ -234,7 +235,7 @@ func TestOrgEnroll_WrongSignerPolicyRejectedAndNotPersisted(t *testing.T) {
 	require.Equal(t, http.StatusForbidden, rr.Code, rr.Body.String())
 
 	// Fail-closed: nothing was committed before the verification gate.
-	estore := orgpolicy.NewStore(badgerKV{bs: s.badgerStore})
+	estore := s.orgPolicyStore(context.Background())
 	_, ok, err := estore.LoadEnrollment("tok-1")
 	require.NoError(t, err)
 	assert.False(t, ok, "a rejected redeem must not persist an outcome")

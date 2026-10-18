@@ -1011,6 +1011,12 @@ func (s *SQLiteStore) initSchema(ctx context.Context) error {
 	if err := s.migrateOrgEnrollTokens(ctx); err != nil {
 		return fmt.Errorf("migrate org enrollment tokens: %w", err)
 	}
+	// Migration: node-local org policy state (RFC #443) — enrollment outcomes,
+	// accepted policy high-water marks and equivocation notices. Kept out of
+	// BadgerDB because every Badger key feeds the consensus AppHash.
+	if err := s.migrateOrgPolicyState(ctx); err != nil {
+		return fmt.Errorf("migrate org policy state: %w", err)
+	}
 
 	// Migration: add mcp_auth_codes table for the OAuth 2.0 + PKCE wrapper
 	// in front of bearer auth (v6.7.2 — ChatGPT MCP connector compat).

@@ -22,9 +22,11 @@ package rest
 // governance event through OnEvent.
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/l33tdawg/sage/internal/auth"
@@ -49,13 +51,47 @@ type OrgPolicyUpdateResponse struct {
 // OrgPolicyStatusResponse is the operator view of an org's policy on this node.
 type OrgPolicyStatusResponse struct {
 	Accepted     orgpolicy.AcceptedState       `json:"accepted"`
+	Current      bool                          `json:"current"`    // within its validity window now
+	Operations   []orgpolicy.GateResult        `json:"operations"` // what may proceed now (RFC #443 point 4)
 	Equivocation *orgpolicy.EquivocationNotice `json:"equivocation,omitempty"`
+}
+
+// orgPolicyNow is the clock for org-policy freshness; a variable so tests can
+// move time without signing policies against the wall clock.
+var orgPolicyNow = func() int64 { return time.Now().Unix() }
+
+// writeOrgPolicyHold applies the per-operation offline/expiry gate for an org
+// this node holds a fleet policy for. It writes a 409 and returns true when op
+// must hold. An org with no fleet policy on this node is not fleet-managed and
+// is left on its existing path untouched, so the gate never locks out a brain
+// that was never enrolled.
+func (s *Server) writeOrgPolicyHold(w http.ResponseWriter, orgID string, op orgpolicy.Operation) bool {
+	ps := s.orgPolicyStore(context.Background())
+	if ps == nil || orgID == "" {
+		return false
+	}
+	accepted, err := ps.LoadAccepted(orgID)
+	if err != nil {
+		writeProblem(w, http.StatusServiceUnavailable, "Org policy state unavailable",
+			"The org fleet policy could not be read; refusing to decide without it.")
+		return true
+	}
+	if accepted.Revision == 0 {
+		return false
+	}
+	if g := orgpolicy.Gate(accepted, op, orgPolicyNow(), false); !g.Allowed {
+		writeProblem(w, http.StatusConflict, "Held by org policy",
+			"Org "+orgID+": "+g.Reason+". Deliver a current signed org policy to proceed.")
+		return true
+	}
+	return false
 }
 
 // handleOrgPolicyUpdate admits a delivered policy against the accepted state.
 func (s *Server) handleOrgPolicyUpdate(w http.ResponseWriter, r *http.Request) {
-	if s.badgerStore == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "consensus state store unavailable")
+	ps := s.orgPolicyStore(r.Context())
+	if ps == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "org policy state is not configured on this node")
 		return
 	}
 	orgID := strings.TrimSpace(chi.URLParam(r, "org_id"))
@@ -77,7 +113,6 @@ func (s *Server) handleOrgPolicyUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ps := orgpolicy.NewStore(badgerKV{bs: s.badgerStore})
 	prev, err := ps.LoadAccepted(orgID)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "org policy state unavailable")
@@ -139,8 +174,9 @@ func (s *Server) handleOrgPolicyUpdate(w http.ResponseWriter, r *http.Request) {
 // handleOrgPolicyStatus returns the accepted state and the durable equivocation
 // notice (if any), so the alarm stays visible after a restart.
 func (s *Server) handleOrgPolicyStatus(w http.ResponseWriter, r *http.Request) {
-	if s.badgerStore == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "consensus state store unavailable")
+	ps := s.orgPolicyStore(r.Context())
+	if ps == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "org policy state is not configured on this node")
 		return
 	}
 	orgID := strings.TrimSpace(chi.URLParam(r, "org_id"))
@@ -148,7 +184,6 @@ func (s *Server) handleOrgPolicyStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "org_id is required")
 		return
 	}
-	ps := orgpolicy.NewStore(badgerKV{bs: s.badgerStore})
 	accepted, err := ps.LoadAccepted(orgID)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "org policy state unavailable")
@@ -163,7 +198,11 @@ func (s *Server) handleOrgPolicyStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "org policy state unavailable")
 		return
 	}
-	resp := OrgPolicyStatusResponse{Accepted: accepted}
+	now := orgPolicyNow()
+	resp := OrgPolicyStatusResponse{Accepted: accepted, Current: accepted.CurrentAt(now)}
+	for _, op := range orgpolicy.Operations {
+		resp.Operations = append(resp.Operations, orgpolicy.Gate(accepted, op, now, false))
+	}
 	if ok {
 		resp.Equivocation = notice
 	}

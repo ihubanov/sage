@@ -2,11 +2,13 @@ package rest
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -32,6 +34,7 @@ type capturedEvent struct {
 type policyNode struct {
 	s       *Server
 	dir     string
+	sq      *store.SQLiteStore
 	orgPriv ed25519.PrivateKey
 	events  []capturedEvent
 }
@@ -44,13 +47,15 @@ func newPolicyNode(t *testing.T) *policyNode {
 		ID: "tok-1", OrgID: policyOrgID, OwnerID: "owner-1", NodeLabel: "n1", Role: "member", OrgSignerPub: orgHex,
 	})
 	n := &policyNode{dir: t.TempDir(), orgPriv: orgPriv}
-	bs, err := store.NewBadgerStore(n.dir)
+	bs, err := store.NewBadgerStore(filepath.Join(n.dir, "badger")) // chain reads (orgs) only
 	require.NoError(t, err)
-	n.s = &Server{badgerStore: bs, orgEnrollTokens: ts, logger: zerolog.Nop()}
+	n.sq, err = store.NewSQLiteStore(context.Background(), filepath.Join(n.dir, "org-policy.db"))
+	require.NoError(t, err)
+	n.s = &Server{badgerStore: bs, orgPolicyState: n.sq, orgEnrollTokens: ts, logger: zerolog.Nop()}
 	n.s.OnEvent = func(eventType, _, _, content string, data any) {
 		n.events = append(n.events, capturedEvent{eventType, content, data})
 	}
-	t.Cleanup(func() { _ = n.s.badgerStore.CloseBadger() })
+	t.Cleanup(func() { _ = n.s.badgerStore.CloseBadger(); _ = n.sq.Close() })
 
 	enrollee := strings.Repeat("a", 64)
 	rr := doEnroll(enrollRouterAs(n.s, enrollee), policyOrgID, enrollee,
@@ -160,10 +165,11 @@ func TestOrgPolicyUpdate_EquivocationAlarmsAndSurvivesRestart(t *testing.T) {
 
 	// Durable: after a restart the notice is still served and the accepted
 	// policy is still the original.
-	require.NoError(t, n.s.badgerStore.CloseBadger())
-	bs, err := store.NewBadgerStore(n.dir)
+	require.NoError(t, n.sq.Close())
+	sq, err := store.NewSQLiteStore(context.Background(), filepath.Join(n.dir, "org-policy.db"))
 	require.NoError(t, err)
-	n.s.badgerStore = bs
+	n.sq = sq
+	n.s.orgPolicyState = sq
 
 	sr, st := n.status(t)
 	require.Equal(t, http.StatusOK, sr.Code)
@@ -227,4 +233,45 @@ func TestOrgPolicyUpdate_Rejections(t *testing.T) {
 		n.router().ServeHTTP(br, httptest.NewRequest(http.MethodPost, "/v1/org/"+policyOrgID+"/policy", strings.NewReader(body)))
 		assert.Equal(t, http.StatusBadRequest, br.Code, body)
 	}
+}
+
+// Org policy state is node-local and written outside consensus, so it must
+// never land in BadgerDB, whose keys feed the AppHash: a single node enrolling
+// would otherwise diverge from its peers at the next block. Drive enrollment,
+// a policy update and an equivocation, and require the consensus AppHash to be
+// byte-identical before and after.
+func TestOrgPolicyState_NeverTouchesConsensusAppHash(t *testing.T) {
+	dir := t.TempDir()
+	bs, err := store.NewBadgerStore(filepath.Join(dir, "badger"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = bs.CloseBadger() })
+	sq, err := store.NewSQLiteStore(context.Background(), filepath.Join(dir, "org-policy.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sq.Close() })
+
+	_, orgPriv, orgHex := orgKeypair(t)
+	ts := newStubEnrollTokenStore()
+	ts.seed("bearer", &store.OrgEnrollmentToken{ID: "tok-1", OrgID: policyOrgID, OwnerID: "o", NodeLabel: "n", Role: "member", OrgSignerPub: orgHex})
+	n := &policyNode{dir: dir, sq: sq, orgPriv: orgPriv}
+	n.s = &Server{badgerStore: bs, orgPolicyState: sq, orgEnrollTokens: ts, logger: zerolog.Nop()}
+
+	before, err := bs.ComputeAppHash()
+	require.NoError(t, err)
+
+	enrollee := strings.Repeat("a", 64)
+	rr := doEnroll(enrollRouterAs(n.s, enrollee), policyOrgID, enrollee,
+		enrollBody(t, "bearer", signedOrgPolicy(t, orgPriv, policyOrgID, "epoch-1", 1), nil))
+	require.Equal(t, http.StatusCreated, rr.Code, rr.Body.String())
+	ur, _ := n.deliver(t, policyOrgID, signedOrgPolicy(t, orgPriv, policyOrgID, "epoch-1", 2), nil)
+	require.Equal(t, http.StatusOK, ur.Code, ur.Body.String())
+	er, _ := n.deliver(t, policyOrgID, conflicting(t, orgPriv, 2), nil)
+	require.Equal(t, http.StatusConflict, er.Code, er.Body.String())
+
+	after, err := bs.ComputeAppHash()
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "org policy state must never change the consensus AppHash")
+
+	_, st := n.status(t)
+	assert.Equal(t, uint64(2), st.Accepted.Revision, "the state really was written — just not to consensus")
+	assert.NotNil(t, st.Equivocation)
 }

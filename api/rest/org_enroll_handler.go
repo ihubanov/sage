@@ -28,11 +28,15 @@ package rest
 //     it cannot reuse); a different node presenting an already-redeemed token is
 //     refused. On first redeem, CommitFirstEnrollment persists the consume marker,
 //     the bound identity, the first policy and the accepted high-water mark in ONE
-//     atomic SetStatesAtomic transaction — there is no two-phase window.
+//     SQLite transaction — there is no two-phase window.
 //
 // The enrollment-token lookup is wired by NewServer from the node store; a
-// backend without it reports 503. Tokens are issued via org_enroll_tokens_handler.go. The orgpolicy accepted-chain writes go through badgerKV,
-// a one-struct adapter from *store.BadgerStore to orgpolicy.KV.
+// backend without it reports 503. Tokens are issued via org_enroll_tokens_handler.go.
+//
+// The orgpolicy state (enrollment outcomes, accepted chain, equivocation
+// notices) is node-local and goes through orgKV into the node's SQLite store —
+// never BadgerDB, whose keys feed the consensus AppHash: a REST write there
+// from one node would split its AppHash from its peers.
 
 import (
 	"context"
@@ -42,7 +46,6 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/l33tdawg/sage/api/rest/middleware"
@@ -60,19 +63,38 @@ type orgEnrollTokenStore interface {
 	LookupOrgEnrollmentToken(ctx context.Context, tokenSHA256 string) (*store.OrgEnrollmentToken, error)
 }
 
-// badgerKV adapts *store.BadgerStore to orgpolicy.KV. orgpolicy stays pure (no
-// badger import) by depending on this minimal surface; the only coupling is the
-// field-for-field copy between orgpolicy.KVWrite and store.StateWrite.
-type badgerKV struct{ bs *store.BadgerStore }
+// orgPolicyStateStore is the node-local key/value surface behind orgpolicy.KV,
+// implemented by *store.SQLiteStore (internal/store/org_policy_state.go).
+type orgPolicyStateStore interface {
+	GetOrgPolicyState(ctx context.Context, key string) ([]byte, error)
+	SetOrgPolicyStatesAtomic(ctx context.Context, writes []store.StateWrite) error
+}
 
-func (k badgerKV) GetState(key string) ([]byte, error) { return k.bs.GetState(key) }
+// orgKV adapts orgPolicyStateStore to orgpolicy.KV for one request. orgpolicy
+// stays pure (no store import); the only coupling is the field-for-field copy
+// between orgpolicy.KVWrite and store.StateWrite.
+type orgKV struct {
+	ctx context.Context
+	st  orgPolicyStateStore
+}
 
-func (k badgerKV) SetStatesAtomic(writes []orgpolicy.KVWrite) error {
+func (k orgKV) GetState(key string) ([]byte, error) { return k.st.GetOrgPolicyState(k.ctx, key) }
+
+func (k orgKV) SetStatesAtomic(writes []orgpolicy.KVWrite) error {
 	sw := make([]store.StateWrite, len(writes))
 	for i, e := range writes {
 		sw[i] = store.StateWrite{Key: e.Key, Value: e.Value}
 	}
-	return k.bs.SetStatesAtomic(sw)
+	return k.st.SetOrgPolicyStatesAtomic(k.ctx, sw)
+}
+
+// orgPolicyStore returns the orgpolicy store for this request, or nil when the
+// node has no org policy state backend.
+func (s *Server) orgPolicyStore(ctx context.Context) *orgpolicy.Store {
+	if s.orgPolicyState == nil {
+		return nil
+	}
+	return orgpolicy.NewStore(orgKV{ctx: ctx, st: s.orgPolicyState})
 }
 
 // OrgEnrollRequest is the JSON body for POST /v1/org/{org_id}/enroll.
@@ -104,8 +126,9 @@ func (s *Server) handleOrgEnroll(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusServiceUnavailable, "org enrollment is not configured on this node")
 		return
 	}
-	if s.badgerStore == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "consensus state store unavailable")
+	estore := s.orgPolicyStore(r.Context())
+	if estore == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "org policy state is not configured on this node")
 		return
 	}
 
@@ -159,8 +182,6 @@ func (s *Server) handleOrgEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	estore := orgpolicy.NewStore(badgerKV{bs: s.badgerStore})
-
 	// Idempotent redemption: a prior outcome for this token is replayed to the
 	// same node and refused to any other.
 	if prior, ok, loadErr := estore.LoadEnrollment(tok.ID); loadErr != nil {
@@ -210,7 +231,15 @@ func (s *Server) handleOrgEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	boundIdentity := tok.OwnerID + "/" + tok.NodeLabel + "/" + tok.Role
-	outcome := orgpolicy.NewEnrollmentOutcome(tok.ID, enrolleePub, boundIdentity, req.FirstPolicy, time.Now().Unix())
+	now := orgPolicyNow()
+	outcome := orgpolicy.NewEnrollmentOutcome(tok.ID, enrolleePub, boundIdentity, req.FirstPolicy, now)
+	// RFC #443 point 4: enrollment is authority-granting, so it needs a first
+	// policy that is valid now. A replay of an already-committed enrollment
+	// (above) is recovery, not new authority, and is not gated.
+	if g := orgpolicy.Gate(outcome.Accepted, orgpolicy.OpEnrollment, now, false); !g.Allowed {
+		writeJSONError(w, http.StatusForbidden, "first policy is expired or not yet valid")
+		return
+	}
 	if err := estore.CommitFirstEnrollment(outcome); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "failed to persist enrollment")
 		return

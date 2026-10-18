@@ -37,6 +37,11 @@ type AcceptedState struct {
 	Digest      string `json:"digest"`
 	KeyEpoch    string `json:"key_epoch"`
 	IssuerKeyID string `json:"issuer_key_id"`
+	// NotBefore/Expiry carry the accepted policy's validity window so the
+	// per-operation offline/expiry gate (gate.go) can be evaluated from the
+	// persisted state alone, without re-fetching the policy body.
+	NotBefore int64 `json:"not_before"`
+	Expiry    int64 `json:"expiry"` // 0 == no expiry
 }
 
 func stateFrom(p *Policy) AcceptedState {
@@ -46,6 +51,8 @@ func stateFrom(p *Policy) AcceptedState {
 		Digest:      p.Digest(),
 		KeyEpoch:    p.KeyEpoch,
 		IssuerKeyID: p.IssuerKeyID,
+		NotBefore:   p.NotBefore,
+		Expiry:      p.Expiry,
 	}
 }
 

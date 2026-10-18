@@ -1981,7 +1981,7 @@ Cancellation never retries a mutation or proves that consensus did not commit
 it. Use the normal reconciliation contract for an indeterminate write. EOF and
 installed-runtime handoff drain already-dispatched requests before closing or
 transferring stdout (`Wait`, `internal/mcp/stdio_requests.go:91`;
-`Run`, `internal/mcp/server.go:439`).
+`Run`, `internal/mcp/server.go:466`).
 
 **Stdio client lifetime:** the bridge watches its launch parent when that
 process can be identified. Confirmed parent death cancels the session and
@@ -1990,7 +1990,7 @@ prevents cleanup from finishing, the orphan terminates. A live client may stay
 silent indefinitely; inactivity does not end its session. The guard remains
 active during installed-runtime handoff, so the retained pump also exits when
 its client disappears. Cancellation retains the normal reconciliation
-requirements for an in-flight mutation (`Run`, `internal/mcp/server.go:439`).
+requirements for an in-flight mutation (`Run`, `internal/mcp/server.go:466`).
 An initial Unix parent PID of 0 or 1 is treated conservatively: it may be a
 container or system launcher, so that starting state alone never triggers
 termination.

@@ -81,6 +81,28 @@ type EnrollmentOutcome struct {
 	ConsumedAt    int64         `json:"consumed_at"`    // unix seconds
 }
 
+// NewEnrollmentOutcome builds a commit-ready outcome from a verified first
+// policy. The accepted high-water mark and OrgID are derived from the policy
+// here (stateFrom is unexported by design), so a caller outside this package
+// cannot desynchronize the persisted accepted state from the stored first
+// policy. first must be non-nil for a usable outcome; CommitFirstEnrollment
+// rejects a nil first policy, so a nil here yields an outcome that fails to
+// commit rather than a panic.
+func NewEnrollmentOutcome(tokenID, enrolleePub, boundIdentity string, first *Policy, consumedAt int64) EnrollmentOutcome {
+	out := EnrollmentOutcome{
+		TokenID:       tokenID,
+		EnrolleePub:   enrolleePub,
+		BoundIdentity: boundIdentity,
+		FirstPolicy:   first,
+		ConsumedAt:    consumedAt,
+	}
+	if first != nil {
+		out.OrgID = first.OrgID
+		out.Accepted = stateFrom(first)
+	}
+	return out
+}
+
 // Store binds the KV to the orgpolicy persistence operations. It holds no state
 // of its own; every method reads/writes through kv.
 type Store struct{ kv KV }

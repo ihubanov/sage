@@ -857,6 +857,8 @@ func (s *Server) setupRouter() chi.Router {
 		r.Post("/v1/org/{org_id}/enroll-tokens", s.handleOrgEnrollTokenIssue)
 		r.Get("/v1/org/{org_id}/enroll-tokens", s.handleOrgEnrollTokenList)
 		r.Delete("/v1/org/{org_id}/enroll-tokens/{id}", s.handleOrgEnrollTokenRevoke)
+		r.Post("/v1/org/{org_id}/policy", s.handleOrgPolicyUpdate)
+		r.Get("/v1/org/{org_id}/policy", s.handleOrgPolicyStatus)
 		r.Delete("/v1/org/{org_id}/member/{agent_id}", s.handleOrgRemoveMember)
 		r.Post("/v1/org/{org_id}/clearance", s.handleOrgSetClearance)
 

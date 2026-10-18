@@ -30,8 +30,8 @@ package rest
 //     the bound identity, the first policy and the accepted high-water mark in ONE
 //     atomic SetStatesAtomic transaction — there is no two-phase window.
 //
-// The enrollment-token lookup is wired by the issuance slice; until then the
-// endpoint reports 503. The orgpolicy accepted-chain writes go through badgerKV,
+// The enrollment-token lookup is wired by NewServer from the node store; a
+// backend without it reports 503. Tokens are issued via org_enroll_tokens_handler.go. The orgpolicy accepted-chain writes go through badgerKV,
 // a one-struct adapter from *store.BadgerStore to orgpolicy.KV.
 
 import (
@@ -53,8 +53,8 @@ import (
 
 // orgEnrollTokenStore is the narrow lookup the enrollment handler needs. It is
 // an interface so handler tests can stub it without a database, mirroring
-// mcpTokenStore. The implementation (SQLite, SHA-256 digest keyed) lands with
-// the issuance slice. Lookup is by the hex SHA-256 digest of the presented
+// mcpTokenStore. The implementation is SHA-256-digest keyed in SQLite
+// (internal/store/org_enroll_tokens.go). Lookup is by the hex SHA-256 digest of the presented
 // bearer; it returns store.ErrOrgEnrollTokenNotFound for an unknown digest.
 type orgEnrollTokenStore interface {
 	LookupOrgEnrollmentToken(ctx context.Context, tokenSHA256 string) (*store.OrgEnrollmentToken, error)

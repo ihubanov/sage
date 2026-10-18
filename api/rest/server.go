@@ -50,8 +50,8 @@ type Server struct {
 	orgStore    store.OrgStore     // Organization and federation queries
 	agentStore  store.AgentStore   // Network agent registry (domain access enforcement)
 	// orgEnrollTokens resolves org fleet-enrollment bearer tokens for
-	// POST /v1/org/{org_id}/enroll. Nil until the issuance slice wires it; the
-	// handler reports 503 while nil. See api/rest/org_enroll_handler.go.
+	// POST /v1/org/{org_id}/enroll. NewServer wires it when the store implements
+	// the lookup; the handler reports 503 while nil. See org_enroll_handler.go.
 	orgEnrollTokens orgEnrollTokenStore
 	health          *metrics.HealthChecker
 	logger          zerolog.Logger
@@ -854,6 +854,9 @@ func (s *Server) setupRouter() chi.Router {
 		r.Get("/v1/org/{org_id}/members", s.handleListOrgMembers)
 		r.Post("/v1/org/{org_id}/member", s.handleOrgAddMember)
 		r.Post("/v1/org/{org_id}/enroll", s.handleOrgEnroll)
+		r.Post("/v1/org/{org_id}/enroll-tokens", s.handleOrgEnrollTokenIssue)
+		r.Get("/v1/org/{org_id}/enroll-tokens", s.handleOrgEnrollTokenList)
+		r.Delete("/v1/org/{org_id}/enroll-tokens/{id}", s.handleOrgEnrollTokenRevoke)
 		r.Delete("/v1/org/{org_id}/member/{agent_id}", s.handleOrgRemoveMember)
 		r.Post("/v1/org/{org_id}/clearance", s.handleOrgSetClearance)
 

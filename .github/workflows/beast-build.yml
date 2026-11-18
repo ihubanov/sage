@@ -12,7 +12,7 @@ jobs:
         with: { go-version: '1.26.9' }
       - name: build sage-gui (static linux/amd64)
         run: |
-          V=$(git describe --tags --always 2>/dev/null || echo dev)
+          V=v11.23.27+appv25park
           C=$(git rev-parse --short HEAD)
           D=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \

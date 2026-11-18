@@ -1,0 +1,27 @@
+name: beast-build
+on:
+  push:
+    branches: ['beast/appv25-park-v11.23.27']
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.26.9' }
+      - name: build sage-gui (static linux/amd64)
+        run: |
+          V=$(git describe --tags --always 2>/dev/null || echo dev)
+          C=$(git rev-parse --short HEAD)
+          D=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+            -ldflags "-s -w -X main.version=$V -X main.commit=$C -X main.date=$D" \
+            -o sage-gui ./cmd/sage-gui
+      - name: self-report version
+        run: ./sage-gui version || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sage-gui-linux-amd64
+          path: sage-gui
+          retention-days: 3
